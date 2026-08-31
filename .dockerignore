@@ -1,0 +1,17 @@
+**/bin
+**/obj
+**/node_modules
+**/dist
+.agents
+.azure
+.git
+.gitignore
+.vs
+.vscode
+infra
+tests
+*.user
+*.suo
+README.md
+originalplan.md
+

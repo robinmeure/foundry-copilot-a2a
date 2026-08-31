@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FoundryCopilotA2A.Adapter/FoundryCopilotA2A.Adapter.csproj" />
+    <Project Path="src/FoundryCopilotA2A.Cli/FoundryCopilotA2A.Cli.csproj" />
+    <Project Path="src/FoundryCopilotA2A.ServiceDefaults/FoundryCopilotA2A.ServiceDefaults.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FoundryCopilotA2A.Adapter.Tests/FoundryCopilotA2A.Adapter.Tests.csproj" />
+    <Project Path="tests/FoundryCopilotA2A.Cli.Tests/FoundryCopilotA2A.Cli.Tests.csproj" />
+  </Folder>
+  <Project Path="FoundryCopilotA2A.AppHost/FoundryCopilotA2A.AppHost.csproj" />
+</Solution>

@@ -1,0 +1,44 @@
+:root {
+  font-family: Inter, "Segoe UI", system-ui, sans-serif;
+  color: #15233b;
+  background: #eef3f9;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button,
+select,
+textarea {
+  font: inherit;
+}
+
+button:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid rgba(37, 99, 235, 0.3);
+  outline-offset: 2px;
+}
+
+code {
+  font-family: "Cascadia Code", Consolas, monospace;
+}
+
+.configuration-error {
+  max-width: 680px;
+  margin: 12vh auto;
+  padding: 40px;
+  border: 1px solid #d8e0eb;
+  border-radius: 18px;
+  background: white;
+  box-shadow: 0 20px 60px rgba(28, 48, 79, 0.12);
+}

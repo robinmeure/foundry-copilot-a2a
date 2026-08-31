@@ -1,0 +1,68 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": {
+      "value": "dev"
+    },
+    "location": {
+      "value": "eastus"
+    },
+    "tenantId": {
+      "value": "63645c73-a00c-4659-b911-eb6c4c2d4a8f"
+    },
+    "adapterApiAudience": {
+      "value": "api://replace-with-adapter-client-id"
+    },
+    "copilotStudioClientId": {
+      "value": "replace-with-backend-client-id"
+    },
+    "publisherName": {
+      "value": "Foundry Copilot A2A"
+    },
+    "publisherEmail": {
+      "value": "replace-with-platform-owner@example.com"
+    },
+    "copilotStudioClientSecret": {
+      "value": "placeholder"
+    },
+    "tweedeKamerDirectConnectUrl": {
+      "value": "https://example/x"
+    },
+    "reverserClassicDirectConnectUrl": {
+      "value": "https://example/x"
+    },
+    "reverserNewDirectConnectUrl": {
+      "value": "https://example/x"
+    },
+    "adapterAllowedOrigins": {
+      "value": [
+        "http://localhost:5173"
+      ]
+    },
+    "appServicePlanSku": {
+      "value": "B1"
+    },
+    "linuxFxVersion": {
+      "value": "DOTNETCORE|10.0"
+    },
+    "apimSkuName": {
+      "value": "Developer"
+    },
+    "apimSkuCapacity": {
+      "value": 1
+    },
+    "logRetentionInDays": {
+      "value": 30
+    },
+    "logDailyQuotaGb": {
+      "value": 1
+    },
+    "tags": {
+      "value": {
+        "owner": "replace-with-owner",
+        "purpose": "a2a-governance-poc"
+      }
+    }
+  }
+}

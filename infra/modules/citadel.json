@@ -1,0 +1,408 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.46.1.21595",
+      "templateHash": "4070375088367541142"
+    },
+    "name": "Citadel A2A gateway",
+    "description": "Deploys API Management as a governed delegated-OAuth entry point for the A2A adapter."
+  },
+  "parameters": {
+    "location": {
+      "type": "string"
+    },
+    "apimName": {
+      "type": "string"
+    },
+    "apimSkuName": {
+      "type": "string",
+      "allowedValues": [
+        "Developer",
+        "StandardV2",
+        "PremiumV2"
+      ]
+    },
+    "apimSkuCapacity": {
+      "type": "int"
+    },
+    "publisherName": {
+      "type": "string"
+    },
+    "publisherEmail": {
+      "type": "string"
+    },
+    "entraLoginEndpoint": {
+      "type": "string"
+    },
+    "tenantId": {
+      "type": "string"
+    },
+    "adapterBackendUrl": {
+      "type": "string"
+    },
+    "adapterApiAudience": {
+      "type": "string"
+    },
+    "adapterDelegatedScope": {
+      "type": "string"
+    },
+    "appInsightsName": {
+      "type": "string"
+    },
+    "logAnalyticsWorkspaceId": {
+      "type": "string"
+    },
+    "accessPrincipalId": {
+      "type": "string"
+    },
+    "tags": {
+      "type": "object"
+    }
+  },
+  "variables": {
+    "apiManagementServiceContributorRoleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '312a565d-c81f-4fd8-895a-4e21e48d571c')]",
+    "adapterBareAudience": "[replace(parameters('adapterApiAudience'), 'api://', '')]",
+    "apiPath": "copilot-studio",
+    "agentCardPath": ".well-known/agent-card.json",
+    "runtimePath": "a2a/copilot-studio",
+    "runtimePolicyTemplate": "  <policies>\r\n    <inbound>\r\n      <base />\r\n      <validate-jwt header-name=\"Authorization\"\r\n                    require-scheme=\"Bearer\"\r\n                    failed-validation-httpcode=\"401\"\r\n                    failed-validation-error-message=\"Unauthorized. The delegated access token is missing or invalid.\"\r\n                    output-token-variable-name=\"validatedJwt\"\r\n                    clock-skew=\"60\">\r\n        <openid-config url=\"__ENTRA_LOGIN_ENDPOINT__{{entra-tenant-id}}/v2.0/.well-known/openid-configuration\" />\r\n        <audiences>\r\n          <audience>{{adapter-api-audience}}</audience>\r\n          <audience>{{adapter-api-bare-audience}}</audience>\r\n        </audiences>\r\n        <issuers>\r\n          <issuer>__ENTRA_LOGIN_ENDPOINT__{{entra-tenant-id}}/v2.0</issuer>\r\n          <issuer>https://sts.windows.net/{{entra-tenant-id}}/</issuer>\r\n        </issuers>\r\n        <required-claims>\r\n          <claim name=\"scp\" match=\"any\" separator=\" \">\r\n            <value>{{adapter-delegated-scope}}</value>\r\n          </claim>\r\n        </required-claims>\r\n      </validate-jwt>\r\n      <validate-content unspecified-content-type-action=\"prevent\"\r\n                        max-size=\"1048576\"\r\n                        size-exceeded-action=\"prevent\"\r\n                        errors-variable-name=\"requestBodyValidation\">\r\n        <content type=\"application/json\" validate-as=\"json\" action=\"prevent\" />\r\n      </validate-content>\r\n      <rate-limit-by-key calls=\"60\"\r\n                         renewal-period=\"60\"\r\n                         counter-key='@(((Jwt)context.Variables[\"validatedJwt\"]).Claims.GetValueOrDefault(\"tid\", \"unknown\") + \":\" + ((Jwt)context.Variables[\"validatedJwt\"]).Claims.GetValueOrDefault(\"oid\", \"unknown\"))' />\r\n      <set-header name=\"X-Correlation-ID\" exists-action=\"skip\">\r\n        <value>@(context.RequestId.ToString())</value>\r\n      </set-header>\r\n    </inbound>\r\n    <backend>\r\n      <forward-request timeout=\"120\" />\r\n    </backend>\r\n    <outbound>\r\n      <set-header name=\"X-Correlation-ID\" exists-action=\"override\">\r\n        <value>@(context.Request.Headers.GetValueOrDefault(\"X-Correlation-ID\", context.RequestId.ToString()))</value>\r\n      </set-header>\r\n    </outbound>\r\n    <on-error>\r\n      <base />\r\n      <set-header name=\"X-Correlation-ID\" exists-action=\"override\">\r\n        <value>@(context.Request.Headers.GetValueOrDefault(\"X-Correlation-ID\", context.RequestId.ToString()))</value>\r\n      </set-header>\r\n    </on-error>\r\n  </policies>\r\n",
+    "runtimePolicyValue": "[replace(variables('runtimePolicyTemplate'), '__ENTRA_LOGIN_ENDPOINT__', parameters('entraLoginEndpoint'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ApiManagement/service",
+      "apiVersion": "2024-05-01",
+      "name": "[parameters('apimName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "sku": {
+        "name": "[parameters('apimSkuName')]",
+        "capacity": "[parameters('apimSkuCapacity')]"
+      },
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "customProperties": {
+          "Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Backend.Protocols.Ssl30": "False",
+          "Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Backend.Protocols.Tls10": "False",
+          "Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Backend.Protocols.Tls11": "False",
+          "Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Ciphers.TripleDes168": "False",
+          "Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Protocols.Ssl30": "False",
+          "Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Protocols.Tls10": "False",
+          "Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Protocols.Tls11": "False"
+        },
+        "publisherEmail": "[parameters('publisherEmail')]",
+        "publisherName": "[parameters('publisherName')]",
+        "publicNetworkAccess": "Enabled",
+        "virtualNetworkType": "None"
+      }
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/namedValues",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', parameters('apimName'), 'entra-tenant-id')]",
+      "properties": {
+        "displayName": "entra-tenant-id",
+        "secret": false,
+        "value": "[parameters('tenantId')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', parameters('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/namedValues",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', parameters('apimName'), 'adapter-api-audience')]",
+      "properties": {
+        "displayName": "adapter-api-audience",
+        "secret": false,
+        "value": "[parameters('adapterApiAudience')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', parameters('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/namedValues",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', parameters('apimName'), 'adapter-api-bare-audience')]",
+      "properties": {
+        "displayName": "adapter-api-bare-audience",
+        "secret": false,
+        "value": "[variables('adapterBareAudience')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', parameters('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/namedValues",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', parameters('apimName'), 'adapter-delegated-scope')]",
+      "properties": {
+        "displayName": "adapter-delegated-scope",
+        "secret": false,
+        "value": "[parameters('adapterDelegatedScope')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', parameters('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', parameters('apimName'), 'copilot-studio-a2a')]",
+      "properties": {
+        "apiType": "http",
+        "displayName": "Copilot Studio A2A",
+        "path": "[variables('apiPath')]",
+        "protocols": [
+          "https"
+        ],
+        "serviceUrl": "[parameters('adapterBackendUrl')]",
+        "subscriptionRequired": false,
+        "type": "http"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', parameters('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}/{2}', parameters('apimName'), 'copilot-studio-a2a', 'get-agent-card')]",
+      "properties": {
+        "description": "Public A2A agent discovery document.",
+        "displayName": "Get agent card",
+        "method": "GET",
+        "responses": [
+          {
+            "statusCode": 200
+          }
+        ],
+        "templateParameters": [],
+        "urlTemplate": "[format('/{0}', variables('agentCardPath'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis', parameters('apimName'), 'copilot-studio-a2a')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}/{2}', parameters('apimName'), 'copilot-studio-a2a', 'invoke-a2a-runtime')]",
+      "properties": {
+        "description": "Authenticated A2A JSON-RPC endpoint.",
+        "displayName": "Invoke A2A runtime",
+        "method": "POST",
+        "request": {
+          "headers": [
+            {
+              "name": "Authorization",
+              "required": true,
+              "type": "string"
+            },
+            {
+              "name": "A2A-Version",
+              "required": false,
+              "type": "string"
+            }
+          ],
+          "representations": [
+            {
+              "contentType": "application/json"
+            }
+          ]
+        },
+        "responses": [
+          {
+            "statusCode": 200
+          },
+          {
+            "statusCode": 400
+          },
+          {
+            "statusCode": 401
+          },
+          {
+            "statusCode": 429
+          }
+        ],
+        "templateParameters": [],
+        "urlTemplate": "[format('/{0}', variables('runtimePath'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis', parameters('apimName'), 'copilot-studio-a2a')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}/{2}/{3}', parameters('apimName'), 'copilot-studio-a2a', 'invoke-a2a-runtime', 'policy')]",
+      "properties": {
+        "format": "rawxml",
+        "value": "[variables('runtimePolicyValue')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimName'), 'adapter-api-audience')]",
+        "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimName'), 'adapter-api-bare-audience')]",
+        "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimName'), 'adapter-delegated-scope')]",
+        "[resourceId('Microsoft.ApiManagement/service/apis/operations', parameters('apimName'), 'copilot-studio-a2a', 'invoke-a2a-runtime')]",
+        "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimName'), 'entra-tenant-id')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/loggers",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', parameters('apimName'), 'application-insights')]",
+      "properties": {
+        "credentials": {
+          "connectionString": "[reference(resourceId('Microsoft.Insights/components', parameters('appInsightsName')), '2020-02-02').ConnectionString]"
+        },
+        "description": "Workspace-based Application Insights logger for A2A gateway telemetry.",
+        "isBuffered": true,
+        "loggerType": "applicationInsights",
+        "resourceId": "[resourceId('Microsoft.Insights/components', parameters('appInsightsName'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', parameters('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/diagnostics",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}/{2}', parameters('apimName'), 'copilot-studio-a2a', 'applicationinsights')]",
+      "properties": {
+        "alwaysLog": "allErrors",
+        "backend": {
+          "request": {
+            "body": {
+              "bytes": 0
+            },
+            "headers": [
+              "Content-Type",
+              "A2A-Version",
+              "traceparent",
+              "X-Correlation-ID"
+            ]
+          },
+          "response": {
+            "body": {
+              "bytes": 0
+            },
+            "headers": [
+              "Content-Type",
+              "traceparent",
+              "X-Correlation-ID"
+            ]
+          }
+        },
+        "frontend": {
+          "request": {
+            "body": {
+              "bytes": 0
+            },
+            "headers": [
+              "Content-Type",
+              "A2A-Version",
+              "traceparent",
+              "X-Correlation-ID"
+            ]
+          },
+          "response": {
+            "body": {
+              "bytes": 0
+            },
+            "headers": [
+              "Content-Type",
+              "traceparent",
+              "X-Correlation-ID"
+            ]
+          }
+        },
+        "httpCorrelationProtocol": "W3C",
+        "logClientIp": false,
+        "loggerId": "[resourceId('Microsoft.ApiManagement/service/loggers', parameters('apimName'), 'application-insights')]",
+        "metrics": true,
+        "sampling": {
+          "percentage": 100,
+          "samplingType": "fixed"
+        },
+        "verbosity": "information"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis', parameters('apimName'), 'copilot-studio-a2a')]",
+        "[resourceId('Microsoft.ApiManagement/service/loggers', parameters('apimName'), 'application-insights')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Insights/diagnosticSettings",
+      "apiVersion": "2021-05-01-preview",
+      "scope": "[resourceId('Microsoft.ApiManagement/service', parameters('apimName'))]",
+      "name": "send-to-log-analytics",
+      "properties": {
+        "logs": [
+          {
+            "categoryGroup": "allLogs",
+            "enabled": true
+          }
+        ],
+        "metrics": [
+          {
+            "category": "AllMetrics",
+            "enabled": true
+          }
+        ],
+        "workspaceId": "[parameters('logAnalyticsWorkspaceId')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', parameters('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.ApiManagement/service', parameters('apimName'))]",
+      "name": "[guid(resourceId('Microsoft.ApiManagement/service', parameters('apimName')), parameters('accessPrincipalId'), variables('apiManagementServiceContributorRoleDefinitionId'))]",
+      "properties": {
+        "principalId": "[parameters('accessPrincipalId')]",
+        "principalType": "User",
+        "roleDefinitionId": "[variables('apiManagementServiceContributorRoleDefinitionId')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', parameters('apimName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "apimId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.ApiManagement/service', parameters('apimName'))]"
+    },
+    "apimPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ApiManagement/service', parameters('apimName')), '2024-05-01', 'full').identity.principalId]"
+    },
+    "gatewayUrl": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ApiManagement/service', parameters('apimName')), '2024-05-01').gatewayUrl]"
+    },
+    "apiBaseUrl": {
+      "type": "string",
+      "value": "[format('{0}/{1}', reference(resourceId('Microsoft.ApiManagement/service', parameters('apimName')), '2024-05-01').gatewayUrl, variables('apiPath'))]"
+    },
+    "agentCardUrl": {
+      "type": "string",
+      "value": "[format('{0}/{1}/{2}', reference(resourceId('Microsoft.ApiManagement/service', parameters('apimName')), '2024-05-01').gatewayUrl, variables('apiPath'), variables('agentCardPath'))]"
+    },
+    "a2aRuntimeUrl": {
+      "type": "string",
+      "value": "[format('{0}/{1}/{2}', reference(resourceId('Microsoft.ApiManagement/service', parameters('apimName')), '2024-05-01').gatewayUrl, variables('apiPath'), variables('runtimePath'))]"
+    }
+  }
+}
