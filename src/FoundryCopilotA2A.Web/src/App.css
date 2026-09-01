@@ -634,9 +634,35 @@ textarea {
 .network-panel > header {
   padding: 16px;
   display: grid;
-  gap: 3px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 3px 12px;
   color: white;
   background: #10284e;
+}
+
+.panel-views {
+  display: flex;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.panel-views button {
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 999px;
+  color: #b9c7dc;
+  font: inherit;
+  font-size: 0.68rem;
+  background: transparent;
+  cursor: pointer;
+}
+
+.panel-views button.active {
+  color: #10284e;
+  font-weight: 600;
+  background: white;
 }
 
 .network-panel > header span {
@@ -890,11 +916,134 @@ textarea {
   background: #eef4fb;
 }
 
+/* Live sequence view: participants become lifelines, spans become messages. */
+.flow-view {
+  background: white;
+}
+
+.flow-canvas {
+  overflow-x: auto;
+  padding: 4px 0 8px;
+}
+
+.flow-svg {
+  display: block;
+}
+
+.flow-lane rect {
+  fill: #eef3fa;
+  stroke: #d8e2ee;
+}
+
+.flow-lane text {
+  fill: #22385c;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.flow-lane line {
+  stroke: #d8e2ee;
+  stroke-dasharray: 3 4;
+}
+
+.flow-message {
+  color: #64748b;
+  cursor: pointer;
+}
+
+.flow-message.server {
+  color: #7c3aed;
+}
+
+.flow-message.client {
+  color: #0284c7;
+}
+
+.flow-message.ok {
+  color: #16a34a;
+}
+
+.flow-message.error {
+  color: #dc2626;
+}
+
+.flow-message.pending {
+  color: #f59e0b;
+}
+
+.flow-hit {
+  fill: transparent;
+}
+
+.flow-message:hover .flow-hit,
+.flow-message:focus-visible .flow-hit {
+  fill: #f2f7fd;
+}
+
+.flow-message.selected .flow-hit {
+  fill: #eaf2fd;
+}
+
+.flow-message:focus-visible {
+  outline: none;
+}
+
+.flow-message:focus-visible .flow-hit {
+  stroke: #2878ff;
+}
+
+.flow-arrow {
+  stroke: currentcolor;
+  stroke-width: 1.4;
+  fill: none;
+}
+
+.flow-message.pending .flow-arrow {
+  stroke-dasharray: 4 3;
+}
+
+.flow-message.selected .flow-arrow {
+  stroke-width: 2.2;
+}
+
+.flow-head {
+  fill: currentcolor;
+}
+
+.flow-label {
+  fill: #22385c;
+  font-size: 9.5px;
+}
+
+.flow-message.selected .flow-label {
+  font-weight: 600;
+}
+
+.flow-meta {
+  fill: #8b9ab0;
+  font-size: 8.5px;
+}
+
+.flow-detail {
+  display: grid;
+  gap: 10px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid #eaeff6;
+  background: #fbfdff;
+}
+
+.flow-detail-title {
+  margin: 0;
+  color: #22385c;
+  font-size: 0.76rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 1400px) {
   .workspace {
     grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
   }
-
   /* Too narrow for three columns: the trace moves under the conversation. */
   .network-panel {
     grid-column: 1 / -1;

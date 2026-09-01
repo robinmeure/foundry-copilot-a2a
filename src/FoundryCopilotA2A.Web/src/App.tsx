@@ -761,6 +761,9 @@ interface TimelineRow {
   depth: number
   offsetMs: number
   durationMs?: number
+  /** Participants of the hop, used by the flow view to place the message on a lifeline. */
+  from: string
+  to: string
   sections: TimelineSection[]
 }
 
@@ -772,6 +775,24 @@ interface TimelineGroup {
   status: TurnStatus
   totalMs: number
   rows: TimelineRow[]
+}
+
+const browserParticipant = 'Browser'
+const adapterParticipant = 'A2A adapter'
+
+/**
+ * Activity sources are .NET meter names such as `System.Net.Http`; every one of them runs inside
+ * the adapter, so they collapse onto a single lifeline instead of one lane per instrumentation.
+ */
+function participantForSource(source: string) {
+  const normalized = source.trim()
+  if (!normalized) {
+    return adapterParticipant
+  }
+
+  return /^(system\.|microsoft\.|azure\.|experimental\.|foundrycopilota2a)/i.test(normalized)
+    ? adapterParticipant
+    : normalized
 }
 
 function buildTimelineGroup(turn: TurnRecord): TimelineGroup {
@@ -791,6 +812,8 @@ function buildTimelineGroup(turn: TurnRecord): TimelineGroup {
     depth: 0,
     offsetMs: 0,
     durationMs: turn.durationMs,
+    from: browserParticipant,
+    to: adapterParticipant,
     sections: [
       ...(turn.request
         ? [
@@ -808,6 +831,7 @@ function buildTimelineGroup(turn: TurnRecord): TimelineGroup {
     const firstStart = Math.min(...spans.map((span) => Date.parse(span.startedAt)))
     const depths = computeSpanDepths(spans)
     for (const span of spans) {
+      const source = participantForSource(span.source)
       rows.push({
         id: spanEntryId(turn.id, span.spanId),
         label: span.name,
@@ -822,6 +846,8 @@ function buildTimelineGroup(turn: TurnRecord): TimelineGroup {
         depth: (depths.get(span.spanId) ?? 0) + 1,
         offsetMs: Math.max(0, Date.parse(span.startedAt) - firstStart),
         durationMs: span.durationMs,
+        from: source,
+        to: span.destination ?? source,
         sections: buildSpanSections(span),
       })
     }
@@ -836,6 +862,8 @@ function buildTimelineGroup(turn: TurnRecord): TimelineGroup {
       tone: 'error',
       depth: 1,
       offsetMs: 0,
+      from: adapterParticipant,
+      to: adapterParticipant,
       sections: [{ label: 'Reason', value: turn.traceError }],
     })
   }
@@ -849,6 +877,8 @@ function buildTimelineGroup(turn: TurnRecord): TimelineGroup {
       tone: turn.response.status >= 400 || turn.status === 'failed' ? 'error' : 'ok',
       depth: 0,
       offsetMs: totalMs,
+      from: adapterParticipant,
+      to: browserParticipant,
       sections: [{ label: 'Body payload', value: turn.response.body }],
     })
   }
@@ -934,6 +964,8 @@ function NetworkPanel({
   selectedEntryId?: string
   onSelect: (entryId?: string) => void
 }) {
+  const [view, setView] = useState<PanelView>('waterfall')
+
   useEffect(() => {
     if (!selectedEntryId) {
       return
@@ -957,7 +989,7 @@ function NetworkPanel({
         nodeRect.height / 2,
       behavior: 'smooth',
     })
-  }, [selectedEntryId])
+  }, [selectedEntryId, view])
 
   const totalMs = groups.reduce((sum, group) => sum + group.totalMs, 0)
   const rowCount = groups.reduce((sum, group) => sum + group.rows.length, 0)
@@ -971,6 +1003,24 @@ function NetworkPanel({
             {groups.length} {groups.length === 1 ? 'request' : 'requests'} ·{' '}
             {rowCount} entries · {formatDuration(totalMs)}
           </span>
+        </div>
+        <div className="panel-views" role="group" aria-label="Trace view">
+          <button
+            type="button"
+            className={view === 'waterfall' ? 'active' : undefined}
+            aria-pressed={view === 'waterfall'}
+            onClick={() => setView('waterfall')}
+          >
+            Waterfall
+          </button>
+          <button
+            type="button"
+            className={view === 'flow' ? 'active' : undefined}
+            aria-pressed={view === 'flow'}
+            onClick={() => setView('flow')}
+          >
+            Flow
+          </button>
         </div>
       </header>
       <p className="panel-context">
@@ -993,17 +1043,25 @@ function NetworkPanel({
                 <strong>{group.title}</strong>
                 <span>{group.subtitle}</span>
               </header>
-              <ol className="timeline">
-                {group.rows.map((row) => (
-                  <TimelineRowView
-                    key={row.id}
-                    row={row}
-                    totalMs={group.totalMs}
-                    selected={row.id === selectedEntryId}
-                    onSelect={onSelect}
-                  />
-                ))}
-              </ol>
+              {view === 'flow' ? (
+                <FlowDiagram
+                  group={group}
+                  selectedEntryId={selectedEntryId}
+                  onSelect={onSelect}
+                />
+              ) : (
+                <ol className="timeline">
+                  {group.rows.map((row) => (
+                    <TimelineRowView
+                      key={row.id}
+                      row={row}
+                      totalMs={group.totalMs}
+                      selected={row.id === selectedEntryId}
+                      onSelect={onSelect}
+                    />
+                  ))}
+                </ol>
+              )}
             </section>
           ))
         )}
@@ -1062,6 +1120,222 @@ function TimelineRowView({
       ) : null}
     </li>
   )
+}
+
+type PanelView = 'waterfall' | 'flow'
+
+interface FlowMessage {
+  id: string
+  label: string
+  detail: string
+  fromIndex: number
+  toIndex: number
+  tone: TimelineTone
+  durationMs?: number
+}
+
+interface FlowModel {
+  participants: string[]
+  messages: FlowMessage[]
+}
+
+const flowLaneWidth = 118
+const flowMarginX = 14
+const flowHeaderHeight = 48
+const flowRowHeight = 46
+const flowSelfLoopWidth = 26
+
+/** Projects the waterfall rows onto lifelines so a turn reads as one sequence over time. */
+function buildFlowModel(group: TimelineGroup): FlowModel {
+  const participants: string[] = []
+  const laneFor = (name: string) => {
+    const existing = participants.indexOf(name)
+    if (existing >= 0) {
+      return existing
+    }
+
+    participants.push(name)
+    return participants.length - 1
+  }
+
+  const messages = group.rows.map<FlowMessage>((row) => ({
+    id: row.id,
+    label: row.label,
+    detail: row.sublabel,
+    fromIndex: laneFor(row.from),
+    toIndex: laneFor(row.to),
+    tone: row.tone,
+    durationMs: row.durationMs,
+  }))
+
+  return { participants, messages }
+}
+
+function FlowDiagram({
+  group,
+  selectedEntryId,
+  onSelect,
+}: {
+  group: TimelineGroup
+  selectedEntryId?: string
+  onSelect: (entryId?: string) => void
+}) {
+  const model = useMemo(() => buildFlowModel(group), [group])
+  const width = flowMarginX * 2 + model.participants.length * flowLaneWidth
+  const height = flowHeaderHeight + model.messages.length * flowRowHeight + 12
+  const laneX = (index: number) =>
+    flowMarginX + index * flowLaneWidth + flowLaneWidth / 2
+  const selectedRow = group.rows.find((row) => row.id === selectedEntryId)
+
+  return (
+    <div className="flow-view">
+      <div className="flow-canvas">
+        <svg
+          className="flow-svg"
+          width={width}
+          height={height}
+          viewBox={`0 0 ${width} ${height}`}
+          role="group"
+          aria-label={`${group.title} sequence`}
+        >
+          {model.participants.map((participant, index) => (
+            <g className="flow-lane" key={participant}>
+              <title>{participant}</title>
+              <rect
+                x={laneX(index) - flowLaneWidth / 2 + 6}
+                y={8}
+                width={flowLaneWidth - 12}
+                height={26}
+                rx={7}
+              />
+              <text x={laneX(index)} y={25} textAnchor="middle">
+                {truncateLabel(participant, 16)}
+              </text>
+              <line
+                x1={laneX(index)}
+                y1={flowHeaderHeight - 6}
+                x2={laneX(index)}
+                y2={height - 8}
+              />
+            </g>
+          ))}
+          {model.messages.map((message, index) => (
+            <FlowMessageView
+              key={message.id}
+              message={message}
+              index={index}
+              width={width}
+              laneCount={model.participants.length}
+              laneX={laneX}
+              selected={message.id === selectedEntryId}
+              onSelect={onSelect}
+            />
+          ))}
+        </svg>
+      </div>
+      {selectedRow ? (
+        <div className="flow-detail">
+          <p className="flow-detail-title">{selectedRow.label}</p>
+          {selectedRow.sections.map((section) => (
+            <HttpSection
+              key={section.label}
+              label={section.label}
+              value={section.value}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function FlowMessageView({
+  message,
+  index,
+  width,
+  laneCount,
+  laneX,
+  selected,
+  onSelect,
+}: {
+  message: FlowMessage
+  index: number
+  width: number
+  laneCount: number
+  laneX: (index: number) => number
+  selected: boolean
+  onSelect: (entryId?: string) => void
+}) {
+  const rowTop = flowHeaderHeight + index * flowRowHeight
+  const arrowY = rowTop + flowRowHeight - 18
+  const fromX = laneX(message.fromIndex)
+  const toX = laneX(message.toIndex)
+  const isSelf = message.fromIndex === message.toIndex
+  // A self-call on the right-most lane loops to the left so its label stays on the canvas.
+  const selfSide = message.fromIndex === laneCount - 1 ? -1 : 1
+  const direction = isSelf ? -selfSide : toX > fromX ? 1 : -1
+  const loopX = fromX + selfSide * flowSelfLoopWidth
+  const tipX = isSelf ? fromX + selfSide * 8 : toX - direction * 7
+  const headX = isSelf ? fromX : toX
+  const labelX = isSelf ? loopX + selfSide * 12 : (fromX + toX) / 2
+  const labelAnchor = isSelf ? (selfSide === 1 ? 'start' : 'end') : 'middle'
+  const labelSpan = isSelf ? flowLaneWidth : Math.abs(toX - fromX) + 24
+  const toggle = () => onSelect(selected ? undefined : message.id)
+
+  return (
+    <g
+      id={`entry-${message.id}`}
+      className={`flow-message ${message.tone}${selected ? ' selected' : ''}`}
+      role="button"
+      tabIndex={0}
+      aria-pressed={selected}
+      onClick={toggle}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          toggle()
+        }
+      }}
+    >
+      <title>{`${message.label} — ${message.detail}`}</title>
+      <rect
+        className="flow-hit"
+        x={0}
+        y={rowTop}
+        width={width}
+        height={flowRowHeight}
+      />
+      {isSelf ? (
+        <path
+          className="flow-arrow"
+          d={`M ${fromX} ${arrowY - 12} L ${loopX} ${arrowY - 12} L ${loopX} ${arrowY} L ${tipX} ${arrowY}`}
+          fill="none"
+        />
+      ) : (
+        <line
+          className="flow-arrow"
+          x1={fromX}
+          y1={arrowY}
+          x2={tipX}
+          y2={arrowY}
+        />
+      )}
+      <polygon
+        className="flow-head"
+        points={`${headX},${arrowY} ${headX - direction * 8},${arrowY - 4} ${headX - direction * 8},${arrowY + 4}`}
+      />
+      <text className="flow-label" x={labelX} y={arrowY - 9} textAnchor={labelAnchor}>
+        {truncateLabel(message.label, Math.max(10, Math.floor(labelSpan / 5.4)))}
+      </text>
+      <text className="flow-meta" x={labelX} y={arrowY + 13} textAnchor={labelAnchor}>
+        {message.durationMs !== undefined ? formatDuration(message.durationMs) : '—'}
+      </text>
+    </g>
+  )
+}
+
+function truncateLabel(value: string, maxLength: number) {
+  return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value
 }
 
 function computeSpanDepths(spans: AdapterTraceSpan[]) {

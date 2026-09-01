@@ -47,7 +47,11 @@ visible: a developer-tools style vertical timeline of the whole session, grouped
 Selecting any chip or pill expands the matching entry there and scrolls it into view. Each
 entry shows the HTTP method and URL, safe request headers, JSON-RPC body, HTTP status,
 duration, and response body, plus the correlated caller-scoped adapter trace spans (server,
-internal, OBO, networking, and Copilot Studio). The delegated bearer token is always
+internal, OBO, networking, and Copilot Studio). The column offers two views of the same
+entries: **Waterfall** is the vertical timeline described above, and **Flow** draws each turn
+as a live sequence diagram where every participant (browser, adapter, Microsoft Entra ID,
+Copilot Studio API) gets a lifeline and every span becomes a message arrow; selecting an
+arrow reveals the same details. The delegated bearer token is always
 displayed as `[redacted]`, and connection URLs, conversation URLs, credentials, and token
 fields remain redacted.
 
