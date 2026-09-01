@@ -1,4 +1,5 @@
 using System.IdentityModel.Tokens.Jwt;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Agents.Core.Models;
@@ -14,9 +15,14 @@ public sealed record CopilotInvocationResult(
     string? ConversationId,
     string? ResponseId);
 
+public sealed record CopilotInvocationUpdate(
+    string Text,
+    string? ConversationId,
+    string? ResponseId);
+
 public interface ICopilotStudioInvoker
 {
-    Task<CopilotInvocationResult> InvokeAsync(
+    IAsyncEnumerable<CopilotInvocationUpdate> StreamAsync(
         string prompt,
         A2ARequestMetadata metadata,
         CancellationToken cancellationToken);
@@ -28,10 +34,10 @@ public sealed class MockCopilotStudioInvoker : ICopilotStudioInvoker
 
     public int InvocationCount => _invocationCount;
 
-    public Task<CopilotInvocationResult> InvokeAsync(
+    public async IAsyncEnumerable<CopilotInvocationUpdate> StreamAsync(
         string prompt,
         A2ARequestMetadata metadata,
-        CancellationToken cancellationToken)
+        [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         using var traceActivity = AdapterTelemetry.StartActivity("copilot_studio.mock.invoke");
         traceActivity?.SetTag("copilot_studio.backend", "mock");
@@ -43,10 +49,11 @@ public sealed class MockCopilotStudioInvoker : ICopilotStudioInvoker
             ? string.Empty
             : $" | context: {metadata.History.Count} earlier turns";
 
-        return Task.FromResult(new CopilotInvocationResult(
+        await Task.Yield();
+        yield return new CopilotInvocationUpdate(
             $"mock-copilot-studio[{invocation}]: {prompt}{historySuffix}",
             conversationId,
-            $"mock-response-{invocation}"));
+            $"mock-response-{invocation}");
     }
 }
 
@@ -152,10 +159,10 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
             StringComparer.OrdinalIgnoreCase);
     }
 
-    public async Task<CopilotInvocationResult> InvokeAsync(
+    public async IAsyncEnumerable<CopilotInvocationUpdate> StreamAsync(
         string prompt,
         A2ARequestMetadata metadata,
-        CancellationToken cancellationToken)
+        [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         using var traceActivity = AdapterTelemetry.StartActivity("copilot_studio.invoke");
         traceActivity?.SetTag("copilot_studio.backend", "sdk");
@@ -172,25 +179,39 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
             agent.DisplayName,
             metadata.AgentId,
             metadata.ContextId);
-        try
+        await using var enumerator = StreamCoreAsync(
+                agent, prompt, metadata, traceActivity, cancellationToken)
+            .GetAsyncEnumerator(cancellationToken);
+        while (true)
         {
-            return await InvokeCoreAsync(
-                agent, prompt, metadata, traceActivity, cancellationToken);
-        }
-        catch (Exception exception)
-        {
-            GenAiTelemetry.RecordFailure(genAiActivity, exception);
-            throw;
+            bool hasNext;
+            try
+            {
+                hasNext = await enumerator.MoveNextAsync();
+            }
+            catch (Exception exception)
+            {
+                GenAiTelemetry.RecordFailure(genAiActivity, exception);
+                throw;
+            }
+
+            if (!hasNext)
+            {
+                yield break;
+            }
+
+            yield return enumerator.Current;
         }
     }
 
-    private async Task<CopilotInvocationResult> InvokeCoreAsync(
+    private async IAsyncEnumerable<CopilotInvocationUpdate> StreamCoreAsync(
         CopilotStudioAgentRuntime agent,
         string prompt,
         A2ARequestMetadata metadata,
         System.Diagnostics.Activity? traceActivity,
-        CancellationToken cancellationToken)
-    {        var isAppOnlyCaller = TokenInspector.IsAppOnly(metadata.BearerToken ?? string.Empty);
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var isAppOnlyCaller = TokenInspector.IsAppOnly(metadata.BearerToken ?? string.Empty);
         var accessToken = await _tokenBroker.AcquireAsync(agent.Scope, metadata, cancellationToken);
         var client = CreateClient(agent.ConnectionSettings, accessToken);
 
@@ -204,51 +225,72 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
         // replayed when a new conversation has to be started for an existing A2A context.
         var promptWithHistory = ConversationTranscript.Prepend(prompt, metadata.History);
 
-        try
+        var effectivePrompt = cachedConversationId is null ? promptWithHistory : prompt;
+        var restarted = false;
+        while (true)
         {
-            return await ExecuteTurnAsync(
-                client,
-                cachedConversationId is null ? promptWithHistory : prompt,
-                metadata,
-                cachedConversationId,
-                cancellationToken);
-        }
-        // An app-only caller needs the CopilotStudio.Copilots.Invoke *application* role, which is
-        // separate from the delegated permission the user flow relies on. Without it Copilot
-        // Studio answers 403, which is otherwise indistinguishable from an agent-level denial.
-        // The Copilot Studio client does not always populate StatusCode, so match the message too.
-        catch (HttpRequestException exception) when (isAppOnlyCaller &&
-            (exception.StatusCode == System.Net.HttpStatusCode.Forbidden ||
-             exception.Message.Contains("Forbidden", StringComparison.OrdinalIgnoreCase)))
-        {
-            throw new AdapterRequestException(
-                "Copilot Studio rejected an application-only call with 403. Grant the " +
-                "'CopilotStudio.Copilots.Invoke' application permission to the adapter app " +
-                "registration and have an administrator consent to it, or call the adapter with " +
-                "a delegated user token instead.");
-        }
-        catch (Exception exception) when (cachedConversationId is not null
-                                          && exception is not OperationCanceledException)
-        {
-            traceActivity?.AddEvent(new System.Diagnostics.ActivityEvent(
-                "copilot_studio.conversation.restart"));
-            traceActivity?.SetTag("copilot_studio.conversation.restarted", true);
-            // Copilot Studio expires conversations on its own schedule, so a cached id can be
-            // dead well before our local TTL lapses. Drop it and start a fresh conversation once.
-            _logger.LogWarning(
-                exception,
-                "Cached Copilot Studio conversation was rejected; restarting the conversation once.");
-            _conversationStore.Remove(metadata.UserId, metadata.AgentId, metadata.ContextId);
-            return await ExecuteTurnAsync(client, promptWithHistory, metadata, null, cancellationToken);
+            var emitted = false;
+            await using var enumerator = ExecuteTurnStreamAsync(
+                    client,
+                    effectivePrompt,
+                    metadata,
+                    cachedConversationId,
+                    cancellationToken)
+                .GetAsyncEnumerator(cancellationToken);
+
+            while (true)
+            {
+                bool hasNext;
+                try
+                {
+                    hasNext = await enumerator.MoveNextAsync();
+                }
+                // An app-only caller needs the CopilotStudio.Copilots.Invoke application role.
+                catch (HttpRequestException exception) when (isAppOnlyCaller &&
+                    (exception.StatusCode == System.Net.HttpStatusCode.Forbidden ||
+                     exception.Message.Contains("Forbidden", StringComparison.OrdinalIgnoreCase)))
+                {
+                    throw new AdapterRequestException(
+                        "Copilot Studio rejected an application-only call with 403. Grant the " +
+                        "'CopilotStudio.Copilots.Invoke' application permission to the adapter app " +
+                        "registration and have an administrator consent to it, or call the adapter with " +
+                        "a delegated user token instead.");
+                }
+                catch (Exception exception) when (!emitted &&
+                                                  cachedConversationId is not null &&
+                                                  !restarted &&
+                                                  exception is not OperationCanceledException)
+                {
+                    traceActivity?.AddEvent(new System.Diagnostics.ActivityEvent(
+                        "copilot_studio.conversation.restart"));
+                    traceActivity?.SetTag("copilot_studio.conversation.restarted", true);
+                    _logger.LogWarning(
+                        exception,
+                        "Cached Copilot Studio conversation was rejected; restarting the conversation once.");
+                    _conversationStore.Remove(metadata.UserId, metadata.AgentId, metadata.ContextId);
+                    cachedConversationId = null;
+                    effectivePrompt = promptWithHistory;
+                    restarted = true;
+                    break;
+                }
+
+                if (!hasNext)
+                {
+                    yield break;
+                }
+
+                emitted = true;
+                yield return enumerator.Current;
+            }
         }
     }
 
-    private async Task<CopilotInvocationResult> ExecuteTurnAsync(
+    private async IAsyncEnumerable<CopilotInvocationUpdate> ExecuteTurnStreamAsync(
         CopilotClient client,
         string prompt,
         A2ARequestMetadata metadata,
         string? conversationId,
-        CancellationToken cancellationToken)
+        [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         using var traceActivity = AdapterTelemetry.StartActivity("copilot_studio.execute_turn");
         traceActivity?.SetTag("copilot_studio.conversation.reused", conversationId is not null);
@@ -284,28 +326,46 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
                 client, conversationId, oauthCard.Value, metadata, cancellationToken);
         }
 
-        var (text, responseId, cardDuringTurn) = await CollectAnswerAsync(
+        var answer = ReadAnswerStreamAsync(
             client.AskQuestionAsync(prompt, conversationId, cancellationToken),
+            conversationId,
             cancellationToken);
+        var emittedText = false;
+        OAuthCardInfo? cardDuringTurn = null;
+        await foreach (var item in answer)
+        {
+            cardDuringTurn ??= item.Card;
+            if (item.Update is not null)
+            {
+                emittedText = true;
+                yield return item.Update;
+            }
+        }
 
         // The card can also arrive in response to the user's message rather than at startup.
-        if (text.Length == 0 && cardDuringTurn is not null)
+        if (!emittedText && cardDuringTurn is not null)
         {
             traceActivity?.SetTag("copilot_studio.token_exchange.required", true);
             await PerformTokenExchangeAsync(
                 client, conversationId, cardDuringTurn.Value, metadata, cancellationToken);
 
-            var continuation = await CollectAnswerAsync(
+            await foreach (var item in ReadAnswerStreamAsync(
                 client.ExecuteAsync(
                     conversationId,
                     CreateMessageActivity(prompt),
                     cancellationToken),
-                cancellationToken);
-            text = continuation.Text;
-            responseId = continuation.ResponseId ?? responseId;
+                conversationId,
+                cancellationToken))
+            {
+                if (item.Update is not null)
+                {
+                    emittedText = true;
+                    yield return item.Update;
+                }
+            }
         }
 
-        if (text.Length == 0)
+        if (!emittedText)
         {
             throw new InvalidOperationException(
                 "Copilot Studio returned no message activity for the delegated request.");
@@ -318,17 +378,16 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
             conversationId);
         traceActivity?.SetTag("copilot_studio.response.present", true);
         traceActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
-        return new CopilotInvocationResult(text, conversationId, responseId);
     }
 
-    private static async Task<(string Text, string? ResponseId, OAuthCardInfo? Card)> CollectAnswerAsync(
+    private static async IAsyncEnumerable<AnswerStreamItem> ReadAnswerStreamAsync(
         IAsyncEnumerable<IActivity> activities,
-        CancellationToken cancellationToken)
+        string conversationId,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         using var traceActivity = AdapterTelemetry.StartActivity("copilot_studio.collect_answer");
-        var builder = new StringBuilder();
-        string? responseId = null;
-        OAuthCardInfo? card = null;
+        var responsePresent = false;
+        var needsSeparator = false;
 
         await foreach (var activity in activities.WithCancellation(cancellationToken))
         {
@@ -337,26 +396,33 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
                 continue;
             }
 
-            responseId = activity.Id ?? responseId;
-            card ??= ExtractOAuthCard(activity);
+            var card = ExtractOAuthCard(activity);
+            if (card is not null)
+            {
+                yield return new AnswerStreamItem(null, card);
+            }
 
             if (string.Equals(activity.Type, "message", StringComparison.OrdinalIgnoreCase) &&
                 !string.IsNullOrWhiteSpace(activity.Text))
             {
-                if (builder.Length > 0)
-                {
-                    builder.AppendLine();
-                }
-
-                builder.Append(activity.Text);
+                var text = needsSeparator
+                    ? Environment.NewLine + activity.Text
+                    : activity.Text;
+                needsSeparator = true;
+                responsePresent = true;
+                yield return new AnswerStreamItem(
+                    new CopilotInvocationUpdate(text, conversationId, activity.Id),
+                    null);
             }
         }
 
-        traceActivity?.SetTag("copilot_studio.response.present", builder.Length > 0);
-        traceActivity?.SetTag("copilot_studio.oauth_card.present", card is not null);
+        traceActivity?.SetTag("copilot_studio.response.present", responsePresent);
         traceActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
-        return (builder.ToString(), responseId, card);
     }
+
+    private sealed record AnswerStreamItem(
+        CopilotInvocationUpdate? Update,
+        OAuthCardInfo? Card);
 
     /// <summary>
     /// Answers the agent's OAuthCard challenge with the caller's own token so Copilot Studio

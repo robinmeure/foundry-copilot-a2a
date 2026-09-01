@@ -42,14 +42,14 @@ The frontend is available at `http://localhost:5173`.
 Every network call is part of the conversation. The user bubble carries the outgoing
 `POST /a2a/copilot-studio` chip with its status and duration, the hops the adapter made
 appear as pills between the two bubbles, and the agent bubble carries the response chip
-with its status, duration, and span count. Selecting any of them opens the **Network**
-drawer on the right: a developer-tools style vertical timeline of the whole session,
-grouped per turn, with the selected entry expanded and scrolled into view. Each entry
-shows the HTTP method and URL, safe request headers, JSON-RPC body, HTTP status, duration,
-and response body, plus the correlated caller-scoped adapter trace spans (server, internal,
-OBO, networking, and Copilot Studio). The delegated bearer token is always displayed as
-`[redacted]`, and connection URLs, conversation URLs, credentials, and token fields remain
-redacted.
+with its status, duration, and span count. The **Network** column on the right is always
+visible: a developer-tools style vertical timeline of the whole session, grouped per turn.
+Selecting any chip or pill expands the matching entry there and scrolls it into view. Each
+entry shows the HTTP method and URL, safe request headers, JSON-RPC body, HTTP status,
+duration, and response body, plus the correlated caller-scoped adapter trace spans (server,
+internal, OBO, networking, and Copilot Studio). The delegated bearer token is always
+displayed as `[redacted]`, and connection URLs, conversation URLs, credentials, and token
+fields remain redacted.
 
 In the composer, **Enter** sends and **Shift + Enter** adds a new line.
 

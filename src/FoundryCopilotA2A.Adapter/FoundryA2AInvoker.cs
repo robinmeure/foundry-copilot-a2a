@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using Azure.Core;
@@ -7,7 +8,7 @@ namespace FoundryCopilotA2A.Adapter;
 
 public interface IAgentInvoker
 {
-    Task<CopilotInvocationResult> InvokeAsync(
+    IAsyncEnumerable<CopilotInvocationUpdate> StreamAsync(
         string prompt,
         A2ARequestMetadata metadata,
         CancellationToken cancellationToken);
@@ -18,15 +19,15 @@ public sealed class RoutingAgentInvoker(
     ICopilotStudioInvoker copilotStudioInvoker,
     FoundryA2AInvoker foundryInvoker) : IAgentInvoker
 {
-    public Task<CopilotInvocationResult> InvokeAsync(
+    public IAsyncEnumerable<CopilotInvocationUpdate> StreamAsync(
         string prompt,
         A2ARequestMetadata metadata,
         CancellationToken cancellationToken) =>
         catalog.ResolveAgent(metadata.AgentId).ProviderKind switch
         {
-            AgentProvider.CopilotStudio => copilotStudioInvoker.InvokeAsync(
+            AgentProvider.CopilotStudio => copilotStudioInvoker.StreamAsync(
                 prompt, metadata, cancellationToken),
-            AgentProvider.Foundry => foundryInvoker.InvokeAsync(
+            AgentProvider.Foundry => foundryInvoker.StreamAsync(
                 prompt, metadata, cancellationToken),
             _ => throw new AdapterRequestException(
                 $"Agent '{metadata.AgentId}' has an unsupported provider.")
@@ -41,10 +42,10 @@ public sealed class FoundryA2AInvoker(
     private static readonly TokenRequestContext TokenRequest =
         new(["https://ai.azure.com/.default"]);
 
-    public async Task<CopilotInvocationResult> InvokeAsync(
+    public async IAsyncEnumerable<CopilotInvocationUpdate> StreamAsync(
         string prompt,
         A2ARequestMetadata metadata,
-        CancellationToken cancellationToken)
+        [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         using var activity = AdapterTelemetry.StartActivity("foundry.a2a.invoke");
         activity?.SetTag("foundry.agent.id", metadata.AgentId);
@@ -88,9 +89,10 @@ public sealed class FoundryA2AInvoker(
                 metadata.ContextId,
                 $"Copilot Studio specialist reached through the A2A adapter.");
 
+        CopilotInvocationResult result;
         try
         {
-            return await InvokeCoreAsync(
+            result = await InvokeCoreAsync(
                 agent,
                 effectivePrompt,
                 metadata,
@@ -104,6 +106,11 @@ public sealed class FoundryA2AInvoker(
             GenAiTelemetry.RecordFailure(workflowActivity, exception);
             throw;
         }
+
+        yield return new CopilotInvocationUpdate(
+            result.Text,
+            result.ConversationId,
+            result.ResponseId);
     }
 
     private async Task<CopilotInvocationResult> InvokeCoreAsync(
@@ -112,7 +119,8 @@ public sealed class FoundryA2AInvoker(
         A2ARequestMetadata metadata,
         System.Diagnostics.Activity? activity,
         CancellationToken cancellationToken)
-    {        var token = await credential.GetTokenAsync(TokenRequest, cancellationToken);
+    {
+        var token = await credential.GetTokenAsync(TokenRequest, cancellationToken);
         var requestId = Guid.NewGuid().ToString("N");
         var body = JsonSerializer.Serialize(new
         {

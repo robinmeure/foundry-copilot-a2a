@@ -33,6 +33,46 @@ public sealed class A2AAdapterTests : IClassFixture<A2AAdapterFactory>
         Assert.Contains("https://adapter.test/a2a/copilot-studio", content);
         Assert.Contains("JSONRPC", content);
         Assert.Contains("\"supportedInterfaces\"", content);
+        Assert.Contains("\"streaming\":true", content);
+    }
+
+    [Fact]
+    public async Task StreamingMessageReturnsServerSentEvents()
+    {
+        var before = Invoker.InvocationCount;
+        using var response = await SendStreamingMessageAsync(
+            NewId(),
+            "ctx-stream",
+            "stream this response");
+        var content = await response.Content.ReadAsStringAsync();
+
+        response.EnsureSuccessStatusCode();
+        Assert.Equal("text/event-stream", response.Content.Headers.ContentType?.MediaType);
+        Assert.Contains("data:", content);
+        Assert.Contains("mock-copilot-studio", content);
+        Assert.Contains("stream this response", content);
+        Assert.Equal(before + 1, Invoker.InvocationCount);
+    }
+
+    [Fact]
+    public async Task CompletedStreamingMessageIsReplayedWithoutReinvocation()
+    {
+        var before = Invoker.InvocationCount;
+        var messageId = NewId();
+
+        using var first = await SendStreamingMessageAsync(
+            messageId,
+            "ctx-stream-replay",
+            "replay streamed response");
+        var firstContent = await first.Content.ReadAsStringAsync();
+        using var second = await SendStreamingMessageAsync(
+            messageId,
+            "ctx-stream-replay",
+            "replay streamed response");
+        var secondContent = await second.Content.ReadAsStringAsync();
+
+        Assert.Equal(firstContent, secondContent);
+        Assert.Equal(before + 1, Invoker.InvocationCount);
     }
 
     [Fact]
@@ -605,6 +645,36 @@ public sealed class A2AAdapterTests : IClassFixture<A2AAdapterFactory>
                 }
             },
             new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+    private Task<HttpResponseMessage> SendStreamingMessageAsync(
+        string messageId,
+        string contextId,
+        string text)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, AdapterConstants.RuntimePath)
+        {
+            Content = JsonContent.Create(
+                new
+                {
+                    jsonrpc = "2.0",
+                    id = messageId,
+                    method = "SendStreamingMessage",
+                    @params = new
+                    {
+                        message = new
+                        {
+                            role = "ROLE_USER",
+                            parts = new[] { new { text } },
+                            messageId,
+                            contextId
+                        }
+                    }
+                },
+                options: new JsonSerializerOptions(JsonSerializerDefaults.Web))
+        };
+        request.Headers.Add("A2A-Version", "1.0");
+        return _client.SendAsync(request);
+    }
 
 }
 

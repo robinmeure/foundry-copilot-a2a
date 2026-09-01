@@ -1,4 +1,6 @@
 using System.Runtime.CompilerServices;
+using System.Text;
+using System.Threading.Channels;
 using A2A;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Caching.Memory;
@@ -18,53 +20,17 @@ public sealed class CopilotStudioAdapterChatClient(
         CancellationToken cancellationToken = default)
     {
         using var activity = AdapterTelemetry.StartActivity("a2a.adapter.get_response");
-        var prompt = messages.LastOrDefault(message => message.Role == ChatRole.User)?.Text;
-        if (string.IsNullOrWhiteSpace(prompt))
-        {
-            throw new AdapterRequestException("An A2A request must contain a non-empty user message.");
-        }
-
-        var metadata = metadataAccessor.Current;
+        var (prompt, metadata, cacheKey, payloadHash) = PrepareRequest(messages);
         activity?.SetTag("copilot_studio.agent.id", metadata.AgentId);
         activity?.SetTag("a2a.context.present", metadata.ContextId is not null);
         activity?.SetTag("a2a.message_id.present", metadata.MessageId is not null);
-
-        if (metadata.MessageId is null)
-        {
-            // Replay protection is not optional: without a messageId a retry would repeat the
-            // side effect on the Copilot Studio side.
-            throw new AdapterRequestException(
-                "An A2A request must carry a messageId so the delegated call can be made idempotent.");
-        }
-
-        // The key must include the caller identity AND the conversation, otherwise a caller who
-        // reuses another caller's messageId is served that caller's cached response.
-        var cacheKey = IdempotencyStore.BuildKey(
-            metadata.UserId,
-            metadata.AgentId,
-            metadata.ContextId,
-            metadata.MessageId);
-        var payloadHash = metadata.PayloadHash ?? PayloadHash.ComputeFromPrompt(prompt);
 
         try
         {
             var result = await idempotencyStore.GetOrAddAsync(
                 cacheKey,
                 payloadHash,
-                async token =>
-                {
-                    var invocation = await invoker.InvokeAsync(prompt, metadata, token);
-                    if (CopilotStudioResponseClassifier.IsUnsupportedHarnessResponse(invocation.Text))
-                    {
-                        activity?.SetTag("copilot_studio.client.compatible", false);
-                        logger.LogWarning(
-                            "Agent {AgentId} returned the retired enhanced task completion response.",
-                            metadata.AgentId);
-                        return invocation with { Text = CopilotStudioResponseClassifier.Guidance };
-                    }
-
-                    return invocation;
-                },
+                token => StreamNormalizedAsync(prompt, metadata, activity, token),
                 cancellationToken);
             activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
             return ToChatResponse(result, metadata);
@@ -89,10 +55,51 @@ public sealed class CopilotStudioAdapterChatClient(
         ChatOptions? options = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var response = await GetResponseAsync(messages, options, cancellationToken);
-        foreach (var update in response.ToChatResponseUpdates())
+        using var activity = AdapterTelemetry.StartActivity("a2a.adapter.get_streaming_response");
+        var (prompt, metadata, cacheKey, payloadHash) = PrepareRequest(messages);
+        activity?.SetTag("copilot_studio.agent.id", metadata.AgentId);
+        activity?.SetTag("a2a.context.present", metadata.ContextId is not null);
+        activity?.SetTag("a2a.message_id.present", metadata.MessageId is not null);
+
+        var updates = idempotencyStore.GetOrAddStreaming(
+            cacheKey,
+            payloadHash,
+            token => StreamNormalizedAsync(prompt, metadata, activity, token),
+            cancellationToken);
+        await using var enumerator = updates.GetAsyncEnumerator(cancellationToken);
+        while (true)
         {
-            yield return update;
+            bool hasNext;
+            try
+            {
+                hasNext = await enumerator.MoveNextAsync();
+            }
+            catch (Exception exception) when (exception is not A2AException
+                                              && exception is not OperationCanceledException)
+            {
+                AdapterTelemetry.RecordFailure(activity, exception);
+                logger.LogError(
+                    exception,
+                    "Delegated agent streaming invocation failed for context {ContextId}.",
+                    metadata.ContextId);
+                throw new AdapterRequestException(
+                    $"The delegated agent invocation failed: {exception.Message}", exception);
+            }
+
+            if (!hasNext)
+            {
+                activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
+                yield break;
+            }
+
+            var update = enumerator.Current;
+            yield return new ChatResponseUpdate(ChatRole.Assistant, update.Text)
+            {
+                ConversationId = metadata.ContextId ?? update.ConversationId,
+                ResponseId = update.ResponseId,
+                MessageId = $"response-{metadata.MessageId}",
+                ModelId = metadata.AgentId
+            };
         }
     }
 
@@ -101,6 +108,53 @@ public sealed class CopilotStudioAdapterChatClient(
 
     public void Dispose()
     {
+    }
+
+    private (string Prompt, A2ARequestMetadata Metadata, string CacheKey, string PayloadHash)
+        PrepareRequest(IEnumerable<ChatMessage> messages)
+    {
+        var prompt = messages.LastOrDefault(message => message.Role == ChatRole.User)?.Text;
+        if (string.IsNullOrWhiteSpace(prompt))
+        {
+            throw new AdapterRequestException("An A2A request must contain a non-empty user message.");
+        }
+
+        var metadata = metadataAccessor.Current;
+        if (metadata.MessageId is null)
+        {
+            throw new AdapterRequestException(
+                "An A2A request must carry a messageId so the delegated call can be made idempotent.");
+        }
+
+        var cacheKey = IdempotencyStore.BuildKey(
+            metadata.UserId,
+            metadata.AgentId,
+            metadata.ContextId,
+            metadata.MessageId);
+        var payloadHash = metadata.PayloadHash ?? PayloadHash.ComputeFromPrompt(prompt);
+        return (prompt, metadata, cacheKey, payloadHash);
+    }
+
+    private async IAsyncEnumerable<CopilotInvocationUpdate> StreamNormalizedAsync(
+        string prompt,
+        A2ARequestMetadata metadata,
+        System.Diagnostics.Activity? activity,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await foreach (var update in invoker.StreamAsync(prompt, metadata, cancellationToken))
+        {
+            if (CopilotStudioResponseClassifier.IsUnsupportedHarnessResponse(update.Text))
+            {
+                activity?.SetTag("copilot_studio.client.compatible", false);
+                logger.LogWarning(
+                    "Agent {AgentId} returned the retired enhanced task completion response.",
+                    metadata.AgentId);
+                yield return update with { Text = CopilotStudioResponseClassifier.Guidance };
+                continue;
+            }
+
+            yield return update;
+        }
     }
 
     private static ChatResponse ToChatResponse(
@@ -198,10 +252,55 @@ public sealed class IdempotencyStore : IDisposable
     public async Task<CopilotInvocationResult> GetOrAddAsync(
         string key,
         string payloadHash,
-        Func<CancellationToken, Task<CopilotInvocationResult>> factory,
+        Func<CancellationToken, IAsyncEnumerable<CopilotInvocationUpdate>> factory,
         CancellationToken cancellationToken)
     {
         using var activity = AdapterTelemetry.StartActivity("a2a.idempotency.get_or_add");
+        var (entry, cacheHit) = GetOrCreateEntry(key, payloadHash, factory, activity);
+        activity?.SetTag("a2a.idempotency.cache_hit", cacheHit);
+
+        try
+        {
+            // Each caller waits with its OWN token. The shared work is never bound to whichever
+            // caller happened to create the entry, so one client disconnecting cannot cancel
+            // another client's in-flight request.
+            var response = await entry.Completion.WaitAsync(cancellationToken);
+            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
+            return response;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // This caller went away. Deliberately keep the entry: the delegated call may already
+            // have committed a side effect, and a retry must not repeat it.
+            throw;
+        }
+        catch
+        {
+            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error);
+            Evict(key, entry);
+            throw;
+        }
+    }
+
+    public IAsyncEnumerable<CopilotInvocationUpdate> GetOrAddStreaming(
+        string key,
+        string payloadHash,
+        Func<CancellationToken, IAsyncEnumerable<CopilotInvocationUpdate>> factory,
+        CancellationToken cancellationToken)
+    {
+        using var activity = AdapterTelemetry.StartActivity("a2a.idempotency.get_or_add_stream");
+        var (entry, cacheHit) = GetOrCreateEntry(key, payloadHash, factory, activity);
+        activity?.SetTag("a2a.idempotency.cache_hit", cacheHit);
+        activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
+        return entry.Subscribe(cancellationToken);
+    }
+
+    private (IdempotencyEntry Entry, bool CacheHit) GetOrCreateEntry(
+        string key,
+        string payloadHash,
+        Func<CancellationToken, IAsyncEnumerable<CopilotInvocationUpdate>> factory,
+        System.Diagnostics.Activity? activity)
+    {
         IdempotencyEntry entry;
         var cacheHit = false;
 
@@ -224,10 +323,9 @@ public sealed class IdempotencyStore : IDisposable
             {
                 entry = new IdempotencyEntry(
                     payloadHash,
-                    new Lazy<Task<CopilotInvocationResult>>(
-                        () => RunAsync(factory),
-                        LazyThreadSafetyMode.ExecutionAndPublication));
-
+                    factory,
+                    _operationTimeout,
+                    _applicationStopping);
                 _cache.Set(key, entry, new MemoryCacheEntryOptions
                 {
                     AbsoluteExpirationRelativeToNow = _ttl,
@@ -236,37 +334,13 @@ public sealed class IdempotencyStore : IDisposable
             }
         }
 
-        activity?.SetTag("a2a.idempotency.cache_hit", cacheHit);
-
-        try
-        {
-            // Each caller waits with its OWN token. The shared work is never bound to whichever
-            // caller happened to create the entry, so one client disconnecting cannot cancel
-            // another client's in-flight request.
-            var response = await entry.Response.Value.WaitAsync(cancellationToken);
-            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
-            return response;
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            // This caller went away. Deliberately keep the entry: the delegated call may already
-            // have committed a side effect, and a retry must not repeat it.
-            throw;
-        }
-        catch
-        {
-            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error);
-            Evict(key, entry);
-            throw;
-        }
-    }
-
-    private async Task<CopilotInvocationResult> RunAsync(
-        Func<CancellationToken, Task<CopilotInvocationResult>> factory)
-    {
-        using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(_applicationStopping);
-        timeoutSource.CancelAfter(_operationTimeout);
-        return await factory(timeoutSource.Token);
+        entry.Start();
+        _ = entry.Completion.ContinueWith(
+            _ => Evict(key, entry),
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        return (entry, cacheHit);
     }
 
     private void Evict(string key, IdempotencyEntry entry)
@@ -283,7 +357,169 @@ public sealed class IdempotencyStore : IDisposable
 
     public void Dispose() => _cache.Dispose();
 
-    private sealed record IdempotencyEntry(
-        string PayloadHash,
-        Lazy<Task<CopilotInvocationResult>> Response);
+    private sealed class IdempotencyEntry
+    {
+        private readonly Func<CancellationToken, IAsyncEnumerable<CopilotInvocationUpdate>> _factory;
+        private readonly TimeSpan _operationTimeout;
+        private readonly CancellationToken _applicationStopping;
+        private readonly Lock _gate = new();
+        private readonly List<CopilotInvocationUpdate> _updates = [];
+        private readonly HashSet<Channel<CopilotInvocationUpdate>> _subscribers = [];
+        private readonly TaskCompletionSource<CopilotInvocationResult> _completion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _started;
+        private bool _finished;
+
+        public IdempotencyEntry(
+            string payloadHash,
+            Func<CancellationToken, IAsyncEnumerable<CopilotInvocationUpdate>> factory,
+            TimeSpan operationTimeout,
+            CancellationToken applicationStopping)
+        {
+            PayloadHash = payloadHash;
+            _factory = factory;
+            _operationTimeout = operationTimeout;
+            _applicationStopping = applicationStopping;
+        }
+
+        public string PayloadHash { get; }
+
+        public Task<CopilotInvocationResult> Completion => _completion.Task;
+
+        public void Start()
+        {
+            if (Interlocked.Exchange(ref _started, 1) == 0)
+            {
+                _ = ProduceAsync();
+            }
+        }
+
+        public async IAsyncEnumerable<CopilotInvocationUpdate> Subscribe(
+            [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            Channel<CopilotInvocationUpdate>? channel = null;
+            CopilotInvocationUpdate[] replay;
+            lock (_gate)
+            {
+                replay = [.. _updates];
+                if (!_finished)
+                {
+                    channel = Channel.CreateUnbounded<CopilotInvocationUpdate>(
+                        new UnboundedChannelOptions
+                        {
+                            SingleReader = true,
+                            SingleWriter = true,
+                            AllowSynchronousContinuations = false
+                        });
+                    _subscribers.Add(channel);
+                }
+            }
+
+            foreach (var update in replay)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return update;
+            }
+
+            if (channel is null)
+            {
+                await Completion.WaitAsync(cancellationToken);
+                yield break;
+            }
+
+            try
+            {
+                await foreach (var update in channel.Reader.ReadAllAsync(cancellationToken))
+                {
+                    yield return update;
+                }
+            }
+            finally
+            {
+                lock (_gate)
+                {
+                    _subscribers.Remove(channel);
+                }
+            }
+        }
+
+        private async Task ProduceAsync()
+        {
+            using var timeoutSource =
+                CancellationTokenSource.CreateLinkedTokenSource(_applicationStopping);
+            timeoutSource.CancelAfter(_operationTimeout);
+            var text = new StringBuilder();
+            string? conversationId = null;
+            string? responseId = null;
+
+            try
+            {
+                await foreach (var update in _factory(timeoutSource.Token)
+                    .WithCancellation(timeoutSource.Token))
+                {
+                    if (string.IsNullOrEmpty(update.Text))
+                    {
+                        continue;
+                    }
+
+                    text.Append(update.Text);
+                    conversationId = update.ConversationId ?? conversationId;
+                    responseId = update.ResponseId ?? responseId;
+                    Publish(update);
+                }
+
+                if (text.Length == 0)
+                {
+                    throw new InvalidOperationException(
+                        "The delegated agent returned no text response.");
+                }
+
+                Complete(new CopilotInvocationResult(text.ToString(), conversationId, responseId));
+            }
+            catch (Exception exception)
+            {
+                Complete(exception);
+            }
+        }
+
+        private void Publish(CopilotInvocationUpdate update)
+        {
+            lock (_gate)
+            {
+                _updates.Add(update);
+                foreach (var subscriber in _subscribers)
+                {
+                    subscriber.Writer.TryWrite(update);
+                }
+            }
+        }
+
+        private void Complete(CopilotInvocationResult result)
+        {
+            lock (_gate)
+            {
+                _finished = true;
+                foreach (var subscriber in _subscribers)
+                {
+                    subscriber.Writer.TryComplete();
+                }
+            }
+
+            _completion.TrySetResult(result);
+        }
+
+        private void Complete(Exception exception)
+        {
+            lock (_gate)
+            {
+                _finished = true;
+                foreach (var subscriber in _subscribers)
+                {
+                    subscriber.Writer.TryComplete(exception);
+                }
+            }
+
+            _completion.TrySetException(exception);
+        }
+    }
 }

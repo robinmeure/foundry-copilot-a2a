@@ -37,7 +37,7 @@ public sealed class FoundryA2AInvokerTests
             """;
         var invoker = CreateInvoker(responseBody);
 
-        var result = await invoker.InvokeAsync(
+        var result = await CollectAsync(invoker.StreamAsync(
             "test prompt",
             new A2ARequestMetadata
             {
@@ -48,7 +48,7 @@ public sealed class FoundryA2AInvokerTests
                 PayloadHash = null,
                 BearerToken = null
             },
-            CancellationToken.None);
+            CancellationToken.None));
 
         Assert.Equal($"First line.{Environment.NewLine}Second line.", result.Text);
     }
@@ -72,7 +72,7 @@ public sealed class FoundryA2AInvokerTests
             """;
         var invoker = CreateInvoker(responseBody);
 
-        var result = await invoker.InvokeAsync(
+        var result = await CollectAsync(invoker.StreamAsync(
             "test prompt",
             new A2ARequestMetadata
             {
@@ -83,9 +83,25 @@ public sealed class FoundryA2AInvokerTests
                 PayloadHash = null,
                 BearerToken = null
             },
-            CancellationToken.None);
+            CancellationToken.None));
 
         Assert.Equal("Direct response.", result.Text);
+    }
+
+    private static async Task<CopilotInvocationResult> CollectAsync(
+        IAsyncEnumerable<CopilotInvocationUpdate> updates)
+    {
+        var text = new StringBuilder();
+        string? conversationId = null;
+        string? responseId = null;
+        await foreach (var update in updates)
+        {
+            text.Append(update.Text);
+            conversationId = update.ConversationId ?? conversationId;
+            responseId = update.ResponseId ?? responseId;
+        }
+
+        return new CopilotInvocationResult(text.ToString(), conversationId, responseId);
     }
 
     private static FoundryA2AInvoker CreateInvoker(string responseBody)

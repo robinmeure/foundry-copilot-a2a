@@ -339,13 +339,14 @@ public sealed class TimeoutContractTests
 
     private sealed class StallingInvoker : ICopilotStudioInvoker
     {
-        public async Task<CopilotInvocationResult> InvokeAsync(
+        public async IAsyncEnumerable<CopilotInvocationUpdate> StreamAsync(
             string prompt,
             A2ARequestMetadata metadata,
+            [System.Runtime.CompilerServices.EnumeratorCancellation]
             CancellationToken cancellationToken)
         {
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-            throw new UnreachableException();
+            yield break;
         }
     }
 }

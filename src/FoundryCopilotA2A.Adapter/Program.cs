@@ -300,7 +300,7 @@ IResult BuildChainAgentCard(string agentId, AgentCatalog catalog)
         protocolVersion = "0.3.0",
         capabilities = new
         {
-            streaming = false,
+            streaming = true,
             pushNotifications = false,
             stateTransitionHistory = false,
             extensions = Array.Empty<object>()
@@ -356,7 +356,7 @@ var agentCard = new AgentCard
     DefaultOutputModes = ["text/plain"],
     Capabilities = new AgentCapabilities
     {
-        Streaming = false,
+        Streaming = true,
         PushNotifications = false
     },
     SupportedInterfaces =

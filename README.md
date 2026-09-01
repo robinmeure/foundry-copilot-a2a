@@ -76,6 +76,18 @@ Remove the dropdown and the hint and the chain still works — the agent selects
 attached to its own definition. The console's Chain mode is a control surface over an autonomous
 decision, not a substitute for it.
 
+This distinction matters when APIM is introduced. APIM does not need to implement a local agent
+chain or decide which specialist should run. Each approved specialist is published through APIM as
+a separate A2A agent API and attached to the Foundry orchestrator as a separate A2A tool. Foundry
+continues to select the tool from its instructions and the user's request; APIM governs the selected
+tool call and forwards it to that specialist's target-specific adapter route.
+
+A single generic APIM A2A API would hide the available specialists from Foundry and force the
+adapter or APIM policy to become a second router. Keep one agent card and runtime surface per
+specialist instead. The optional `X-A2A-Chain-Target` header and prompt hint may still be used for
+explicit operator steering, tests, and demonstrations, but neither is required for autonomous
+Foundry orchestration.
+
 ### Where the token exchange actually happens
 
 Foundry does **not** perform OBO, and it does not hold a Copilot Studio token. The exchange is
@@ -120,24 +132,28 @@ grant. For this scenario the delegated path is the correct one.
 
 ### Is Dev Tunnel → App Service + APIM sufficient?
 
-**Directionally yes, but not as a drop-in URL swap.** The token chain survives unchanged: the
-APIM policy validates the same audience and issuers the adapter already validates, so Foundry's
-passthrough token and the adapter's OBO exchange keep working. Four things still need attention.
+**Yes. APIM does not need to reproduce the application's local Chain mode or perform agent
+orchestration.** The Foundry agent remains the orchestrator and selects among its attached A2A
+tools. The token chain also survives unchanged: the APIM policy validates the same audience and
+issuers the adapter already validates, so Foundry's passthrough token and the adapter's OBO
+exchange keep working. It is not a drop-in URL swap, however; four integration details still need
+attention.
 
 | Concern | Local today | After APIM / App Service |
 | --- | --- | --- |
 | Public reachability | Dev Tunnel, developer-bound, URL rotates | Stable APIM hostname |
 | Inbound authorisation | Adapter validates the JWT | APIM validates first, adapter validates again — defence in depth |
 | Rate limiting, correlation IDs, payload limits | None | Enforced at the edge, per tenant and user |
-| Chain routes `/a2a-agents/<id>/a2a` | Served | **Not yet exposed by APIM** |
+| Specialist routes `/a2a-agents/<id>/a2a` | Served | Import each as a separate A2A agent API |
 
-1. **APIM does not currently expose the chain routes.** It publishes only the root agent card and
-   the generic runtime (`/a2a/copilot-studio`). The target-specific routes that the chain depends
-   on are absent, so the Foundry-to-Copilot-Studio hop would break. These operations must be
-   added before the chain works behind APIM.
+1. **Expose each specialist, not a local chain.** If APIM publishes only the root agent card and
+   generic runtime (`/a2a/copilot-studio`), Foundry cannot discover and select the specialists as
+   distinct tools. Import each target-specific agent card and runtime
+   (`/a2a-agents/<id>/a2a`) as its own APIM A2A agent API, then attach those APIM-fronted APIs to
+   the Foundry agent. This is gateway configuration, not an APIM-side orchestration requirement.
 2. **The agent card must stay anonymous.** Foundry fetches agent cards without credentials. The
    card operations must remain unauthenticated while the runtime stays protected — the current
-   policy split already does this and must be preserved for the chain routes too.
+   policy split already does this and must be preserved for every specialist API.
 3. **Changing the URL is not an edit.** A Foundry OAuth connection stores its target URL and
    **cannot be updated in place**. Moving from the tunnel to APIM means deleting and recreating
    each connection, registering a new redirect URI, and re-consenting — once per specialist.
@@ -417,8 +433,18 @@ dotnet run --project src/FoundryCopilotA2A.Cli -- test-adapter
 Endpoints:
 
 - Agent card: `http://localhost:5099/.well-known/agent-card.json`
-- A2A JSON-RPC v1 (`SendMessage`): `http://localhost:5099/a2a/copilot-studio`
+- A2A JSON-RPC v1 (`SendMessage` and `SendStreamingMessage`):
+  `http://localhost:5099/a2a/copilot-studio`
 - Health: `http://localhost:5099/health`
+
+The agent cards advertise A2A streaming. Direct Copilot Studio requests are returned as
+server-sent events as message activities arrive, and the web console updates the assistant bubble
+progressively. Duplicate requests with the same caller, agent, context, and message ID share one
+backend invocation; completed updates can be replayed without repeating delegated work.
+
+Microsoft Foundry's incoming A2A endpoint currently returns only completed JSON-RPC responses.
+Requests routed through a Foundry agent therefore use the same streaming API but emit one final
+event. This preserves one browser contract without implying token-level streaming across Foundry.
 
 ## Run the authenticated web interface
 
@@ -453,9 +479,10 @@ endpoint into Vite, and keeps the mock backend runnable without Azure resources.
 
 In the console, every A2A call is attached to the message bubbles it belongs to: the user
 bubble carries the outgoing request chip, the adapter hops appear as pills between the
-bubbles, and the agent bubble carries the response chip. Selecting one opens the **Network**
-drawer, a vertical timeline of the whole session grouped per turn. **Enter** sends a message
-and **Shift + Enter** adds a new line.
+bubbles, and the agent bubble carries the response chip. The **Network** column on the right
+is always visible and shows a vertical timeline of the whole session grouped per turn;
+selecting a chip or pill expands the matching entry. **Enter** sends a message and
+**Shift + Enter** adds a new line.
 
 The console also relays the transcript: each request carries the prior turns as
 `params.message.metadata.history`, an array of `{ "role": "user" | "assistant", "text": … }`
@@ -580,7 +607,7 @@ The web console supports two execution modes:
 - **Direct** sends the request to one selected agent.
 - **Chain** sends the request to Foundry Agent A, which invokes the selected Copilot Studio
   Agent B through that agent's target-specific A2A adapter route. The route, per-agent output,
-  and trace timeline remain visible in the console's Network drawer.
+  and trace timeline remain visible in the console's Network column.
 
 For a custom adapter API, use Foundry OAuth identity passthrough. `UserEntraToken` is intended
 primarily for supported managed Microsoft services and can fail before the adapter is called
@@ -660,8 +687,10 @@ Each target still needs its own Foundry project connection pointing at that targ
 
 Consent is per connection and expires independently. Consenting to one specialist does nothing
 for the other, so with several targets expect to re-consent each one occasionally. The challenge
-surfaces as readable text in the agent's answer (`AUTHENTICATION REQUIRED ... Please visit ...`),
-so it is recoverable rather than opaque; the link is short-lived, so use it promptly.
+surfaces as readable text in the agent's answer (`AUTHENTICATION REQUIRED ... Please visit ...`).
+The web console recognizes HTTPS links on the Azure APIM consent domain and renders a focused
+consent action instead of the raw challenge; other URLs remain plain text. The link is short-lived,
+so use it promptly and resend the request afterward to create a new task.
 
 The agent's instructions must route by the requested specialist. An instruction that
 unconditionally sends every request through one tool — for example "for every user request, pass
@@ -993,8 +1022,17 @@ References:
 After the direct Foundry-to-adapter pass succeeds:
 
 1. Host the adapter on Azure Container Apps or another HTTPS service.
-2. Import its agent card into APIM as an A2A agent API.
+2. Import each approved specialist agent card into APIM as a separate A2A agent API.
 3. Configure Entra OAuth, rate limits, correlation IDs, metadata-only logging, and a kill
    switch.
-4. Change the Foundry A2A connection from the adapter URL to the APIM URL.
+4. Recreate each Foundry A2A connection against its corresponding APIM agent-card URL and attach
+   those connections as tools to the Foundry orchestrator.
 5. Repeat the same contract and identity tests.
+
+APIM mediates and governs the JSON-RPC calls; it does not choose the specialist. The Foundry
+agent makes that decision from its instructions and the tools attached to it. Consequently, the
+console's local Chain mode and `X-A2A-Chain-Target` steering are not prerequisites for APIM.
+Publishing only one generic APIM agent API would change that design by requiring a downstream
+router, so preserve the one-card-and-runtime-per-specialist model.
+
+Reference: [Import an A2A agent API into Azure API Management](https://learn.microsoft.com/azure/api-management/agent-to-agent-api).

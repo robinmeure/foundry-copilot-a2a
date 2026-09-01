@@ -54,6 +54,13 @@ interface TurnRecord {
   traceError?: string
 }
 
+interface ConsentRequest {
+  url: string
+}
+
+const consentRequiredMarker = 'AUTHENTICATION REQUIRED:'
+const consentUrlPattern = /https:\/\/[^\s<>"']+/i
+
 function App({ config }: AppProps) {
   const { accounts, instance } = useMsal()
   const isAuthenticated = useIsAuthenticated()
@@ -68,7 +75,6 @@ function App({ config }: AppProps) {
   const [selectedAgentBId, setSelectedAgentBId] = useState('')
   const [isSending, setIsSending] = useState(false)
   const [error, setError] = useState<string>()
-  const [isDrawerOpen, setIsDrawerOpen] = useState(false)
   const [selectedEntryId, setSelectedEntryId] = useState<string>()
   const messagesRef = useRef<HTMLDivElement>(null)
   const account = instance.getActiveAccount() ?? accounts[0]
@@ -130,24 +136,8 @@ function App({ config }: AppProps) {
     container?.scrollTo({ top: container.scrollHeight, behavior: 'smooth' })
   }, [turns])
 
-  useEffect(() => {
-    if (!isDrawerOpen) {
-      return
-    }
-
-    function onKeyDown(event: globalThis.KeyboardEvent) {
-      if (event.key === 'Escape') {
-        setIsDrawerOpen(false)
-      }
-    }
-
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [isDrawerOpen])
-
   const openEntry = useCallback((entryId: string) => {
     setSelectedEntryId(entryId)
-    setIsDrawerOpen(true)
   }, [])
 
   async function signIn() {
@@ -235,6 +225,7 @@ function App({ config }: AppProps) {
         history,
         chainTargetAgentId: mode === 'chain' ? selectedAgentBId : undefined,
         onRequest: (request) => updateTurn(turnId, { request, status: 'sending' }),
+        onUpdate: (answer) => updateTurn(turnId, { answer }),
         onResponse: (response, durationMs) =>
           updateTurn(turnId, { response, durationMs }),
         onTrace: (trace, traceError) => updateTurn(turnId, { trace, traceError }),
@@ -263,7 +254,6 @@ function App({ config }: AppProps) {
     setTurns([])
     setError(undefined)
     setSelectedEntryId(undefined)
-    setIsDrawerOpen(false)
   }
 
   function selectAgent(agentId: string) {
@@ -295,7 +285,7 @@ function App({ config }: AppProps) {
   }
 
   return (
-    <main className={`app-shell${isDrawerOpen ? ' drawer-open' : ''}`}>
+    <main className="app-shell">
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark" aria-hidden="true">A2A</span>
@@ -306,16 +296,6 @@ function App({ config }: AppProps) {
         </div>
         {isAuthenticated ? (
           <div className="account">
-            <button
-              className="button secondary network-toggle"
-              type="button"
-              onClick={() => setIsDrawerOpen((open) => !open)}
-              aria-expanded={isDrawerOpen}
-              aria-controls="network-drawer"
-            >
-              Network
-              <span className="network-count">{timeline.length}</span>
-            </button>
             <div>
               <strong>{account?.name ?? 'Signed-in user'}</strong>
               <span>{account?.username}</span>
@@ -501,16 +481,14 @@ function App({ config }: AppProps) {
           )}
           {error ? <div className="error" role="alert">{error}</div> : null}
         </section>
-      </section>
 
-      <NetworkDrawer
-        open={isDrawerOpen}
-        groups={timeline}
-        contextId={contextId}
-        selectedEntryId={selectedEntryId}
-        onSelect={setSelectedEntryId}
-        onClose={() => setIsDrawerOpen(false)}
-      />
+        <NetworkPanel
+          groups={timeline}
+          contextId={contextId}
+          selectedEntryId={selectedEntryId}
+          onSelect={setSelectedEntryId}
+        />
+      </section>
     </main>
   )
 }
@@ -533,6 +511,8 @@ function TurnBlock({
           type="button"
           className={`wire-chip out ${turn.status}`}
           onClick={() => onOpenEntry(requestEntryId(turn.id))}
+          aria-controls="network-panel"
+          title="Open this call in the network trace"
         >
           <span className="method-badge">{turn.request?.method ?? 'POST'}</span>
           <span className="wire-path">{requestPath(turn)}</span>
@@ -545,11 +525,13 @@ function TurnBlock({
       {turn.answer !== undefined ? (
         <article className="message assistant">
           <span>Specialist · {turn.agentName}</span>
-          <p>{turn.answer}</p>
+          <AssistantMessage answer={turn.answer} />
           <button
             type="button"
             className="wire-chip in succeeded"
             onClick={() => onOpenEntry(responseEntryId(turn.id))}
+            aria-controls="network-panel"
+            title="Open this response in the network trace"
           >
             <span className="wire-status">
               {turn.response?.status ?? 200} {turn.response?.statusText ?? 'OK'}
@@ -574,6 +556,8 @@ function TurnBlock({
                 turn.response ? responseEntryId(turn.id) : requestEntryId(turn.id),
               )
             }
+            aria-controls="network-panel"
+            title="Open this failure in the network trace"
           >
             <span className="wire-status">
               {turn.response
@@ -596,6 +580,54 @@ function TurnBlock({
       )}
     </section>
   )
+}
+
+function AssistantMessage({ answer }: { answer: string }) {
+  const consent = parseConsentRequest(answer)
+  if (!consent) {
+    return <p>{answer}</p>
+  }
+
+  return (
+    <div className="message-body consent-message" role="status">
+      <strong>Permission required</strong>
+      <p>
+        This specialist needs your permission before it can continue. Review and
+        approve the Microsoft consent request, then send your message again.
+      </p>
+      <a href={consent.url} target="_blank" rel="noopener noreferrer">
+        Review and grant consent
+        <span aria-hidden="true"> ↗</span>
+      </a>
+      <small>A new task will be created automatically when you retry.</small>
+    </div>
+  )
+}
+
+function parseConsentRequest(answer: string): ConsentRequest | undefined {
+  if (
+    !answer.includes(consentRequiredMarker) ||
+    !answer.toLowerCase().includes('user consent is required')
+  ) {
+    return undefined
+  }
+
+  const match = answer.match(consentUrlPattern)
+  if (!match) {
+    return undefined
+  }
+
+  try {
+    const url = new URL(match[0])
+    const isAzureApimConsentHost =
+      url.hostname === 'consent.azure-apim.net' ||
+      url.hostname.endsWith('.consent.azure-apim.net')
+    return url.protocol === 'https:' && isAzureApimConsentHost
+      ? { url: url.href }
+      : undefined
+  } catch {
+    return undefined
+  }
 }
 
 interface Hop {
@@ -624,6 +656,8 @@ function HopStrip({
             type="button"
             className={`hop-pill ${hop.tone}`}
             onClick={() => onOpenEntry(hop.entryId)}
+            aria-controls="network-panel"
+            title="Open this hop in the network trace"
           >
             <span>{hop.label}</span>
             {hop.durationMs !== undefined ? (
@@ -874,34 +908,30 @@ function buildSpanSections(span: AdapterTraceSpan): TimelineSection[] {
   return sections
 }
 
-function NetworkDrawer({
-  open,
+function NetworkPanel({
   groups,
   contextId,
   selectedEntryId,
   onSelect,
-  onClose,
 }: {
-  open: boolean
   groups: TimelineGroup[]
   contextId: string
   selectedEntryId?: string
   onSelect: (entryId: string) => void
-  onClose: () => void
 }) {
   useEffect(() => {
-    if (!open || !selectedEntryId) {
+    if (!selectedEntryId) {
       return
     }
 
     const node = document.getElementById(`entry-${selectedEntryId}`)
-    const container = node?.closest('.drawer-body')
+    const container = node?.closest('.panel-body')
     if (!node || !container) {
       return
     }
 
-    // Scrolling the entry into view must never move the page behind the drawer, so the
-    // scroll is applied to the drawer body itself.
+    // Scrolling the entry into view must never move the page itself, so the scroll is
+    // applied to the panel body.
     const nodeRect = node.getBoundingClientRect()
     const containerRect = container.getBoundingClientRect()
     container.scrollBy({
@@ -912,18 +942,13 @@ function NetworkDrawer({
         nodeRect.height / 2,
       behavior: 'smooth',
     })
-  }, [open, selectedEntryId, groups])
+  }, [selectedEntryId, groups])
 
   const totalMs = groups.reduce((sum, group) => sum + group.totalMs, 0)
   const rowCount = groups.reduce((sum, group) => sum + group.rows.length, 0)
 
   return (
-    <aside
-      id="network-drawer"
-      className={`network-drawer${open ? ' open' : ''}`}
-      aria-label="Network trace"
-      aria-hidden={!open}
-    >
+    <aside id="network-panel" className="network-panel" aria-label="Network trace">
       <header>
         <div>
           <strong>Network</strong>
@@ -932,26 +957,18 @@ function NetworkDrawer({
             {rowCount} entries · {formatDuration(totalMs)}
           </span>
         </div>
-        <button
-          type="button"
-          className="drawer-close"
-          onClick={onClose}
-          aria-label="Close the network trace"
-        >
-          ×
-        </button>
       </header>
-      <p className="drawer-context">
+      <p className="panel-context">
         Conversation <code>{contextId}</code>
       </p>
-      <div className="drawer-legend">
+      <div className="panel-legend">
         <span><i className="server" /> Server</span>
         <span><i className="client" /> Client</span>
         <span><i className="internal" /> Internal</span>
       </div>
-      <div className="drawer-body">
+      <div className="panel-body">
         {groups.length === 0 ? (
-          <p className="drawer-empty">
+          <p className="panel-empty">
             No A2A calls yet. Send a message to record the first exchange.
           </p>
         ) : (
@@ -1058,7 +1075,7 @@ function spanKindTone(kind: string): TimelineTone {
 
 function toConversationHistory(turns: TurnRecord[]): ConversationTurn[] {
   return turns.flatMap<ConversationTurn>((turn) =>
-    turn.answer === undefined
+    turn.answer === undefined || parseConsentRequest(turn.answer)
       ? []
       : [
           { role: 'user', text: turn.prompt },

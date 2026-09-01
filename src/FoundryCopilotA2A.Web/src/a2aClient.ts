@@ -116,6 +116,7 @@ export interface SendMessageOptions {
   history?: ConversationTurn[]
   chainTargetAgentId?: string
   onRequest?: (request: A2AHttpRequest) => void
+  onUpdate?: (answer: string) => void
   onResponse?: (response: A2AHttpResponse, durationMs: number) => void
   onTrace?: (trace?: AdapterTrace, error?: string) => void
 }
@@ -129,6 +130,7 @@ export async function sendMessage({
   history = [],
   chainTargetAgentId,
   onRequest,
+  onUpdate,
   onResponse,
   onTrace,
 }: SendMessageOptions): Promise<A2AExchange> {
@@ -137,7 +139,7 @@ export async function sendMessage({
   const body = {
     jsonrpc: '2.0',
     id: crypto.randomUUID(),
-    method: 'SendMessage',
+    method: 'SendStreamingMessage',
     params: {
       message: {
         role: 'ROLE_USER',
@@ -176,7 +178,50 @@ export async function sendMessage({
     body: JSON.stringify(body),
   })
 
-  const responseBody = (await response.json()) as JsonRpcResponse
+  const contentType = response.headers.get('Content-Type') ?? ''
+  if (!response.ok || !contentType.toLowerCase().includes('text/event-stream')) {
+    const responseBody = (await response.json()) as JsonRpcResponse
+    const exchangeResponse: A2AHttpResponse = {
+      status: response.status,
+      statusText: response.statusText,
+      body: responseBody,
+    }
+    const durationMs = Math.round(performance.now() - startedAt)
+    onResponse?.(exchangeResponse, durationMs)
+    if (responseBody.error) {
+      throw new Error(
+        responseBody.error.message ??
+          `A2A error ${responseBody.error.code ?? 'unknown'}.`,
+      )
+    }
+    throw new Error(
+      response.ok
+        ? `Adapter returned '${contentType || 'unknown'}' instead of an SSE stream.`
+        : `Adapter returned HTTP ${response.status}.`,
+    )
+  }
+
+  let answer = ''
+  let responseBody: JsonRpcResponse | undefined
+  await readSse(response, (event) => {
+    responseBody = event
+    if (event.error) {
+      throw new Error(
+        event.error.message ?? `A2A error ${event.error.code ?? 'unknown'}.`,
+      )
+    }
+
+    const text = extractEventText(event)
+    if (text) {
+      answer += text
+      onUpdate?.(answer)
+    }
+  })
+
+  if (!responseBody) {
+    throw new Error('The adapter returned an empty SSE stream.')
+  }
+
   const exchangeResponse: A2AHttpResponse = {
     status: response.status,
     statusText: response.statusText,
@@ -199,24 +244,6 @@ export async function sendMessage({
   }
   onTrace?.(trace, traceError)
 
-  if (!response.ok) {
-    throw new Error(`Adapter returned HTTP ${response.status}.`)
-  }
-
-  if (responseBody.error) {
-    throw new Error(
-      responseBody.error.message ??
-        `A2A error ${responseBody.error.code ?? 'unknown'}.`,
-    )
-  }
-
-  const parts =
-    responseBody.result?.message?.parts ?? responseBody.result?.parts ?? []
-  const answer = parts
-    .map((part) => part.text)
-    .filter((part): part is string => Boolean(part))
-    .join('\n')
-
   if (!answer) {
     throw new Error('The adapter returned no text response.')
   }
@@ -229,6 +256,70 @@ export async function sendMessage({
     trace,
     traceError,
   }
+}
+
+async function readSse(
+  response: Response,
+  onEvent: (event: JsonRpcResponse) => void,
+) {
+  if (!response.body) {
+    throw new Error('The adapter response has no readable stream.')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    buffer += decoder.decode(value, { stream: !done })
+    const frames = buffer.split(/\r?\n\r?\n/)
+    buffer = frames.pop() ?? ''
+    for (const frame of frames) {
+      parseSseFrame(frame, onEvent)
+    }
+    if (done) {
+      if (buffer.trim()) {
+        parseSseFrame(buffer, onEvent)
+      }
+      return
+    }
+  }
+}
+
+function parseSseFrame(
+  frame: string,
+  onEvent: (event: JsonRpcResponse) => void,
+) {
+  const data = frame
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).trimStart())
+    .join('\n')
+  if (data && data !== '[DONE]') {
+    onEvent(JSON.parse(data) as JsonRpcResponse)
+  }
+}
+
+function extractEventText(response: JsonRpcResponse): string {
+  const result = response.result as
+    | {
+        message?: { parts?: Array<{ text?: string }> }
+        artifact?: { parts?: Array<{ text?: string }> }
+        status?: { message?: { parts?: Array<{ text?: string }> } }
+        parts?: Array<{ text?: string }>
+      }
+    | undefined
+  const parts =
+    result?.artifact?.parts ??
+    result?.status?.message?.parts ??
+    result?.message?.parts ??
+    result?.parts ??
+    []
+  return parts
+    .map((part) => part.text)
+    .filter((part): part is string => Boolean(part))
+    .join('\n')
 }
 
 async function loadTrace(
