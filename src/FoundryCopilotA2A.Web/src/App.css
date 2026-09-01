@@ -1,9 +1,13 @@
 #root {
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 .app-shell {
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
   display: grid;
   grid-template-rows: auto 1fr;
 }
@@ -52,6 +56,7 @@
 
 .workspace {
   min-height: 0;
+  overflow-y: auto;
   display: grid;
   grid-template-columns: minmax(260px, 320px) minmax(0, 1fr) minmax(360px, 460px);
   gap: 20px;
@@ -344,9 +349,41 @@ dd {
   color: #66758b;
 }
 
-.message.assistant.failed p {
-  color: #8f2222;
-  background: #fff0f0;
+.failure-message {
+  display: grid;
+  gap: 7px;
+  border: 1px solid #f2c7c7;
+  border-left: 4px solid #dc2626;
+  border-bottom-left-radius: 4px;
+  color: #7f1d1d;
+  background: #fff8f8;
+}
+
+.failure-message strong {
+  font-size: 0.8rem;
+}
+
+.message.assistant .failure-message p {
+  padding: 0;
+  border-radius: 0;
+  color: #7f1d1d;
+  background: transparent;
+}
+
+.failure-message button {
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  color: #9f2424;
+  font-size: 0.72rem;
+  font-weight: 750;
+  background: transparent;
+  cursor: pointer;
+}
+
+.failure-message button:hover {
+  color: #701a1a;
+  text-decoration: underline;
 }
 
 /* Network chip attached to a bubble: the request the user turn produced, or the
@@ -393,8 +430,8 @@ dd {
 }
 
 .wire-chip.failed {
-  border-color: #efb2b2;
-  background: #fff3f3;
+  border-color: #e9c5c5;
+  background: #fffafa;
 }
 
 .wire-chip.failed .wire-status {
@@ -498,9 +535,12 @@ dd {
 }
 
 .composer {
+  position: relative;
+  z-index: 1;
   padding: 18px clamp(24px, 4vw, 48px) 22px;
   border-top: 1px solid #e2e8f0;
   background: #f8fafc;
+  box-shadow: 0 -10px 24px rgb(16 40 78 / 6%);
 }
 
 .composer label {
@@ -815,6 +855,8 @@ textarea {
 }
 
 .row-detail {
+  max-height: min(360px, 42vh);
+  overflow-y: auto;
   padding: 2px 12px 12px 40px;
   border-top: 1px dashed #dce5f0;
   background: #fbfdff;

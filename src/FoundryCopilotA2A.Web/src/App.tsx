@@ -225,7 +225,6 @@ function App({ config }: AppProps) {
         history,
         chainTargetAgentId: mode === 'chain' ? selectedAgentBId : undefined,
         onRequest: (request) => updateTurn(turnId, { request, status: 'sending' }),
-        onUpdate: (answer) => updateTurn(turnId, { answer }),
         onResponse: (response, durationMs) =>
           updateTurn(turnId, { response, durationMs }),
         onTrace: (trace, traceError) => updateTurn(turnId, { trace, traceError }),
@@ -233,8 +232,7 @@ function App({ config }: AppProps) {
       updateTurn(turnId, { answer: exchange.answer, status: 'succeeded' })
     } catch (reason) {
       const message = toErrorMessage(reason)
-      updateTurn(turnId, { error: message, status: 'failed' })
-      setError(message)
+      failTurn(turnId, message)
     } finally {
       setIsSending(false)
     }
@@ -281,6 +279,22 @@ function App({ config }: AppProps) {
   function updateTurn(id: string, update: Partial<TurnRecord>) {
     setTurns((current) =>
       current.map((turn) => (turn.id === id ? { ...turn, ...update } : turn)),
+    )
+  }
+
+  function failTurn(id: string, error: string) {
+    setTurns((current) =>
+      current.map((turn) =>
+        turn.id === id
+          ? {
+              ...turn,
+              error,
+              status: 'failed',
+              durationMs:
+                turn.durationMs ?? Math.max(1, Date.now() - turn.startedAt),
+            }
+          : turn,
+      ),
     )
   }
 
@@ -547,25 +561,22 @@ function TurnBlock({
       ) : turn.error ? (
         <article className="message assistant failed">
           <span>Specialist · {turn.agentName}</span>
-          <p>{turn.error}</p>
-          <button
-            type="button"
-            className="wire-chip in failed"
-            onClick={() =>
-              onOpenEntry(
-                turn.response ? responseEntryId(turn.id) : requestEntryId(turn.id),
-              )
-            }
-            aria-controls="network-panel"
-            title="Open this failure in the network trace"
-          >
-            <span className="wire-status">
-              {turn.response
-                ? `${turn.response.status} ${turn.response.statusText}`
-                : 'Failed'}
-            </span>
-            <span className="wire-path">Open trace</span>
-          </button>
+          <div className="message-body failure-message" role="alert">
+            <strong>Request failed</strong>
+            <p>{turn.error}</p>
+            <button
+              type="button"
+              onClick={() =>
+                onOpenEntry(
+                  turn.response ? responseEntryId(turn.id) : requestEntryId(turn.id),
+                )
+              }
+              aria-controls="network-panel"
+            >
+              View network details
+              <span aria-hidden="true"> →</span>
+            </button>
+          </div>
         </article>
       ) : (
         <article className="message assistant pending">
@@ -764,7 +775,11 @@ interface TimelineGroup {
 }
 
 function buildTimelineGroup(turn: TurnRecord): TimelineGroup {
-  const totalMs = Math.max(turn.durationMs ?? turn.trace?.durationMs ?? 0, 1)
+  const totalMs = Math.max(
+    turn.durationMs ?? 0,
+    turn.trace?.durationMs ?? 0,
+    1,
+  )
   const rows: TimelineRow[] = []
 
   rows.push({
@@ -776,13 +791,16 @@ function buildTimelineGroup(turn: TurnRecord): TimelineGroup {
     depth: 0,
     offsetMs: 0,
     durationMs: turn.durationMs,
-    sections: turn.request
-      ? [
-          { label: 'Request URL', value: turn.request.url },
-          { label: 'Headers', value: turn.request.headers },
-          { label: 'Body payload', value: turn.request.body },
-        ]
-      : [{ label: 'Status', value: 'Acquiring the delegated access token...' }],
+    sections: [
+      ...(turn.request
+        ? [
+            { label: 'Request URL', value: turn.request.url },
+            { label: 'Headers', value: turn.request.headers },
+            { label: 'Body payload', value: turn.request.body },
+          ]
+        : [{ label: 'Status', value: 'Acquiring the delegated access token...' }]),
+      ...(turn.error ? [{ label: 'Error', value: turn.error }] : []),
+    ],
   })
 
   const spans = turn.trace?.spans ?? []
@@ -835,30 +853,27 @@ function buildTimelineGroup(turn: TurnRecord): TimelineGroup {
     })
   }
 
-  if (turn.error) {
-    rows.push({
-      id: `${turn.id}:error`,
-      label: 'Turn failed',
-      sublabel: 'Client-side error',
-      kind: 'note',
-      tone: 'error',
-      depth: 0,
-      offsetMs: totalMs,
-      sections: [{ label: 'Message', value: turn.error }],
-    })
-  }
-
   return {
     turnId: turn.id,
     index: turn.index,
     title: `Turn ${turn.index} · ${turn.agentName}`,
-    subtitle: `${new Date(turn.startedAt).toLocaleTimeString()} · ${
-      turn.durationMs !== undefined ? formatDuration(turn.durationMs) : 'in flight'
-    }`,
+    subtitle: `${new Date(turn.startedAt).toLocaleTimeString()} · ${turnTiming(turn)}`,
     status: turn.status,
     totalMs,
     rows,
   }
+}
+
+function turnTiming(turn: TurnRecord) {
+  if (turn.durationMs !== undefined) {
+    return formatDuration(turn.durationMs)
+  }
+
+  return turn.status === 'failed'
+    ? 'failed'
+    : turn.status === 'succeeded'
+      ? 'completed'
+      : 'in flight'
 }
 
 function buildSpanSections(span: AdapterTraceSpan): TimelineSection[] {
@@ -917,7 +932,7 @@ function NetworkPanel({
   groups: TimelineGroup[]
   contextId: string
   selectedEntryId?: string
-  onSelect: (entryId: string) => void
+  onSelect: (entryId?: string) => void
 }) {
   useEffect(() => {
     if (!selectedEntryId) {
@@ -942,7 +957,7 @@ function NetworkPanel({
         nodeRect.height / 2,
       behavior: 'smooth',
     })
-  }, [selectedEntryId, groups])
+  }, [selectedEntryId])
 
   const totalMs = groups.reduce((sum, group) => sum + group.totalMs, 0)
   const rowCount = groups.reduce((sum, group) => sum + group.rows.length, 0)
@@ -1006,7 +1021,7 @@ function TimelineRowView({
   row: TimelineRow
   totalMs: number
   selected: boolean
-  onSelect: (entryId: string) => void
+  onSelect: (entryId?: string) => void
 }) {
   const left = Math.min(97, (row.offsetMs / totalMs) * 100)
   const width = Math.min(
@@ -1019,7 +1034,11 @@ function TimelineRowView({
       id={`entry-${row.id}`}
       className={`timeline-row ${row.kind} ${row.tone}${selected ? ' selected' : ''}`}
     >
-      <button type="button" onClick={() => onSelect(row.id)} aria-expanded={selected}>
+      <button
+        type="button"
+        onClick={() => onSelect(selected ? undefined : row.id)}
+        aria-expanded={selected}
+      >
         <span className="row-dot" aria-hidden="true" />
         <span className="row-main" style={{ paddingLeft: `${Math.min(row.depth, 6) * 12}px` }}>
           <strong>{row.label}</strong>
@@ -1107,7 +1126,7 @@ function requestChipStatus(turn: TurnRecord) {
 
   const status = turn.response
     ? `${turn.response.status} ${turn.response.statusText}`
-    : 'failed'
+    : 'Failed'
   return turn.durationMs !== undefined
     ? `${status} · ${formatDuration(turn.durationMs)}`
     : status

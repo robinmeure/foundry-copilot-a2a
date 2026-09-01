@@ -433,18 +433,13 @@ dotnet run --project src/FoundryCopilotA2A.Cli -- test-adapter
 Endpoints:
 
 - Agent card: `http://localhost:5099/.well-known/agent-card.json`
-- A2A JSON-RPC v1 (`SendMessage` and `SendStreamingMessage`):
+- A2A JSON-RPC v1:
   `http://localhost:5099/a2a/copilot-studio`
 - Health: `http://localhost:5099/health`
 
-The agent cards advertise A2A streaming. Direct Copilot Studio requests are returned as
-server-sent events as message activities arrive, and the web console updates the assistant bubble
-progressively. Duplicate requests with the same caller, agent, context, and message ID share one
-backend invocation; completed updates can be replayed without repeating delegated work.
-
-Microsoft Foundry's incoming A2A endpoint currently returns only completed JSON-RPC responses.
-Requests routed through a Foundry agent therefore use the same streaming API but emit one final
-event. This preserves one browser contract without implying token-level streaming across Foundry.
+The web console uses `SendMessage` and waits for one completed JSON-RPC response. Duplicate requests
+with the same caller, agent, context, and message ID share one backend invocation; completed
+responses can be replayed without repeating delegated work.
 
 ## Run the authenticated web interface
 
@@ -508,8 +503,8 @@ To include an incoming-A2A-enabled Foundry prompt agent in the same dropdown, ke
 environment-specific endpoint in AppHost user secrets:
 
 ```text
-dotnet user-secrets set FoundryAgentEndpoint "https://<account>.services.ai.azure.com/api/projects/<project>/agents/<agent>/endpoint/protocols/a2a" --project FoundryCopilotA2A.AppHost
-dotnet user-secrets set FoundryAgentDisplayName "Foundry Web Research" --project FoundryCopilotA2A.AppHost
+dotnet user-secrets set FoundryAgentEndpoint "https://<account>.services.ai.azure.com/api/projects/<project>/agents/<agent>/endpoint/protocols/a2a" --project src/FoundryCopilotA2A.AppHost
+dotnet user-secrets set FoundryAgentDisplayName "Foundry Web Research" --project src/FoundryCopilotA2A.AppHost
 ```
 
 The Foundry entry remains available alongside the mock agent, so local startup still requires
@@ -679,7 +674,7 @@ target.
 Copilot Studio specialists:
 
 ```text
-dotnet user-secrets set "FoundryChainTargetAgent" "reverser-classic,tweede-kamer-classic" --project FoundryCopilotA2A.AppHost
+dotnet user-secrets set "FoundryChainTargetAgent" "reverser-classic,tweede-kamer-classic" --project src/FoundryCopilotA2A.AppHost
 ```
 
 Each target still needs its own Foundry project connection pointing at that target's

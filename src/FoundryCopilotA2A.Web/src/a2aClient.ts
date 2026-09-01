@@ -116,7 +116,6 @@ export interface SendMessageOptions {
   history?: ConversationTurn[]
   chainTargetAgentId?: string
   onRequest?: (request: A2AHttpRequest) => void
-  onUpdate?: (answer: string) => void
   onResponse?: (response: A2AHttpResponse, durationMs: number) => void
   onTrace?: (trace?: AdapterTrace, error?: string) => void
 }
@@ -130,7 +129,6 @@ export async function sendMessage({
   history = [],
   chainTargetAgentId,
   onRequest,
-  onUpdate,
   onResponse,
   onTrace,
 }: SendMessageOptions): Promise<A2AExchange> {
@@ -139,7 +137,7 @@ export async function sendMessage({
   const body = {
     jsonrpc: '2.0',
     id: crypto.randomUUID(),
-    method: 'SendStreamingMessage',
+    method: 'SendMessage',
     params: {
       message: {
         role: 'ROLE_USER',
@@ -179,7 +177,7 @@ export async function sendMessage({
   })
 
   const contentType = response.headers.get('Content-Type') ?? ''
-  if (!response.ok || !contentType.toLowerCase().includes('text/event-stream')) {
+  if (!response.ok) {
     const responseBody = (await response.json()) as JsonRpcResponse
     const exchangeResponse: A2AHttpResponse = {
       status: response.status,
@@ -188,6 +186,12 @@ export async function sendMessage({
     }
     const durationMs = Math.round(performance.now() - startedAt)
     onResponse?.(exchangeResponse, durationMs)
+    await resolveResponseTrace(
+      response,
+      adapterBaseUrl,
+      accessToken,
+      onTrace,
+    )
     if (responseBody.error) {
       throw new Error(
         responseBody.error.message ??
@@ -195,33 +199,17 @@ export async function sendMessage({
       )
     }
     throw new Error(
-      response.ok
-        ? `Adapter returned '${contentType || 'unknown'}' instead of an SSE stream.`
-        : `Adapter returned HTTP ${response.status}.`,
+      `Adapter returned HTTP ${response.status}.`,
     )
   }
 
-  let answer = ''
-  let responseBody: JsonRpcResponse | undefined
-  await readSse(response, (event) => {
-    responseBody = event
-    if (event.error) {
-      throw new Error(
-        event.error.message ?? `A2A error ${event.error.code ?? 'unknown'}.`,
-      )
-    }
-
-    const text = extractEventText(event)
-    if (text) {
-      answer += text
-      onUpdate?.(answer)
-    }
-  })
-
-  if (!responseBody) {
-    throw new Error('The adapter returned an empty SSE stream.')
+  if (!contentType.toLowerCase().includes('application/json')) {
+    throw new Error(
+      `Adapter returned unsupported content type '${contentType || 'unknown'}'.`,
+    )
   }
 
+  const responseBody = (await response.json()) as JsonRpcResponse
   const exchangeResponse: A2AHttpResponse = {
     status: response.status,
     statusText: response.statusText,
@@ -229,21 +217,20 @@ export async function sendMessage({
   }
   const durationMs = Math.round(performance.now() - startedAt)
   onResponse?.(exchangeResponse, durationMs)
-  const traceId = response.headers.get('X-Trace-Id')
-  let trace: AdapterTrace | undefined
-  let traceError: string | undefined
-  if (traceId) {
-    try {
-      trace = await loadTrace(adapterBaseUrl, accessToken, traceId)
-    } catch (reason) {
-      traceError =
-        reason instanceof Error ? reason.message : 'Unable to load the adapter trace.'
-    }
-  } else {
-    traceError = 'The adapter response did not include a trace identifier.'
+  const { trace, traceError } = await resolveResponseTrace(
+    response,
+    adapterBaseUrl,
+    accessToken,
+    onTrace,
+  )
+  if (responseBody.error) {
+    throw new Error(
+      responseBody.error.message ??
+        `A2A error ${responseBody.error.code ?? 'unknown'}.`,
+    )
   }
-  onTrace?.(trace, traceError)
 
+  const answer = extractEventText(responseBody)
   if (!answer) {
     throw new Error('The adapter returned no text response.')
   }
@@ -258,47 +245,27 @@ export async function sendMessage({
   }
 }
 
-async function readSse(
+async function resolveResponseTrace(
   response: Response,
-  onEvent: (event: JsonRpcResponse) => void,
+  adapterBaseUrl: string,
+  accessToken: string,
+  onTrace?: (trace?: AdapterTrace, error?: string) => void,
 ) {
-  if (!response.body) {
-    throw new Error('The adapter response has no readable stream.')
-  }
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  while (true) {
-    const { done, value } = await reader.read()
-    buffer += decoder.decode(value, { stream: !done })
-    const frames = buffer.split(/\r?\n\r?\n/)
-    buffer = frames.pop() ?? ''
-    for (const frame of frames) {
-      parseSseFrame(frame, onEvent)
+  const traceId = response.headers.get('X-Trace-Id')
+  let trace: AdapterTrace | undefined
+  let traceError: string | undefined
+  if (traceId) {
+    try {
+      trace = await loadTrace(adapterBaseUrl, accessToken, traceId)
+    } catch (reason) {
+      traceError =
+        reason instanceof Error ? reason.message : 'Unable to load the adapter trace.'
     }
-    if (done) {
-      if (buffer.trim()) {
-        parseSseFrame(buffer, onEvent)
-      }
-      return
-    }
+  } else {
+    traceError = 'The adapter response did not include a trace identifier.'
   }
-}
-
-function parseSseFrame(
-  frame: string,
-  onEvent: (event: JsonRpcResponse) => void,
-) {
-  const data = frame
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith('data:'))
-    .map((line) => line.slice(5).trimStart())
-    .join('\n')
-  if (data && data !== '[DONE]') {
-    onEvent(JSON.parse(data) as JsonRpcResponse)
-  }
+  onTrace?.(trace, traceError)
+  return { trace, traceError }
 }
 
 function extractEventText(response: JsonRpcResponse): string {

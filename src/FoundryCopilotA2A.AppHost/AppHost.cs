@@ -110,7 +110,7 @@ else
 }
 
 builder
-    .AddViteApp("frontend", "../src/FoundryCopilotA2A.Web")
+    .AddViteApp("frontend", "../FoundryCopilotA2A.Web")
     .WithEndpoint("http", endpoint => endpoint.Port = 5173)
     .WithEnvironment("VITE_ADAPTER_BASE_URL", adapter.GetEndpoint("http"))
     .WithReference(adapter)

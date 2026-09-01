@@ -13,10 +13,14 @@ public sealed class A2ARequestContextMiddleware(
         HttpContext context,
         IdempotencyStore idempotencyStore,
         A2ARequestMetadataAccessor metadataAccessor,
+        AgentIsolationKeyContext isolationKeyContext,
         AgentCatalog agentCatalog)
     {
-        if (HttpMethods.IsPost(context.Request.Method) &&
-            TryResolveRuntimeAgent(context.Request.Path, out var routeAgentId))
+        string? routeAgentId = null;
+        var isRuntimeRequest =
+            HttpMethods.IsPost(context.Request.Method) &&
+            TryResolveRuntimeAgent(context.Request.Path, out routeAgentId);
+        if (isRuntimeRequest)
         {
             if (routeAgentId is not null)
             {
@@ -133,9 +137,33 @@ public sealed class A2ARequestContextMiddleware(
                     "Reusing a messageId for a different request is not permitted.");
                 return;
             }
+
+            try
+            {
+                // The A2A server finishes streaming work on a background execution context.
+                // Capture the tenant-scoped identity directly so session persistence remains
+                // isolated after ASP.NET Core clears its ambient HttpContext.
+                isolationKeyContext.Current = metadataAccessor.ResolveUserId(context);
+            }
+            catch (UnauthorizedAccessException exception)
+            {
+                logger.LogWarning(
+                    exception,
+                    "No caller isolation key is available; the A2A session store will reject the request.");
+            }
         }
 
-        await next(context);
+        try
+        {
+            await next(context);
+        }
+        finally
+        {
+            if (isRuntimeRequest)
+            {
+                isolationKeyContext.Current = null;
+            }
+        }
     }
 
     /// <summary>

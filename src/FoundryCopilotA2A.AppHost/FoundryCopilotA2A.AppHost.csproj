@@ -14,7 +14,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\src\FoundryCopilotA2A.Adapter\FoundryCopilotA2A.Adapter.csproj" />
+    <ProjectReference Include="..\FoundryCopilotA2A.Adapter\FoundryCopilotA2A.Adapter.csproj" />
   </ItemGroup>
 
 </Project>

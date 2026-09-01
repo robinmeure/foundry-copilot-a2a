@@ -65,6 +65,7 @@ builder.Services.Configure<CopilotStudioOptions>(
 builder.Services.Configure<FoundryOptions>(
     builder.Configuration.GetSection(FoundryOptions.SectionName));
 builder.Services.AddSingleton<A2ARequestMetadataAccessor>();
+builder.Services.AddSingleton<AgentIsolationKeyContext>();
 builder.Services.AddSingleton<AgentCatalog>();
 builder.Services.AddSingleton<CopilotConversationStore>();
 builder.Services.AddSingleton<IdempotencyStore>();
@@ -129,7 +130,7 @@ if (authenticationOptions.Enabled)
             };
         });
     builder.Services.AddAuthorization();
-    builder.Services.UseClaimsBasedAgentIsolation(new() { ClaimType = "oid" });
+    builder.Services.AddSingleton<AgentIsolationKeyProvider, RequestScopedAgentIsolationKeyProvider>();
 }
 
 var hostedAgent = builder.AddAIAgent(
