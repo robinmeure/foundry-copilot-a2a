@@ -48,6 +48,10 @@ param reverserClassicDirectConnectUrl string
 @description('Direct-connect URL for the Reverser New Copilot Studio agent.')
 param reverserNewDirectConnectUrl string
 
+@secure()
+@description('Direct-connect URL for the Orchestrator Copilot Studio agent.')
+param orchestratorDirectConnectUrl string
+
 @description('Browser origins allowed to call the adapter through APIM.')
 param adapterAllowedOrigins array = [
   'http://localhost:5173'
@@ -149,6 +153,7 @@ module adapterSecrets 'modules/adapter-secrets.bicep' = {
     tweedeKamerDirectConnectUrl: tweedeKamerDirectConnectUrl
     reverserClassicDirectConnectUrl: reverserClassicDirectConnectUrl
     reverserNewDirectConnectUrl: reverserNewDirectConnectUrl
+    orchestratorDirectConnectUrl: orchestratorDirectConnectUrl
   }
 }
 

@@ -97,6 +97,8 @@ public sealed class A2AAdapterTests : IClassFixture<A2AAdapterFactory>
         var content = await response.Content.ReadAsStringAsync();
         Assert.Contains("\"defaultAgentId\":\"mock\"", content);
         Assert.Contains("\"displayName\":\"Mock Copilot Studio\"", content);
+        Assert.Contains("\"id\":\"mock-failure\"", content);
+        Assert.Contains("\"displayName\":\"Mock Failure (always fails)\"", content);
         Assert.Contains("\"provider\":\"copilotStudio\"", content);
         Assert.DoesNotContain("directConnectUrl", content, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("\"endpoint\"", content, StringComparison.OrdinalIgnoreCase);
@@ -264,6 +266,45 @@ public sealed class A2AAdapterTests : IClassFixture<A2AAdapterFactory>
         var content = await response.Content.ReadAsStringAsync();
         Assert.Contains($"mock-copilot-studio[{before + 1}]: hello from Foundry", content);
         Assert.Contains("ctx-1", content);
+    }
+
+    [Fact]
+    public async Task FailingMockReturnsDiagnosableJsonRpcErrorAndTrace()
+    {
+        using var response = await SendMessageAsync(
+            NewId(),
+            "ctx-failure",
+            "fail predictably",
+            agentId: AgentCatalog.MockFailureAgentId);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var error = document.RootElement.GetProperty("error");
+        Assert.Equal(-32006, error.GetProperty("code").GetInt32());
+        Assert.False(string.IsNullOrWhiteSpace(error.GetProperty("message").GetString()));
+
+        Assert.True(response.Headers.TryGetValues(AdapterConstants.TraceHeaderName, out var values));
+        using var traceResponse = await _client.GetAsync(
+            $"{AdapterConstants.TracesPath}/{Assert.Single(values)}");
+        traceResponse.EnsureSuccessStatusCode();
+        var trace = await traceResponse.Content.ReadFromJsonAsync<TraceSnapshot>();
+
+        Assert.NotNull(trace);
+        Assert.Contains(
+            trace.Spans,
+            span =>
+                span.Name == "copilot_studio.mock.invoke" &&
+                string.Equals(span.Status, "Error", StringComparison.OrdinalIgnoreCase) &&
+                span.Attributes["adapter.failure.reason"] == MockCopilotStudioInvoker.FailureReason);
+
+        // The A2A host reports a throwing handler as a generic "no response events" error, so the
+        // adapter must keep the real cause on its own span for the console to show.
+        Assert.Contains(
+            trace.Spans,
+            span =>
+                span.Name == "a2a.adapter.get_response" &&
+                span.Attributes.TryGetValue("adapter.failure.reason", out var reason) &&
+                reason.Contains(MockCopilotStudioInvoker.FailureReason, StringComparison.Ordinal));
     }
 
     [Fact]

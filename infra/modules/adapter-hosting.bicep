@@ -84,6 +84,9 @@ var baseAppSettings = {
   CopilotStudio__Agents__reverser_new__Harness: 'GitHubCopilot'
   CopilotStudio__Agents__reverser_new__DirectConnectUrl: '@Microsoft.KeyVault(SecretUri=${keyVaultSecretBaseUrl}/reverser-new-direct-connect-url)'
 
+  CopilotStudio__Agents__orchestrator__DisplayName: 'Orchestrator'
+  CopilotStudio__Agents__orchestrator__DirectConnectUrl: '@Microsoft.KeyVault(SecretUri=${keyVaultSecretBaseUrl}/orchestrator-direct-connect-url)'
+
   Foundry__Agents__web_research__Id: 'web-research'
   Foundry__Agents__web_research__DisplayName: 'Foundry Web Research'
   Foundry__Agents__web_research__Endpoint: '${foundryProjectEndpoint}/agents/${foundryAgentName}/endpoint/protocols/a2a'

@@ -4,6 +4,7 @@ var adapter = builder
     .AddProject<Projects.FoundryCopilotA2A_Adapter>("adapter", launchProfileName: "http")
     .WithEndpoint("http", endpoint => endpoint.Port = 5099)
     .WithHttpHealthCheck("/health")
+    .WithEnvironment("Adapter__EnableFailureMock", "true")
     .WithEnvironment("Adapter__AllowedOrigins__0", "http://localhost:5173");
 
 var adapterPublicBaseUrl = builder.Configuration["AdapterPublicBaseUrl"];
@@ -62,6 +63,8 @@ if (string.Equals(
         builder.AddParameter("copilot-studio-reverser-new-direct-connect-url", secret: true);
     var tweedeKamerClassicDirectConnectUrl =
         builder.AddParameter("copilot-studio-tweede-kamer-classic-direct-connect-url", secret: true);
+    var orchestratorDirectConnectUrl =
+        builder.AddParameter("copilot-studio-orchestrator-direct-connect-url", secret: true);
     var authority = builder.AddParameter("authentication-authority");
     var audience = builder.AddParameter("authentication-audience");
 
@@ -99,7 +102,13 @@ if (string.Equals(
             "Tweede Kamer Classic")
         .WithEnvironment(
             "CopilotStudio__Agents__tweede-kamer-classic__DirectConnectUrl",
-            tweedeKamerClassicDirectConnectUrl);
+            tweedeKamerClassicDirectConnectUrl)
+        .WithEnvironment(
+            "CopilotStudio__Agents__orchestrator__DisplayName",
+            "Orchestrator")
+        .WithEnvironment(
+            "CopilotStudio__Agents__orchestrator__DirectConnectUrl",
+            orchestratorDirectConnectUrl);
 }
 else
 {

@@ -14,7 +14,7 @@ export interface A2AHttpRequest {
 export interface A2AHttpResponse {
   status: number
   statusText: string
-  body: JsonRpcResponse
+  body: unknown
 }
 
 export interface A2AExchange {
@@ -177,39 +177,8 @@ export async function sendMessage({
   })
 
   const contentType = response.headers.get('Content-Type') ?? ''
-  if (!response.ok) {
-    const responseBody = (await response.json()) as JsonRpcResponse
-    const exchangeResponse: A2AHttpResponse = {
-      status: response.status,
-      statusText: response.statusText,
-      body: responseBody,
-    }
-    const durationMs = Math.round(performance.now() - startedAt)
-    onResponse?.(exchangeResponse, durationMs)
-    await resolveResponseTrace(
-      response,
-      adapterBaseUrl,
-      accessToken,
-      onTrace,
-    )
-    if (responseBody.error) {
-      throw new Error(
-        responseBody.error.message ??
-          `A2A error ${responseBody.error.code ?? 'unknown'}.`,
-      )
-    }
-    throw new Error(
-      `Adapter returned HTTP ${response.status}.`,
-    )
-  }
-
-  if (!contentType.toLowerCase().includes('application/json')) {
-    throw new Error(
-      `Adapter returned unsupported content type '${contentType || 'unknown'}'.`,
-    )
-  }
-
-  const responseBody = (await response.json()) as JsonRpcResponse
+  const responseText = await response.text()
+  const responseBody = parseResponseBody(responseText, contentType)
   const exchangeResponse: A2AHttpResponse = {
     status: response.status,
     statusText: response.statusText,
@@ -223,16 +192,48 @@ export async function sendMessage({
     accessToken,
     onTrace,
   )
-  if (responseBody.error) {
+  const rpcResponse = asJsonRpcResponse(responseBody)
+  if (!response.ok) {
     throw new Error(
-      responseBody.error.message ??
-        `A2A error ${responseBody.error.code ?? 'unknown'}.`,
+      rpcResponse?.error?.message ?? `Adapter returned HTTP ${response.status}.`,
+    )
+  }
+  if (!contentType.toLowerCase().includes('application/json')) {
+    throw new Error(
+      `Adapter returned unsupported content type '${contentType || 'unknown'}'.`,
+    )
+  }
+  if (!rpcResponse) {
+    throw new Error('Adapter returned an invalid JSON-RPC response.')
+  }
+  if (rpcResponse.error) {
+    throw new Error(
+      rpcResponse.error.message ??
+        `A2A error ${rpcResponse.error.code ?? 'unknown'}.`,
     )
   }
 
-  const answer = extractEventText(responseBody)
+  const answer = extractEventText(rpcResponse)
   if (!answer) {
     throw new Error('The adapter returned no text response.')
+  }
+
+  function parseResponseBody(responseText: string, contentType: string): unknown {
+    if (!contentType.toLowerCase().includes('application/json')) {
+      return responseText
+    }
+
+    try {
+      return JSON.parse(responseText) as unknown
+    } catch {
+      return responseText
+    }
+  }
+
+  function asJsonRpcResponse(value: unknown): JsonRpcResponse | undefined {
+    return typeof value === 'object' && value !== null
+      ? (value as JsonRpcResponse)
+      : undefined
   }
 
   return {

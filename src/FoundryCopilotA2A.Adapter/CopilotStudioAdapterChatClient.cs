@@ -39,6 +39,7 @@ public sealed class CopilotStudioAdapterChatClient(
                                           && exception is not OperationCanceledException)
         {
             AdapterTelemetry.RecordFailure(activity, exception);
+            AdapterTelemetry.RecordFailureReason(activity, exception.Message);
             // Translate backend failures into a defined adapter error instead of letting an
             // arbitrary exception collapse into a generic "no response events" A2A error.
             logger.LogError(
@@ -78,6 +79,7 @@ public sealed class CopilotStudioAdapterChatClient(
                                               && exception is not OperationCanceledException)
             {
                 AdapterTelemetry.RecordFailure(activity, exception);
+                AdapterTelemetry.RecordFailureReason(activity, exception.Message);
                 logger.LogError(
                     exception,
                     "Delegated agent streaming invocation failed for context {ContextId}.",

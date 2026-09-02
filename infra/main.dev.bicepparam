@@ -17,6 +17,7 @@ param copilotStudioClientSecret = readEnvironmentVariable('COPILOT_STUDIO_CLIENT
 param tweedeKamerDirectConnectUrl = readEnvironmentVariable('COPILOT_STUDIO_TWEEDE_KAMER_URL')
 param reverserClassicDirectConnectUrl = readEnvironmentVariable('COPILOT_STUDIO_REVERSER_CLASSIC_URL')
 param reverserNewDirectConnectUrl = readEnvironmentVariable('COPILOT_STUDIO_REVERSER_NEW_URL')
+param orchestratorDirectConnectUrl = readEnvironmentVariable('COPILOT_STUDIO_ORCHESTRATOR_URL')
 
 param adapterAllowedOrigins = [
   'http://localhost:5173'

@@ -153,6 +153,32 @@ public class CopilotStudioOptionsValidationTests
         Assert.Equal("classic", catalog.ResolveAgentId(null));
     }
 
+    [Fact]
+    public void FailureMockCanBeEnabledAlongsideRealAgents()
+    {
+        var options = WithCredentials();
+        options.DefaultAgent = "classic";
+        options.Agents["classic"] = new()
+        {
+            DisplayName = "Classic",
+            DirectConnectUrl = DirectConnectUrl
+        };
+        var catalog = new AgentCatalog(
+            Options.Create(new AdapterOptions
+            {
+                Backend = "CopilotStudio",
+                EnableFailureMock = true
+            }),
+            Options.Create(options),
+            Options.Create(new FoundryOptions()));
+
+        Assert.Contains(catalog.Agents, agent =>
+            agent.Id == AgentCatalog.MockFailureAgentId &&
+            agent.DisplayName == "Mock Failure (always fails)");
+        Assert.Equal(AgentCatalog.MockFailureAgentId, catalog.ResolveAgentId("mock-failure"));
+        Assert.Equal("classic", catalog.DefaultAgentId);
+    }
+
     [Theory]
     [InlineData("", "client", "secret")]
     [InlineData("tenant", "", "secret")]

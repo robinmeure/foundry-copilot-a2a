@@ -8,14 +8,23 @@
     "location": {
       "value": "eastus"
     },
+    "adapterLocation": {
+      "value": "westus2"
+    },
     "tenantId": {
       "value": "63645c73-a00c-4659-b911-eb6c4c2d4a8f"
+    },
+    "accessPrincipalId": {
+      "value": "00000000-0000-0000-0000-000000000000"
     },
     "adapterApiAudience": {
       "value": "api://replace-with-adapter-client-id"
     },
     "copilotStudioClientId": {
       "value": "replace-with-backend-client-id"
+    },
+    "foundryAgentName": {
+      "value": "replace-with-foundry-agent-name"
     },
     "publisherName": {
       "value": "Foundry Copilot A2A"
@@ -33,6 +42,9 @@
       "value": "https://example/x"
     },
     "reverserNewDirectConnectUrl": {
+      "value": "https://example/x"
+    },
+    "orchestratorDirectConnectUrl": {
       "value": "https://example/x"
     },
     "adapterAllowedOrigins": {

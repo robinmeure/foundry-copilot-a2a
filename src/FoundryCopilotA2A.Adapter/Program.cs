@@ -78,7 +78,17 @@ if (adapterOptions.UseMockBackend)
 else
 {
     ValidateRealBackendConfiguration(builder.Configuration, authenticationOptions);
-    builder.Services.AddSingleton<ICopilotStudioInvoker, SdkCopilotStudioInvoker>();
+    builder.Services.AddSingleton<SdkCopilotStudioInvoker>();
+    if (adapterOptions.EnableFailureMock)
+    {
+        builder.Services.AddSingleton<MockCopilotStudioInvoker>();
+        builder.Services.AddSingleton<ICopilotStudioInvoker, FailureMockRoutingInvoker>();
+    }
+    else
+    {
+        builder.Services.AddSingleton<ICopilotStudioInvoker>(
+            services => services.GetRequiredService<SdkCopilotStudioInvoker>());
+    }
 }
 
 // A chained Foundry call runs an LLM turn, an outbound A2A call into this adapter, and a

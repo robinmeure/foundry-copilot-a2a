@@ -198,6 +198,8 @@ function App({ config }: AppProps) {
       },
     ])
 
+    let receivedResponse = false
+    let failedTraceEntryId: string | undefined
     try {
       let token
       try {
@@ -225,14 +227,26 @@ function App({ config }: AppProps) {
         history,
         chainTargetAgentId: mode === 'chain' ? selectedAgentBId : undefined,
         onRequest: (request) => updateTurn(turnId, { request, status: 'sending' }),
-        onResponse: (response, durationMs) =>
-          updateTurn(turnId, { response, durationMs }),
-        onTrace: (trace, traceError) => updateTurn(turnId, { trace, traceError }),
+        onResponse: (response, durationMs) => {
+          receivedResponse = true
+          updateTurn(turnId, { response, durationMs })
+        },
+        onTrace: (trace, traceError) => {
+          const failedSpan = findMostSpecificFailedSpan(trace)
+          failedTraceEntryId = failedSpan
+            ? spanEntryId(turnId, failedSpan.spanId)
+            : undefined
+          updateTurn(turnId, { trace, traceError })
+        },
       })
       updateTurn(turnId, { answer: exchange.answer, status: 'succeeded' })
     } catch (reason) {
       const message = toErrorMessage(reason)
       failTurn(turnId, message)
+      setSelectedEntryId(
+        failedTraceEntryId ??
+          (receivedResponse ? responseEntryId(turnId) : requestEntryId(turnId)),
+      )
     } finally {
       setIsSending(false)
     }
@@ -493,7 +507,7 @@ function App({ config }: AppProps) {
               </form>
             </>
           )}
-          {error ? <div className="error" role="alert">{error}</div> : null}
+          {error ? <div className="error-banner" role="alert">{error}</div> : null}
         </section>
 
         <NetworkPanel
@@ -748,6 +762,7 @@ function deriveHops(turn: TurnRecord): Hop[] {
 interface TimelineSection {
   label: string
   value: unknown
+  collapsed?: boolean
 }
 
 type TimelineTone = 'pending' | 'ok' | 'error' | 'server' | 'client' | 'internal'
@@ -779,6 +794,7 @@ interface TimelineGroup {
 
 const browserParticipant = 'Browser'
 const adapterParticipant = 'A2A adapter'
+const adapterFailureReasonAttribute = 'adapter.failure.reason'
 
 /**
  * Activity sources are .NET meter names such as `System.Net.Http`; every one of them runs inside
@@ -808,7 +824,7 @@ function buildTimelineGroup(turn: TurnRecord): TimelineGroup {
     label: `${turn.request?.method ?? 'POST'} ${requestPath(turn)}`,
     sublabel: 'Browser → A2A adapter',
     kind: 'request',
-    tone: turn.status === 'failed' ? 'error' : turn.response ? 'ok' : 'pending',
+    tone: turn.response ? 'client' : turn.status === 'failed' ? 'error' : 'pending',
     depth: 0,
     offsetMs: 0,
     durationMs: turn.durationMs,
@@ -869,17 +885,38 @@ function buildTimelineGroup(turn: TurnRecord): TimelineGroup {
   }
 
   if (turn.response) {
+    const rpcError = readJsonRpcError(turn.response.body)
+    const failureMessage = resolveTurnFailureMessage(turn, rpcError?.message)
     rows.push({
       id: responseEntryId(turn.id),
-      label: `${turn.response.status} ${turn.response.statusText}`,
-      sublabel: 'A2A adapter → browser',
+      label: rpcError ? 'Request failed' : `${turn.response.status} ${turn.response.statusText}`,
+      sublabel: failureMessage ?? 'A2A adapter → browser',
       kind: 'response',
-      tone: turn.response.status >= 400 || turn.status === 'failed' ? 'error' : 'ok',
+      tone: turn.response.status >= 400 || rpcError ? 'error' : 'ok',
       depth: 0,
       offsetMs: totalMs,
       from: adapterParticipant,
       to: browserParticipant,
-      sections: [{ label: 'Body payload', value: turn.response.body }],
+      sections: [
+        ...(rpcError
+          ? [
+              {
+                label: 'What happened',
+                value: failureMessage ?? 'The A2A request failed.',
+              },
+              {
+                label: 'Protocol details',
+                value: {
+                  transport: `${turn.response.status} ${turn.response.statusText}`,
+                  code: rpcError.code ?? 'unknown',
+                  message: rpcError.message ?? 'Unknown A2A error',
+                },
+                collapsed: true,
+              },
+            ]
+          : []),
+        { label: 'Raw response', value: turn.response.body, collapsed: true },
+      ],
     })
   }
 
@@ -907,21 +944,31 @@ function turnTiming(turn: TurnRecord) {
 }
 
 function buildSpanSections(span: AdapterTraceSpan): TimelineSection[] {
-  const sections: TimelineSection[] = [
-    {
-      label: 'Span',
-      value: {
-        kind: span.kind,
-        source: span.source,
-        destination: span.destination,
-        status: span.status,
-        durationMs: span.durationMs,
-      },
+  const failed = span.status.toLowerCase() === 'error'
+  const sections: TimelineSection[] = []
+
+  if (failed) {
+    sections.push({ label: 'What failed', value: describeSpanFailure(span) })
+  }
+
+  sections.push({
+    label: 'Span',
+    value: {
+      kind: span.kind,
+      source: span.source,
+      destination: span.destination,
+      status: span.status,
+      durationMs: span.durationMs,
     },
-  ]
+    collapsed: failed,
+  })
 
   if (Object.keys(span.attributes).length > 0) {
-    sections.push({ label: 'Safe attributes', value: span.attributes })
+    sections.push({
+      label: 'Safe attributes',
+      value: span.attributes,
+      collapsed: failed,
+    })
   }
 
   const http = span.http
@@ -993,6 +1040,7 @@ function NetworkPanel({
 
   const totalMs = groups.reduce((sum, group) => sum + group.totalMs, 0)
   const rowCount = groups.reduce((sum, group) => sum + group.rows.length, 0)
+  const failedCount = groups.filter((group) => group.status === 'failed').length
 
   return (
     <aside id="network-panel" className="network-panel" aria-label="Network trace">
@@ -1003,6 +1051,11 @@ function NetworkPanel({
             {groups.length} {groups.length === 1 ? 'request' : 'requests'} ·{' '}
             {rowCount} entries · {formatDuration(totalMs)}
           </span>
+          {failedCount > 0 ? (
+            <span className="panel-failure-count" role="status">
+              {failedCount} failed
+            </span>
+          ) : null}
         </div>
         <div className="panel-views" role="group" aria-label="Trace view">
           <button
@@ -1040,7 +1093,10 @@ function NetworkPanel({
           groups.map((group) => (
             <section className="timeline-group" key={group.turnId}>
               <header className={group.status}>
-                <strong>{group.title}</strong>
+                <div className="timeline-heading">
+                  <strong>{group.title}</strong>
+                  {group.status === 'failed' ? <b>Failed</b> : null}
+                </div>
                 <span>{group.subtitle}</span>
               </header>
               {view === 'flow' ? (
@@ -1114,6 +1170,7 @@ function TimelineRowView({
               key={section.label}
               label={section.label}
               value={section.value}
+              collapsed={section.collapsed}
             />
           ))}
         </div>
@@ -1398,9 +1455,12 @@ function requestChipStatus(turn: TurnRecord) {
     return 'in flight'
   }
 
-  const status = turn.response
-    ? `${turn.response.status} ${turn.response.statusText}`
-    : 'Failed'
+  const rpcError = readJsonRpcError(turn.response?.body)
+  const status = rpcError
+    ? `A2A error${rpcError.code !== undefined ? ` ${rpcError.code}` : ''}`
+    : turn.response
+      ? `${turn.response.status} ${turn.response.statusText}`
+      : 'Failed'
   return turn.durationMs !== undefined
     ? `${status} · ${formatDuration(turn.durationMs)}`
     : status
@@ -1426,6 +1486,69 @@ function parsePayload(body: string): unknown {
   }
 }
 
+function readJsonRpcError(body: unknown) {
+  if (typeof body !== 'object' || body === null || !('error' in body)) {
+    return undefined
+  }
+
+  const error = body.error
+  if (typeof error !== 'object' || error === null) {
+    return undefined
+  }
+
+  return {
+    code: 'code' in error && typeof error.code === 'number' ? error.code : undefined,
+    message:
+      'message' in error && typeof error.message === 'string'
+        ? error.message
+        : undefined,
+  }
+}
+
+function findMostSpecificFailedSpan(trace?: AdapterTrace) {
+  if (!trace) {
+    return undefined
+  }
+
+  const depths = computeSpanDepths(trace.spans)
+  return trace.spans
+    .filter((span) => span.status.toLowerCase() === 'error')
+    .sort(
+      (left, right) =>
+        (depths.get(right.spanId) ?? 0) - (depths.get(left.spanId) ?? 0),
+    )[0]
+}
+
+function resolveTurnFailureMessage(turn: TurnRecord, fallback?: string) {
+  return readAdapterFailureReason(turn.trace) ?? fallback ?? turn.error
+}
+
+/**
+ * The A2A host reports a handler that threw as a generic "no response events" error, so prefer the
+ * cause the adapter recorded on the span over the protocol-level message.
+ */
+function readAdapterFailureReason(trace?: AdapterTrace) {
+  return trace?.spans
+    .map((span) => span.attributes[adapterFailureReasonAttribute])
+    .find(Boolean)
+}
+
+function describeSpanFailure(span: AdapterTraceSpan) {
+  const status = span.http?.response?.status
+  const lines = [
+    span.attributes[adapterFailureReasonAttribute],
+    span.http?.error,
+    status !== undefined && status >= 400 ? `HTTP ${status}` : undefined,
+    span.attributes['error.type']
+      ? `Exception: ${span.attributes['error.type']}`
+      : undefined,
+  ].filter(Boolean)
+
+  return lines.length > 0
+    ? lines.join('\n')
+    : `${span.name} reported an error without further detail.`
+}
+
 function formatProvider(provider: CopilotAgent['provider']) {
   return provider === 'foundry' ? 'Foundry' : 'Copilot Studio'
 }
@@ -1439,14 +1562,21 @@ function formatDuration(milliseconds: number) {
 function HttpSection({
   label,
   value,
+  collapsed = false,
 }: {
   label: string
   value: unknown
+  collapsed?: boolean
 }) {
   const displayValue =
     typeof value === 'string' ? value : JSON.stringify(value, null, 2)
 
-  return (
+  return collapsed ? (
+    <details className="http-section collapsible">
+      <summary>{label}</summary>
+      <pre>{displayValue}</pre>
+    </details>
+  ) : (
     <div className="http-section">
       <span>{label}</span>
       <pre>{displayValue}</pre>

@@ -30,6 +30,9 @@ public interface ICopilotStudioInvoker
 
 public sealed class MockCopilotStudioInvoker : ICopilotStudioInvoker
 {
+    public const string FailureReason =
+        "The mock Copilot Studio service is unavailable. Try the request again.";
+
     private int _invocationCount;
 
     public int InvocationCount => _invocationCount;
@@ -44,6 +47,19 @@ public sealed class MockCopilotStudioInvoker : ICopilotStudioInvoker
         traceActivity?.SetTag("a2a.history.turns", metadata.History.Count);
         cancellationToken.ThrowIfCancellationRequested();
         var invocation = Interlocked.Increment(ref _invocationCount);
+
+        if (string.Equals(
+            metadata.AgentId,
+            AgentCatalog.MockFailureAgentId,
+            StringComparison.OrdinalIgnoreCase))
+        {
+            await Task.Delay(250, cancellationToken);
+            var exception = new InvalidOperationException(FailureReason);
+            AdapterTelemetry.RecordFailure(traceActivity, exception);
+            AdapterTelemetry.RecordFailureReason(traceActivity, FailureReason);
+            throw exception;
+        }
+
         var conversationId = metadata.ContextId ?? $"mock-{Guid.NewGuid():N}";
         var historySuffix = metadata.History.Count == 0
             ? string.Empty
@@ -55,6 +71,22 @@ public sealed class MockCopilotStudioInvoker : ICopilotStudioInvoker
             conversationId,
             $"mock-response-{invocation}");
     }
+}
+
+public sealed class FailureMockRoutingInvoker(
+    SdkCopilotStudioInvoker sdkInvoker,
+    MockCopilotStudioInvoker mockInvoker) : ICopilotStudioInvoker
+{
+    public IAsyncEnumerable<CopilotInvocationUpdate> StreamAsync(
+        string prompt,
+        A2ARequestMetadata metadata,
+        CancellationToken cancellationToken) =>
+        string.Equals(
+            metadata.AgentId,
+            AgentCatalog.MockFailureAgentId,
+            StringComparison.OrdinalIgnoreCase)
+            ? mockInvoker.StreamAsync(prompt, metadata, cancellationToken)
+            : sdkInvoker.StreamAsync(prompt, metadata, cancellationToken);
 }
 
 /// <summary>
@@ -314,8 +346,12 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
 
         if (conversationId is null)
         {
-            throw new InvalidOperationException(
-                "Copilot Studio did not return a conversation id when starting the conversation.");
+            var exception = new CopilotStudioResponseException(
+                "Copilot Studio did not return a conversation id when starting the conversation. " +
+                "Confirm that the configured agent is published and uses the standard harness.");
+            AdapterTelemetry.RecordFailure(traceActivity, exception);
+            AdapterTelemetry.RecordFailureReason(traceActivity, exception.Message);
+            throw exception;
         }
 
         // The agent may demand a signed-in user before it will answer anything.
@@ -326,9 +362,12 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
                 client, conversationId, oauthCard.Value, metadata, cancellationToken);
         }
 
+        var activitySummary = new CopilotStudioActivitySummary();
         var answer = ReadAnswerStreamAsync(
             client.AskQuestionAsync(prompt, conversationId, cancellationToken),
             conversationId,
+            activitySummary,
+            allowOAuthChallenge: true,
             cancellationToken);
         var emittedText = false;
         OAuthCardInfo? cardDuringTurn = null;
@@ -355,6 +394,8 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
                     CreateMessageActivity(prompt),
                     cancellationToken),
                 conversationId,
+                activitySummary,
+                allowOAuthChallenge: false,
                 cancellationToken))
             {
                 if (item.Update is not null)
@@ -367,8 +408,22 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
 
         if (!emittedText)
         {
-            throw new InvalidOperationException(
-                "Copilot Studio returned no message activity for the delegated request.");
+            var exception = new CopilotStudioResponseException(
+                activitySummary.CreateEmptyResponseMessage());
+            AdapterTelemetry.RecordFailure(traceActivity, exception);
+            AdapterTelemetry.RecordFailureReason(traceActivity, exception.Message);
+            _logger.LogWarning(
+                "Copilot Studio agent {AgentId} returned no usable text response. " +
+                "Activities: {ActivityCount}; types: {ActivityTypes}; messages: {MessageCount}; " +
+                "text messages: {TextMessageCount}; attachments: {AttachmentCount}; OAuth card: {OAuthCardPresent}.",
+                metadata.AgentId,
+                activitySummary.ActivityCount,
+                activitySummary.ActivityTypes,
+                activitySummary.MessageCount,
+                activitySummary.TextMessageCount,
+                activitySummary.AttachmentCount,
+                activitySummary.OAuthCardPresent);
+            throw exception;
         }
 
         _conversationStore.Set(
@@ -383,10 +438,12 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
     private static async IAsyncEnumerable<AnswerStreamItem> ReadAnswerStreamAsync(
         IAsyncEnumerable<IActivity> activities,
         string conversationId,
+        CopilotStudioActivitySummary turnSummary,
+        bool allowOAuthChallenge,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         using var traceActivity = AdapterTelemetry.StartActivity("copilot_studio.collect_answer");
-        var responsePresent = false;
+        var collectionSummary = new CopilotStudioActivitySummary();
         var needsSeparator = false;
 
         await foreach (var activity in activities.WithCancellation(cancellationToken))
@@ -397,27 +454,36 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
             }
 
             var card = ExtractOAuthCard(activity);
+            var connectionManagerText =
+                CopilotStudioAttachmentText.ExtractConnectionManagerCardText(activity);
+            var responseText = string.IsNullOrWhiteSpace(activity.Text)
+                ? connectionManagerText
+                : activity.Text;
+            collectionSummary.Observe(
+                activity,
+                card is not null,
+                responseText,
+                connectionManagerText is not null);
             if (card is not null)
             {
                 yield return new AnswerStreamItem(null, card);
             }
 
             if (string.Equals(activity.Type, "message", StringComparison.OrdinalIgnoreCase) &&
-                !string.IsNullOrWhiteSpace(activity.Text))
+                !string.IsNullOrWhiteSpace(responseText))
             {
                 var text = needsSeparator
-                    ? Environment.NewLine + activity.Text
-                    : activity.Text;
+                    ? Environment.NewLine + responseText
+                    : responseText;
                 needsSeparator = true;
-                responsePresent = true;
                 yield return new AnswerStreamItem(
                     new CopilotInvocationUpdate(text, conversationId, activity.Id),
                     null);
             }
         }
 
-        traceActivity?.SetTag("copilot_studio.response.present", responsePresent);
-        traceActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
+        turnSummary.Merge(collectionSummary);
+        collectionSummary.RecordTelemetry(traceActivity, allowOAuthChallenge);
     }
 
     private sealed record AnswerStreamItem(
@@ -552,6 +618,225 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
         ConnectionSettings ConnectionSettings,
         string Scope,
         string DisplayName);
+}
+
+/// <summary>
+/// Raised when Copilot Studio completes a request without returning the protocol data required
+/// to continue the delegated turn.
+/// </summary>
+public sealed class CopilotStudioResponseException(string message) : Exception(message);
+
+internal sealed class CopilotStudioActivitySummary
+{
+    private readonly HashSet<string> _activityTypes = new(StringComparer.Ordinal);
+
+    public int ActivityCount { get; private set; }
+
+    public int MessageCount { get; private set; }
+
+    public int TextMessageCount { get; private set; }
+
+    public int AdaptiveCardTextMessageCount { get; private set; }
+
+    public int AttachmentCount { get; private set; }
+
+    public bool OAuthCardPresent { get; private set; }
+
+    public bool HasTextResponse => TextMessageCount > 0;
+
+    public string ActivityTypes =>
+        _activityTypes.Count == 0
+            ? "none"
+            : string.Join(",", _activityTypes.Order(StringComparer.Ordinal));
+
+    public void Observe(
+        IActivity activity,
+        bool oauthCardPresent,
+        string? effectiveText = null,
+        bool extractedFromAdaptiveCard = false)
+    {
+        ActivityCount++;
+        _activityTypes.Add(NormalizeActivityType(activity.Type));
+        AttachmentCount += activity.Attachments?.Count ?? 0;
+        OAuthCardPresent |= oauthCardPresent;
+
+        if (!string.Equals(activity.Type, "message", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        MessageCount++;
+        if (!string.IsNullOrWhiteSpace(effectiveText ?? activity.Text))
+        {
+            TextMessageCount++;
+            if (extractedFromAdaptiveCard)
+            {
+                AdaptiveCardTextMessageCount++;
+            }
+        }
+    }
+
+    public void Merge(CopilotStudioActivitySummary other)
+    {
+        ActivityCount += other.ActivityCount;
+        MessageCount += other.MessageCount;
+        TextMessageCount += other.TextMessageCount;
+        AdaptiveCardTextMessageCount += other.AdaptiveCardTextMessageCount;
+        AttachmentCount += other.AttachmentCount;
+        OAuthCardPresent |= other.OAuthCardPresent;
+        _activityTypes.UnionWith(other._activityTypes);
+    }
+
+    public string CreateEmptyResponseMessage()
+    {
+        const string guidance =
+            "The adapter requires at least one text message; make sure every published agent " +
+            "route sends a final text response.";
+
+        if (ActivityCount == 0)
+        {
+            return "Copilot Studio completed the delegated request without returning any activities. " +
+                   guidance;
+        }
+
+        if (MessageCount == 0)
+        {
+            return $"Copilot Studio returned {ActivityCount} activities (types: {ActivityTypes}), " +
+                   $"but none was a message. {guidance}";
+        }
+
+        var attachmentDescription = AttachmentCount == 0
+            ? string.Empty
+            : $" with {AttachmentCount} attachment{(AttachmentCount == 1 ? string.Empty : "s")}";
+        return $"Copilot Studio returned {MessageCount} message " +
+               $"activit{(MessageCount == 1 ? "y" : "ies")}{attachmentDescription}, but no text. " +
+               guidance;
+    }
+
+    public void RecordTelemetry(System.Diagnostics.Activity? activity, bool allowOAuthChallenge)
+    {
+        activity?.SetTag("copilot_studio.activity.count", ActivityCount);
+        activity?.SetTag("copilot_studio.activity.types", ActivityTypes);
+        activity?.SetTag("copilot_studio.message.count", MessageCount);
+        activity?.SetTag("copilot_studio.message.text.count", TextMessageCount);
+        activity?.SetTag(
+            "copilot_studio.message.adaptive_card_text.count",
+            AdaptiveCardTextMessageCount);
+        activity?.SetTag("copilot_studio.attachment.count", AttachmentCount);
+        activity?.SetTag("copilot_studio.oauth_card.present", OAuthCardPresent);
+        activity?.SetTag("copilot_studio.response.present", HasTextResponse);
+
+        if (HasTextResponse || (allowOAuthChallenge && OAuthCardPresent))
+        {
+            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
+            return;
+        }
+
+        var exception = new CopilotStudioResponseException(CreateEmptyResponseMessage());
+        AdapterTelemetry.RecordFailure(activity, exception);
+        AdapterTelemetry.RecordFailureReason(activity, exception.Message);
+    }
+
+    private static string NormalizeActivityType(string? activityType) =>
+        activityType?.ToLowerInvariant() switch
+        {
+            "command" => "command",
+            "commandresult" => "commandResult",
+            "contactrelationupdate" => "contactRelationUpdate",
+            "conversationupdate" => "conversationUpdate",
+            "endofconversation" => "endOfConversation",
+            "event" => "event",
+            "handoff" => "handoff",
+            "installationupdate" => "installationUpdate",
+            "invoke" => "invoke",
+            "message" => "message",
+            "messagereaction" => "messageReaction",
+            "suggestion" => "suggestion",
+            "trace" => "trace",
+            "typing" => "typing",
+            null or "" => "unknown",
+            _ => "other"
+        };
+}
+
+internal static class CopilotStudioAttachmentText
+{
+    private const string AdaptiveCardContentType = "application/vnd.microsoft.card.adaptive";
+    private const string ConnectionManagerActivityName = "connectors/connectionManagerCard";
+
+    public static string? ExtractConnectionManagerCardText(IActivity activity)
+    {
+        if (!string.Equals(
+                activity.Name,
+                ConnectionManagerActivityName,
+                StringComparison.OrdinalIgnoreCase) ||
+            activity.Attachments is null)
+        {
+            return null;
+        }
+
+        var textBlocks = new List<string>();
+        foreach (var attachment in activity.Attachments)
+        {
+            if (!string.Equals(
+                    attachment.ContentType,
+                    AdaptiveCardContentType,
+                    StringComparison.OrdinalIgnoreCase) ||
+                attachment.Content is null)
+            {
+                continue;
+            }
+
+            var content = attachment.Content switch
+            {
+                JsonElement element => element,
+                JsonDocument document => document.RootElement,
+                _ => JsonSerializer.SerializeToElement(
+                    attachment.Content,
+                    attachment.Content.GetType())
+            };
+            CollectTextBlocks(content, textBlocks);
+        }
+
+        return textBlocks.Count == 0
+            ? null
+            : string.Join(Environment.NewLine + Environment.NewLine, textBlocks);
+    }
+
+    private static void CollectTextBlocks(JsonElement element, List<string> textBlocks)
+    {
+        if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                CollectTextBlocks(item, textBlocks);
+            }
+
+            return;
+        }
+
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+
+        if (element.TryGetProperty("type", out var type) &&
+            string.Equals(type.GetString(), "TextBlock", StringComparison.OrdinalIgnoreCase) &&
+            element.TryGetProperty("text", out var text) &&
+            text.ValueKind == JsonValueKind.String &&
+            !string.IsNullOrWhiteSpace(text.GetString()))
+        {
+            textBlocks.Add(text.GetString()!);
+        }
+
+        foreach (var property in element.EnumerateObject())
+        {
+            if (property.Value.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
+            {
+                CollectTextBlocks(property.Value, textBlocks);
+            }
+        }
+    }
 }
 
 public static class TokenInspector

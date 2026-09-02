@@ -91,6 +91,7 @@ $env:COPILOT_STUDIO_CLIENT_SECRET = Read-Host 'Copilot Studio client secret' -Ma
 $env:COPILOT_STUDIO_TWEEDE_KAMER_URL = Read-Host 'Tweede Kamer direct-connect URL' -MaskInput
 $env:COPILOT_STUDIO_REVERSER_CLASSIC_URL = Read-Host 'Reverser Classic direct-connect URL' -MaskInput
 $env:COPILOT_STUDIO_REVERSER_NEW_URL = Read-Host 'Reverser New direct-connect URL' -MaskInput
+$env:COPILOT_STUDIO_ORCHESTRATOR_URL = Read-Host 'Orchestrator direct-connect URL' -MaskInput
 ```
 
 The template sets `Adapter__PublicBaseUrl` to:

@@ -488,8 +488,9 @@ still mapped to the `contextId` keeps its own server-side transcript, so history
 replayed there when a new conversation has to be started.
 
 The AppHost selects `Mock` unless its local `AdapterBackend` configuration is
-`CopilotStudio`. Live mode configures the `tweede-kamer`, `reverser-classic`, and
-`reverser-new` agents with shared tenant and backend application credentials. Their
+`CopilotStudio`. Live mode configures the `tweede-kamer`, `reverser-classic`,
+`reverser-new`, `tweede-kamer-classic`, and `orchestrator` agents with shared tenant
+and backend application credentials. Their
 direct-connect URLs stay in these AppHost user-secret parameters:
 
 ```text
@@ -497,6 +498,7 @@ Parameters:copilot-studio-direct-connect-url
 Parameters:copilot-studio-reverser-direct-connect-url
 Parameters:copilot-studio-reverser-new-direct-connect-url
 Parameters:copilot-studio-tweede-kamer-classic-direct-connect-url
+Parameters:copilot-studio-orchestrator-direct-connect-url
 ```
 
 To include an incoming-A2A-enabled Foundry prompt agent in the same dropdown, keep its
@@ -529,6 +531,157 @@ npm run dev --prefix src/FoundryCopilotA2A.Web
 The CLI allows `http://localhost:5173` by default. If the browser uses another origin, pass the
 same exact origin to `run-adapter --allowed-origin <origin>`. CORS remains an origin allow-list;
 it does not replace JWT validation.
+
+## Add an agent to the application
+
+The adapter exposes a server-side catalog containing Copilot Studio and Foundry agents. The
+browser receives only each agent's stable ID, display name, provider, support status, and allowed
+chain targets from `GET /api/agents`; endpoints and credentials never leave the adapter.
+
+Keep these rules consistent for both providers:
+
+- Use a stable ID containing only ASCII letters, digits, `-`, or `_`.
+- Keep direct-connect URLs, client secrets, delegated tokens, and environment-specific Foundry
+  endpoints out of source control.
+- Register local values through the Aspire AppHost and its user secrets.
+- Register deployed values through Bicep. Copilot Studio URLs belong in Key Vault references;
+  a Foundry endpoint can be derived from the deployed project and agent name.
+- Restart the AppHost after changing its parameters or environment wiring. Mock mode remains the
+  default and must continue to start without Azure resources.
+
+### Add a Copilot Studio agent
+
+Use an agent created with the **standard harness** and publish it before copying its Microsoft 365
+Agents SDK direct-connect URL. The GitHub Copilot harness is not currently invokable through this
+adapter. It may be cataloged with `Harness=GitHubCopilot`, but the UI will mark it unsupported and
+the adapter will reject it before making a downstream call.
+
+For local development:
+
+1. In [`AppHost.cs`](./src/FoundryCopilotA2A.AppHost/AppHost.cs), add a secret parameter for the
+   direct-connect URL inside the `AdapterBackend=CopilotStudio` branch:
+
+   ```csharp
+   var specialistDirectConnectUrl =
+       builder.AddParameter("copilot-studio-specialist-direct-connect-url", secret: true);
+   ```
+
+2. Add the named agent to the adapter environment. Configuration keys may use `_` while the
+   explicit `Id` supplies the public ID:
+
+   ```csharp
+   adapter
+       .WithEnvironment("CopilotStudio__Agents__my_specialist__Id", "my-specialist")
+       .WithEnvironment(
+           "CopilotStudio__Agents__my_specialist__DisplayName",
+           "My Specialist")
+       .WithEnvironment(
+           "CopilotStudio__Agents__my_specialist__DirectConnectUrl",
+           specialistDirectConnectUrl);
+   ```
+
+   `DirectConnectUrl` is preferred. Alternatively, configure both `EnvironmentId` and
+   `SchemaName` for that named agent. Set `Harness` only when it differs from the default
+   `Standard`.
+
+3. Store the URL in AppHost user secrets:
+
+   ```text
+   dotnet user-secrets set "Parameters:copilot-studio-specialist-direct-connect-url" "https://<power-platform-host>/copilotstudio/.../conversations?api-version=<version>" --project src/FoundryCopilotA2A.AppHost
+   ```
+
+   Reuse the existing shared `CopilotStudio` tenant, client ID, and client secret settings. Each
+   named agent needs its own address but not a separate adapter app registration.
+
+For a deployed environment, extend all four infrastructure surfaces together:
+
+1. Add a `@secure()` URL parameter to [`main.bicep`](./infra/main.bicep) and source it from a
+   process environment variable in the matching `.bicepparam` file.
+2. Pass the parameter to [`adapter-secrets.bicep`](./infra/modules/adapter-secrets.bicep) and
+   create a dedicated Key Vault secret.
+3. Add the agent's `DisplayName`, optional `Id`/`Harness`, and `DirectConnectUrl` Key Vault
+   reference to [`adapter-hosting.bicep`](./infra/modules/adapter-hosting.bicep).
+4. Add the required process environment variable to [`infra/README.md`](./infra/README.md).
+
+Never put the direct-connect URL itself in a Bicep parameter file, appsettings file, README, or
+command-line argument.
+
+### Add a Foundry agent
+
+The Foundry agent must publish incoming A2A. For an existing prompt agent, use the repository CLI
+to enable and verify it:
+
+```text
+dotnet run --project src/FoundryCopilotA2A.Cli -- enable-foundry-a2a --agent-url https://<account>.services.ai.azure.com/api/projects/<project>/agents/<agent>/endpoint/protocols/openai/responses --description "<agent description>" --skill-id <skill-id> --skill-name "<skill name>" --skill-description "<skill description>" --smoke-prompt "<verification prompt>"
+```
+
+The adapter needs the versionless **agent-level** endpoint, not an endpoint containing a numeric
+agent version:
+
+```text
+https://<account>.services.ai.azure.com/api/projects/<project>/agents/<agent>/endpoint/protocols/a2a
+```
+
+For local development:
+
+1. Store the endpoint and display name in AppHost user secrets:
+
+   ```text
+   dotnet user-secrets set "FoundryAgentEndpoint" "https://<account>.services.ai.azure.com/api/projects/<project>/agents/<agent>/endpoint/protocols/a2a" --project src/FoundryCopilotA2A.AppHost
+   dotnet user-secrets set "FoundryAgentDisplayName" "My Foundry Agent" --project src/FoundryCopilotA2A.AppHost
+   ```
+
+2. Register a `Foundry__Agents__<key>` entry in
+   [`AppHost.cs`](./src/FoundryCopilotA2A.AppHost/AppHost.cs) with `Id`, `DisplayName`, and
+   `Endpoint`. Use a distinct user-secret key when registering more than one Foundry agent.
+
+The adapter uses the active Azure CLI identity locally. In a deployed environment it uses managed
+identity, so grant that identity access to the Foundry project. The current Bicep deployment
+derives its Foundry endpoint from `foundryProjectEndpoint` plus `foundryAgentName`; add another
+`Foundry__Agents__<key>` block in
+[`adapter-hosting.bicep`](./infra/modules/adapter-hosting.bicep) when exposing another deployed
+Foundry agent.
+
+### Optionally allow Foundry to call a Copilot Studio specialist
+
+Catalog registration alone enables direct calls. To enable Chain mode as well:
+
+1. Add the Copilot Studio ID to the Foundry agent's indexed `ChainTargets`. The current local
+   `web-research` registration reads a comma-separated list:
+
+   ```text
+   dotnet user-secrets set "FoundryChainTargetAgent" "my-specialist,another-specialist" --project src/FoundryCopilotA2A.AppHost
+   ```
+
+2. Create one Foundry project A2A connection per specialist, targeting:
+
+   ```text
+   https://<public-adapter-host>/a2a-agents/<specialist-id>/a2a
+   ```
+
+3. Attach that connection with `configure-foundry-chain` as described in
+   [Chain a Foundry agent to Copilot Studio](#chain-a-foundry-agent-to-copilot-studio).
+
+Every chain target must name a configured, supported Copilot Studio agent. Never attach two A2A
+tools for the same target route.
+
+### Verify the registration
+
+1. Start or restart Aspire. Mock mode should still start with no Azure configuration.
+2. In live mode, open the web console and confirm the new card has the expected display name,
+   provider, and support status.
+3. Select the new agent and send a provider-specific request. The selected stable ID is sent in
+   `X-Copilot-Agent`; a chain target uses its target-specific `/a2a-agents/<id>/a2a` route.
+4. Check the adapter health endpoint and traces. For the adapter's default agent, the CLI can also
+   run an authenticated smoke test:
+
+   ```text
+   dotnet run --project src/FoundryCopilotA2A.Cli -- test-adapter --tenant-id <tenant-id> --client-id <adapter-client-id> --expected-output-pattern "<expected text>"
+   ```
+
+Startup validation reports common registration mistakes directly: missing display names, invalid
+or duplicate IDs, an absent default agent, incomplete Copilot Studio addresses, missing Foundry
+endpoints, and unknown or unsupported chain targets.
 
 ## Test from Foundry through a Dev Tunnel
 

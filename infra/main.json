@@ -6,7 +6,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.46.1.21595",
-      "templateHash": "14989953467899263593"
+      "templateHash": "11789125736043439603"
     },
     "name": "Foundry Copilot A2A Citadel infrastructure",
     "description": "Deploys the A2A adapter, APIM governance gateway, Microsoft Foundry project, and shared monitoring."
@@ -67,6 +67,12 @@
         "description": "Existing backend application registration client ID used for Copilot Studio OBO."
       }
     },
+    "foundryAgentName": {
+      "type": "string",
+      "metadata": {
+        "description": "Existing Foundry prompt agent name exposed through incoming A2A."
+      }
+    },
     "copilotStudioClientSecret": {
       "type": "securestring",
       "metadata": {
@@ -89,6 +95,12 @@
       "type": "securestring",
       "metadata": {
         "description": "Direct-connect URL for the Reverser New Copilot Studio agent."
+      }
+    },
+    "orchestratorDirectConnectUrl": {
+      "type": "securestring",
+      "metadata": {
+        "description": "Direct-connect URL for the Orchestrator Copilot Studio agent."
       }
     },
     "adapterAllowedOrigins": {
@@ -381,7 +393,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.46.1.21595",
-              "templateHash": "16768267124493936903"
+              "templateHash": "8809717955729080137"
             },
             "name": "A2A adapter identity foundation",
             "description": "Deploys the adapter identity, Key Vault, and narrowly scoped role assignments."
@@ -466,6 +478,10 @@
               "type": "string",
               "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('identityName')), '2024-11-30').principalId]"
             },
+            "identityClientId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('identityName')), '2024-11-30').clientId]"
+            },
             "keyVaultId": {
               "type": "string",
               "value": "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
@@ -506,6 +522,9 @@
           },
           "reverserNewDirectConnectUrl": {
             "value": "[parameters('reverserNewDirectConnectUrl')]"
+          },
+          "orchestratorDirectConnectUrl": {
+            "value": "[parameters('orchestratorDirectConnectUrl')]"
           }
         },
         "template": {
@@ -515,7 +534,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.46.1.21595",
-              "templateHash": "11607957529538779787"
+              "templateHash": "4801627234989720104"
             },
             "name": "A2A adapter secrets",
             "description": "Stores the adapter Copilot Studio credentials and direct-connect URLs in Key Vault."
@@ -534,6 +553,9 @@
               "type": "securestring"
             },
             "reverserNewDirectConnectUrl": {
+              "type": "securestring"
+            },
+            "orchestratorDirectConnectUrl": {
               "type": "securestring"
             }
           },
@@ -573,8 +595,182 @@
                 "contentType": "Copilot Studio direct-connect URL",
                 "value": "[parameters('reverserNewDirectConnectUrl')]"
               }
+            },
+            {
+              "type": "Microsoft.KeyVault/vaults/secrets",
+              "apiVersion": "2024-11-01",
+              "name": "[format('{0}/{1}', parameters('keyVaultName'), 'orchestrator-direct-connect-url')]",
+              "properties": {
+                "contentType": "Copilot Studio direct-connect URL",
+                "value": "[parameters('orchestratorDirectConnectUrl')]"
+              }
             }
           ]
+        }
+      },
+      "dependsOn": [
+        "adapterFoundation",
+        "resourceGroup"
+      ]
+    },
+    "foundry": {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "[format('foundry-{0}', variables('suffix'))]",
+      "resourceGroup": "[parameters('resourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "accountName": {
+            "value": "[format('aif-fca2a-{0}-{1}', parameters('environmentName'), variables('suffix'))]"
+          },
+          "projectName": {
+            "value": "[format('fca2a-{0}', parameters('environmentName'))]"
+          },
+          "accessPrincipalId": {
+            "value": "[parameters('accessPrincipalId')]"
+          },
+          "adapterPrincipalId": {
+            "value": "[reference('adapterFoundation').outputs.identityPrincipalId.value]"
+          },
+          "tags": {
+            "value": "[variables('commonTags')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.46.1.21595",
+              "templateHash": "500110920551639298"
+            },
+            "name": "Microsoft Foundry",
+            "description": "Deploys a managed-identity-enabled Foundry account and project."
+          },
+          "parameters": {
+            "location": {
+              "type": "string"
+            },
+            "accountName": {
+              "type": "string"
+            },
+            "projectName": {
+              "type": "string"
+            },
+            "accessPrincipalId": {
+              "type": "string"
+            },
+            "adapterPrincipalId": {
+              "type": "string"
+            },
+            "tags": {
+              "type": "object"
+            }
+          },
+          "variables": {
+            "foundryUserRoleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '53ca6127-db72-4b80-b1b0-d745d6d5456d')]"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.CognitiveServices/accounts",
+              "apiVersion": "2025-06-01",
+              "name": "[parameters('accountName')]",
+              "location": "[parameters('location')]",
+              "kind": "AIServices",
+              "identity": {
+                "type": "SystemAssigned"
+              },
+              "sku": {
+                "name": "S0"
+              },
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "allowProjectManagement": true,
+                "customSubDomainName": "[parameters('accountName')]",
+                "disableLocalAuth": true,
+                "publicNetworkAccess": "Enabled"
+              }
+            },
+            {
+              "type": "Microsoft.CognitiveServices/accounts/projects",
+              "apiVersion": "2025-06-01",
+              "name": "[format('{0}/{1}', parameters('accountName'), parameters('projectName'))]",
+              "location": "[parameters('location')]",
+              "identity": {
+                "type": "SystemAssigned"
+              },
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "description": "Foundry project for governed A2A calls to Copilot Studio.",
+                "displayName": "[format('Foundry Copilot A2A ({0})', parameters('projectName'))]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.CognitiveServices/accounts', parameters('accountName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.CognitiveServices/accounts/projects', parameters('accountName'), parameters('projectName'))]",
+              "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts/projects', parameters('accountName'), parameters('projectName')), parameters('accessPrincipalId'), variables('foundryUserRoleDefinitionId'))]",
+              "properties": {
+                "principalId": "[parameters('accessPrincipalId')]",
+                "principalType": "User",
+                "roleDefinitionId": "[variables('foundryUserRoleDefinitionId')]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.CognitiveServices/accounts/projects', parameters('accountName'), parameters('projectName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.CognitiveServices/accounts/projects', parameters('accountName'), parameters('projectName'))]",
+              "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts/projects', parameters('accountName'), parameters('projectName')), parameters('adapterPrincipalId'), variables('foundryUserRoleDefinitionId'))]",
+              "properties": {
+                "principalId": "[parameters('adapterPrincipalId')]",
+                "principalType": "ServicePrincipal",
+                "roleDefinitionId": "[variables('foundryUserRoleDefinitionId')]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.CognitiveServices/accounts/projects', parameters('accountName'), parameters('projectName'))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "accountId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.CognitiveServices/accounts', parameters('accountName'))]"
+            },
+            "accountEndpoint": {
+              "type": "string",
+              "value": "[format('https://{0}.services.ai.azure.com', parameters('accountName'))]"
+            },
+            "accountPrincipalId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.CognitiveServices/accounts', parameters('accountName')), '2025-06-01', 'full').identity.principalId]"
+            },
+            "projectId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.CognitiveServices/accounts/projects', parameters('accountName'), parameters('projectName'))]"
+            },
+            "projectEndpoint": {
+              "type": "string",
+              "value": "[format('https://{0}.services.ai.azure.com/api/projects/{1}', parameters('accountName'), parameters('projectName'))]"
+            },
+            "projectPrincipalId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.CognitiveServices/accounts/projects', parameters('accountName'), parameters('projectName')), '2025-06-01', 'full').identity.principalId]"
+            }
+          }
         }
       },
       "dependsOn": [
@@ -611,6 +807,9 @@
           "identityResourceGroupName": {
             "value": "[parameters('resourceGroupName')]"
           },
+          "identityClientId": {
+            "value": "[reference('adapterFoundation').outputs.identityClientId.value]"
+          },
           "keyVaultName": {
             "value": "[reference('adapterFoundation').outputs.keyVaultName.value]"
           },
@@ -625,6 +824,12 @@
           },
           "copilotStudioClientId": {
             "value": "[parameters('copilotStudioClientId')]"
+          },
+          "foundryProjectEndpoint": {
+            "value": "[reference('foundry').outputs.projectEndpoint.value]"
+          },
+          "foundryAgentName": {
+            "value": "[parameters('foundryAgentName')]"
           },
           "adapterAllowedOrigins": {
             "value": "[parameters('adapterAllowedOrigins')]"
@@ -649,7 +854,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.46.1.21595",
-              "templateHash": "6403226880001542867"
+              "templateHash": "15206250113940982842"
             },
             "name": "A2A adapter hosting",
             "description": "Deploys the Linux App Service Plan and Linux Web App for the adapter."
@@ -673,6 +878,9 @@
             "identityResourceGroupName": {
               "type": "string"
             },
+            "identityClientId": {
+              "type": "string"
+            },
             "keyVaultName": {
               "type": "string"
             },
@@ -686,6 +894,12 @@
               "type": "string"
             },
             "copilotStudioClientId": {
+              "type": "string"
+            },
+            "foundryProjectEndpoint": {
+              "type": "string"
+            },
+            "foundryAgentName": {
               "type": "string"
             },
             "adapterAllowedOrigins": {
@@ -722,6 +936,7 @@
               "XDT_MicrosoftApplicationInsights_Mode": "recommended",
               "WEBSITES_ENABLE_APP_SERVICE_STORAGE": "false",
               "ASPNETCORE_ENVIRONMENT": "Production",
+              "AZURE_CLIENT_ID": "[parameters('identityClientId')]",
               "Adapter__Backend": "CopilotStudio",
               "Adapter__PublicBaseUrl": "[parameters('adapterPublicBaseUrl')]",
               "Authentication__Enabled": "true",
@@ -743,6 +958,11 @@
               "CopilotStudio__Agents__reverser_new__DisplayName": "Reverser New",
               "CopilotStudio__Agents__reverser_new__Harness": "GitHubCopilot",
               "CopilotStudio__Agents__reverser_new__DirectConnectUrl": "[format('@Microsoft.KeyVault(SecretUri={0}/reverser-new-direct-connect-url)', variables('keyVaultSecretBaseUrl'))]",
+              "CopilotStudio__Agents__orchestrator__DisplayName": "Orchestrator",
+              "CopilotStudio__Agents__orchestrator__DirectConnectUrl": "[format('@Microsoft.KeyVault(SecretUri={0}/orchestrator-direct-connect-url)', variables('keyVaultSecretBaseUrl'))]",
+              "Foundry__Agents__web_research__Id": "web-research",
+              "Foundry__Agents__web_research__DisplayName": "Foundry Web Research",
+              "Foundry__Agents__web_research__Endpoint": "[format('{0}/agents/{1}/endpoint/protocols/a2a', parameters('foundryProjectEndpoint'), parameters('foundryAgentName'))]",
               "OTEL_SERVICE_NAME": "[parameters('webAppName')]",
               "OTEL_RESOURCE_ATTRIBUTES": "[format('deployment.environment={0},service.namespace=foundry-copilot-a2a', parameters('environmentName'))]"
             },
@@ -837,151 +1057,8 @@
         "adapterFoundation",
         "adapterResourceGroup",
         "adapterSecrets",
+        "foundry",
         "monitoring",
-        "resourceGroup"
-      ]
-    },
-    "foundry": {
-      "type": "Microsoft.Resources/deployments",
-      "apiVersion": "2025-04-01",
-      "name": "[format('foundry-{0}', variables('suffix'))]",
-      "resourceGroup": "[parameters('resourceGroupName')]",
-      "properties": {
-        "expressionEvaluationOptions": {
-          "scope": "inner"
-        },
-        "mode": "Incremental",
-        "parameters": {
-          "location": {
-            "value": "[parameters('location')]"
-          },
-          "accountName": {
-            "value": "[format('aif-fca2a-{0}-{1}', parameters('environmentName'), variables('suffix'))]"
-          },
-          "projectName": {
-            "value": "[format('fca2a-{0}', parameters('environmentName'))]"
-          },
-          "accessPrincipalId": {
-            "value": "[parameters('accessPrincipalId')]"
-          },
-          "tags": {
-            "value": "[variables('commonTags')]"
-          }
-        },
-        "template": {
-          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
-          "contentVersion": "1.0.0.0",
-          "metadata": {
-            "_generator": {
-              "name": "bicep",
-              "version": "0.46.1.21595",
-              "templateHash": "3673092155261529295"
-            },
-            "name": "Microsoft Foundry",
-            "description": "Deploys a managed-identity-enabled Foundry account and project."
-          },
-          "parameters": {
-            "location": {
-              "type": "string"
-            },
-            "accountName": {
-              "type": "string"
-            },
-            "projectName": {
-              "type": "string"
-            },
-            "accessPrincipalId": {
-              "type": "string"
-            },
-            "tags": {
-              "type": "object"
-            }
-          },
-          "variables": {
-            "foundryUserRoleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '53ca6127-db72-4b80-b1b0-d745d6d5456d')]"
-          },
-          "resources": [
-            {
-              "type": "Microsoft.CognitiveServices/accounts",
-              "apiVersion": "2025-06-01",
-              "name": "[parameters('accountName')]",
-              "location": "[parameters('location')]",
-              "kind": "AIServices",
-              "identity": {
-                "type": "SystemAssigned"
-              },
-              "sku": {
-                "name": "S0"
-              },
-              "tags": "[parameters('tags')]",
-              "properties": {
-                "allowProjectManagement": true,
-                "customSubDomainName": "[parameters('accountName')]",
-                "disableLocalAuth": true,
-                "publicNetworkAccess": "Enabled"
-              }
-            },
-            {
-              "type": "Microsoft.CognitiveServices/accounts/projects",
-              "apiVersion": "2025-06-01",
-              "name": "[format('{0}/{1}', parameters('accountName'), parameters('projectName'))]",
-              "location": "[parameters('location')]",
-              "identity": {
-                "type": "SystemAssigned"
-              },
-              "tags": "[parameters('tags')]",
-              "properties": {
-                "description": "Foundry project for governed A2A calls to Copilot Studio.",
-                "displayName": "[format('Foundry Copilot A2A ({0})', parameters('projectName'))]"
-              },
-              "dependsOn": [
-                "[resourceId('Microsoft.CognitiveServices/accounts', parameters('accountName'))]"
-              ]
-            },
-            {
-              "type": "Microsoft.Authorization/roleAssignments",
-              "apiVersion": "2022-04-01",
-              "scope": "[resourceId('Microsoft.CognitiveServices/accounts/projects', parameters('accountName'), parameters('projectName'))]",
-              "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts/projects', parameters('accountName'), parameters('projectName')), parameters('accessPrincipalId'), variables('foundryUserRoleDefinitionId'))]",
-              "properties": {
-                "principalId": "[parameters('accessPrincipalId')]",
-                "principalType": "User",
-                "roleDefinitionId": "[variables('foundryUserRoleDefinitionId')]"
-              },
-              "dependsOn": [
-                "[resourceId('Microsoft.CognitiveServices/accounts/projects', parameters('accountName'), parameters('projectName'))]"
-              ]
-            }
-          ],
-          "outputs": {
-            "accountId": {
-              "type": "string",
-              "value": "[resourceId('Microsoft.CognitiveServices/accounts', parameters('accountName'))]"
-            },
-            "accountEndpoint": {
-              "type": "string",
-              "value": "[format('https://{0}.services.ai.azure.com', parameters('accountName'))]"
-            },
-            "accountPrincipalId": {
-              "type": "string",
-              "value": "[reference(resourceId('Microsoft.CognitiveServices/accounts', parameters('accountName')), '2025-06-01', 'full').identity.principalId]"
-            },
-            "projectId": {
-              "type": "string",
-              "value": "[resourceId('Microsoft.CognitiveServices/accounts/projects', parameters('accountName'), parameters('projectName'))]"
-            },
-            "projectEndpoint": {
-              "type": "string",
-              "value": "[format('https://{0}.services.ai.azure.com/api/projects/{1}', parameters('accountName'), parameters('projectName'))]"
-            },
-            "projectPrincipalId": {
-              "type": "string",
-              "value": "[reference(resourceId('Microsoft.CognitiveServices/accounts/projects', parameters('accountName'), parameters('projectName')), '2025-06-01', 'full').identity.principalId]"
-            }
-          }
-        }
-      },
-      "dependsOn": [
         "resourceGroup"
       ]
     },

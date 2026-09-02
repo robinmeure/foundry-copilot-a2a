@@ -22,6 +22,9 @@ public sealed class AdapterOptions
     /// </summary>
     public bool AllowAnonymousDevelopmentMode { get; set; }
 
+    /// <summary>Exposes a deterministic failing agent for local error-state UX testing.</summary>
+    public bool EnableFailureMock { get; set; }
+
     /// <summary>Bounds a single delegated invocation so a hung backend cannot pin a request open.</summary>
     public int RequestTimeoutSeconds { get; set; } = 60;
 
@@ -385,6 +388,7 @@ public sealed record AgentDescriptor(
 public sealed class AgentCatalog
 {
     public const string MockAgentId = "mock";
+    public const string MockFailureAgentId = "mock-failure";
 
     private readonly AdapterOptions _adapterOptions;
     private readonly CopilotStudioOptions _copilotStudioOptions;
@@ -399,14 +403,23 @@ public sealed class AgentCatalog
         _adapterOptions = adapterOptions.Value;
         _copilotStudioOptions = copilotStudioOptions.Value;
 
-        var copilotStudioAgents = _adapterOptions.UseMockBackend
-            ? [new AgentDescriptor(
-                MockAgentId,
-                "Mock Copilot Studio",
-                AgentProvider.CopilotStudio,
-                true,
-                null,
-                [])]
+        var configuredCopilotStudioAgents = _adapterOptions.UseMockBackend
+            ? [
+                new AgentDescriptor(
+                    MockAgentId,
+                    "Mock Copilot Studio",
+                    AgentProvider.CopilotStudio,
+                    true,
+                    null,
+                    []),
+                new AgentDescriptor(
+                    MockFailureAgentId,
+                    "Mock Failure (always fails)",
+                    AgentProvider.CopilotStudio,
+                    true,
+                    null,
+                    [])
+            ]
             : _copilotStudioOptions.ResolveAgents()
                 .Select(agent =>
                 {
@@ -420,6 +433,18 @@ public sealed class AgentCatalog
                         []);
                 })
                 .ToArray();
+        var copilotStudioAgents =
+            !_adapterOptions.UseMockBackend && _adapterOptions.EnableFailureMock
+                ? configuredCopilotStudioAgents
+                    .Append(new AgentDescriptor(
+                        MockFailureAgentId,
+                        "Mock Failure (always fails)",
+                        AgentProvider.CopilotStudio,
+                        true,
+                        null,
+                        []))
+                    .ToArray()
+                : configuredCopilotStudioAgents;
         _foundryAgents = foundryOptions.Value.ResolveAgents()
             .ToDictionary(agent => agent.Id, StringComparer.OrdinalIgnoreCase);
         var copilotTargets = copilotStudioAgents
