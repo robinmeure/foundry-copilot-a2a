@@ -108,27 +108,114 @@ supplying one is the reason this component exists. If Copilot Studio ever speaks
 accepts a delegated token for its own audience, the hop collapses and the adapter is needed only
 for governance.
 
-### Why an app registration is required
+### Why app registrations are required
 
-The chain crosses three identity boundaries, and the app registration is what carries the user's
+The chain crosses three identity boundaries, and the app registrations are what carry the user's
 identity across them instead of degrading to a shared service account.
 
 1. **The adapter must be a protected API.** The browser and Foundry both need something concrete
-   to request a token *for*. The registration supplies the Application ID URI
-   (`api://<client-id>`) and the delegated scope `access_as_user` that the adapter validates.
+   to request a token *for*. The backend registration supplies the Application ID URI
+   (`api://<backend-client-id>`) and the delegated scope `access_as_user` that clients request
+   when calling the adapter.
 2. **Copilot Studio will not accept the adapter's token.** It requires a Power Platform token.
    The adapter therefore performs an **on-behalf-of (OBO)** exchange: it presents the caller's
    token as a user assertion and receives a Power Platform token *for that same user*. OBO
-   requires a confidential client — a client ID plus secret — which is exactly what the
+   requires a confidential client — a client ID plus secret — which is exactly what the backend
    registration provides. A public client cannot do this.
 3. **Foundry needs somewhere to send the user.** OAuth identity passthrough drives an interactive
-   consent flow whose redirect URL must be registered on the same application.
+   consent flow whose redirect URL must be registered on the backend registration.
 
 The alternative — calling as a managed identity — was implemented and tested. It works
 mechanically but sends an **app-only** token with no user behind it, so every request reaches
 Copilot Studio as the application. Per-user isolation, auditing, and any per-user data
 restrictions in the target agent are lost. It also requires an extra Dataverse application-user
 grant. For this scenario the delegated path is the correct one.
+
+### The two app registrations
+
+Two registrations carry that identity, split by what each one is allowed to hold. A browser
+cannot keep a secret, and OBO cannot be performed without one, so the confidential half has to
+live somewhere the user never reaches.
+
+| | Frontend SPA registration | Backend API registration |
+| --- | --- | --- |
+| Client type | Public client, SPA platform, authorization code + PKCE | Confidential client |
+| Client secret | None, ever | Required, read from `COPILOT_STUDIO_CLIENT_SECRET` |
+| Interactive sign-in | Web console | Foundry OAuth passthrough (not the web console) |
+| Exposes | Nothing | `api://<backend-client-id>/access_as_user` |
+| Requests | `access_as_user` on the backend API | `CopilotStudio.Copilots.Invoke` on Power Platform, delegated |
+| Redirect URIs | `http://localhost:5173` as SPA | Foundry passthrough callbacks as Web, one per connection |
+| Consumed by | `src/FoundryCopilotA2A.Web` (`VITE_ENTRA_CLIENT_ID`) | The adapter (`Authentication:*` and `CopilotStudio:*`) |
+
+In the web-console path, the user signs in against the frontend registration and that identity
+is preserved through the whole chain:
+
+```text
+Browser — frontend SPA registration
+  MSAL sign-in with PKCE, no secret in the bundle
+  └─ token A   aud=api://<backend-client-id>   scp=access_as_user   oid=<user>
+        │
+Adapter — backend API registration (confidential)
+  validates token A: issuer, audience, tenant, lifetime
+  OBO: token A as user assertion, authenticated with the backend secret
+  └─ token B   aud=https://api.powerplatform.com   oid=<the same user>
+        │
+Copilot Studio
+  runs the agent as the signed-in user
+```
+
+Nothing flows back the other way. The browser never receives token B, the Power Platform scope,
+or the backend secret. Token A cannot be redeemed directly for a Power Platform token without
+the backend credential. It is still a bearer token, however: anyone who obtains it can call the
+adapter until it expires, subject to the adapter's authorization and replay controls.
+
+**The registration identified by the incoming token's audience must be the registration that
+performs the OBO exchange.** Entra rejects an assertion minted for a different application with
+`AADSTS500131`, *"Assertion audience does not match the Client app presenting the assertion"*.
+The adapter therefore uses the backend registration twice, and `run-adapter --client-id` derives
+both sides from that one value:
+
+| Adapter setting | Value | Role |
+| --- | --- | --- |
+| `Authentication:Authority` | `https://login.microsoftonline.com/<tenant-id>/v2.0` | Inbound validation |
+| `Authentication:Audience` | `api://<backend-client-id>` | Inbound validation |
+| `CopilotStudio:ClientId` | `<backend-client-id>` | OBO client — must be the same application |
+| `CopilotStudio:ClientSecret` | the backend secret, from the environment | OBO credential |
+
+A third registration dedicated to "the OBO app" is therefore not possible. In the other
+direction, the frontend registration's client ID never appears in adapter configuration at all:
+the adapter checks which *audience* it was called for, not which client obtained the token. Any
+number of front ends can be added by granting them `access_as_user` — no adapter change and no
+extra secret.
+
+Two delegated grants exist, and neither implies the other:
+
+1. Frontend SPA → backend `access_as_user`, consented by the user or an administrator before or
+   during the first API-token request.
+2. Backend → Power Platform `CopilotStudio.Copilots.Invoke`, consented separately — per user
+   with `dotnet run --project src/FoundryCopilotA2A.Cli -- consent`, or tenant-wide by an
+   administrator.
+
+If the second grant is missing, sign-in still succeeds and the adapter still accepts the
+request; the failure appears only at the OBO call, as `AADSTS65001`. That asymmetry is the most
+common confusion in this setup, so check the **Status** column on both registrations rather than
+one.
+
+Giving the SPA `CopilotStudio.Copilots.Invoke` directly would not remove the adapter — Copilot
+Studio publishes no A2A endpoint, which is the reason this component exists — and it would let
+the browser request a Power Platform token usable within that user's permissions, outside the
+adapter's validation, replay protection, and tracing. Microsoft's guidance is the same: a
+single-page application should pass its token to a middle-tier confidential client rather than
+attempt OBO itself.
+
+**The Foundry path reuses only the backend registration.** A Foundry OAuth identity passthrough
+connection requests `api://<backend-client-id>/access_as_user`, and the callback the portal
+generates is added as a Web redirect URI on that same backend registration. Foundry replaces the
+browser as the front door while the adapter validation and OBO sequence stays the same, so the
+frontend SPA registration plays no part in a Foundry-originated call.
+
+Step-by-step configuration for both registrations is in
+[`docs/spa-app-registration.md`](./docs/spa-app-registration.md).
 
 ### Is Dev Tunnel → App Service + APIM sufficient?
 
@@ -783,8 +870,8 @@ with `ARA OBO token request failed with status BadRequest`.
 > An existing OAuth connection **cannot be repaired in place**. The portal's Edit dialog reports
 > "OAuth doesn't support updating the configuration" and disables **Update**, so a connection
 > created out-of-band must be deleted and recreated through the portal. Recreating issues a new
-> redirect URL, which must be added as an **additional** Web redirect URI on the app registration
-> — keep the existing ones, since every connection has its own.
+> redirect URL, which must be added as an **additional** Web redirect URI on the backend app
+> registration — keep the existing ones, since every connection has its own.
 > In the create dialog, leave **Agent Card Path** at its `/.well-known/agent-card.json` default
 > and leave **Authenticate when retrieving agent card** unchecked, because the adapter serves
 > chain agent cards anonymously.
@@ -794,8 +881,8 @@ The working sequence is: create the connection in the portal, then attach it wit
 1. **Foundry portal → Build → Tools → Connect a tool → Agent2agent (A2A) → "Connect via endpoint"**,
    targeting the target-specific route `https://<public-adapter-host>/a2a-agents/<target-id>/a2a`
    with **OAuth Identity Passthrough**.
-2. Add the redirect URL the portal generates as an **additional** Web redirect URI on the app
-   registration.
+2. Add the redirect URL the portal generates as an **additional** Web redirect URI on the backend
+   app registration — the one whose `access_as_user` scope the connection requests.
 3. Attach the connection and publish a new agent version:
 
 ```text

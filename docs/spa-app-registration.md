@@ -19,6 +19,92 @@ React SPA
 Never put the backend client secret in the React application or a `VITE_*` variable. Vite
 variables are compiled into browser-visible JavaScript.
 
+## How the split works at runtime
+
+The two registrations are not interchangeable halves of one identity. Each one holds exactly the
+credential type its host can protect, and the boundary between them is the point where a
+browser-held token becomes a Copilot Studio-usable one.
+
+### The sequence
+
+1. **Sign-in.** MSAL Browser runs authorization code with PKCE against the *frontend* client ID
+   and the tenant authority. No secret is involved; a public client cannot have one that stays
+   secret in downloaded JavaScript.
+2. **Token A.** The SPA requests `api://<backend-client-id>/access_as_user`. Entra issues a token
+   whose `aud` is the *backend* registration and whose `oid` identifies the signed-in user. The
+   `appid`/`azp` claim identifies the frontend registration as the client that asked.
+3. **Call.** The browser sends token A to the adapter as `Authorization: Bearer`. The adapter
+   validates issuer, audience, tenant, and lifetime against its `Authentication:*` settings, all
+   of which describe the backend registration. The requested `access_as_user` scope is also
+   advertised in the agent card and appears in the delegated token's `scp` claim.
+4. **Token B.** The adapter performs OBO: it presents token A as a user assertion, authenticates
+   as the backend confidential client with `COPILOT_STUDIO_CLIENT_SECRET`, and requests
+   `https://api.powerplatform.com/.default`. Entra returns a Power Platform token carrying the
+   *same* `oid`.
+5. **Invoke.** `Microsoft.Agents.CopilotStudio.Client` calls Copilot Studio with token B. The
+   agent runs as the signed-in user, not as a service account.
+
+```text
+frontend client id ──asks for──> backend audience ──OBO──> Power Platform audience
+      (public)                     (confidential)              (same user throughout)
+```
+
+### The invariant
+
+**The application that the incoming token was issued *for* must be the application that performs
+the OBO exchange.** Entra enforces this: an assertion whose `aud` belongs to another application
+is rejected with `AADSTS500131`, *"Assertion audience does not match the Client app presenting
+the assertion"*.
+
+In adapter configuration that means these two must describe the same registration:
+
+| Setting | Value | Registration |
+| --- | --- | --- |
+| `Authentication:Authority` | `https://login.microsoftonline.com/<tenant-id>/v2.0` | Backend |
+| `Authentication:Audience` | `api://<backend-client-id>` | Backend |
+| `CopilotStudio:TenantId` | `<tenant-id>` | Backend |
+| `CopilotStudio:ClientId` | `<backend-client-id>` | Backend |
+| `CopilotStudio:ClientSecret` | secret value from the environment | Backend |
+
+`run-adapter` uses `--client-id <backend-client-id>` for both
+`Authentication:Audience` and `CopilotStudio:ClientId`, `--tenant-id` for the authority and
+Copilot Studio tenant, and the environment variable for the secret. The command never needs the
+SPA ID. Splitting OBO into a third registration is not possible.
+
+The frontend registration is deliberately absent from that table. The adapter's JWT middleware
+validates the resource-side issuer, audience, and lifetime, not the client application's
+`appid`/`azp`, so additional front ends (a second SPA, a desktop client, a test harness) only
+need their own grant of `access_as_user`. No adapter setting and no extra secret changes.
+
+### What each side must not have
+
+| Anti-pattern | Why it fails |
+| --- | --- |
+| Client secret on the SPA registration | The secret ships in the bundle; a public client cannot protect it, and OBO would still have to run server-side |
+| `CopilotStudio.Copilots.Invoke` granted to the SPA | The browser could request a Power Platform token usable within the user's permissions, bypassing the adapter's validation, replay protection, and tracing |
+| SPA redirect URI on the backend registration | Lets a browser obtain tokens directly against the confidential app; remove it once the dedicated SPA works |
+| Separate "OBO application" | Rejected by Entra with `AADSTS500131` — see the invariant above |
+| `VITE_ADAPTER_API_CLIENT_ID` set to the SPA ID | Requests a scope on an application that exposes none; token acquisition fails, commonly with a resource-not-found or invalid-scope error |
+
+### The two grants
+
+There are two independent delegated grants, and granting one never grants the other:
+
+| Grant | Client | Resource | Consented by |
+| --- | --- | --- | --- |
+| 1 | Frontend SPA | Backend `access_as_user` | The user or an administrator, before or during the first API-token request |
+| 2 | Backend API | Power Platform `CopilotStudio.Copilots.Invoke` | The user via the `consent` command, or an administrator tenant-wide |
+
+If grant 1 cannot be obtained, basic sign-in may still succeed, but acquisition of the backend
+API token fails visibly in the browser. Grant 2 missing fails farther downstream: sign-in
+succeeds, the adapter accepts the request, and only the OBO call fails, with `AADSTS65001`.
+Always check the **API permissions > Status** column on both registrations rather than one.
+
+Entra can also gather both grants in a single consent experience when the SPA is listed in the
+backend registration's `knownClientApplications` and the client uses the documented `.default`
+consent pattern. This repository does not rely on that, because the backend's Power Platform
+grant is normally established once, out of band, by the `consent` command or an administrator.
+
 ## 1. Configure the backend API registration
 
 The existing adapter registration can be retained as the backend registration.
@@ -146,16 +232,24 @@ pass `--allowed-origin <exact-origin>`.
 
 ## 5. Validate the token chain
 
-After signing in, inspect the access token sent to the adapter:
+After signing in, inspect the access token sent to the adapter. Every claim below is what tells
+the two registrations apart:
 
-- `aud` is the backend Application ID URI or backend client ID.
-- `tid` is the configured tenant.
-- `oid` identifies the signed-in user.
-- `scp` contains `access_as_user`.
+| Claim | Expected value | What it proves |
+| --- | --- | --- |
+| `aud` | `api://<backend-client-id>` or the bare backend client ID | The token is for the backend registration, so OBO can redeem it |
+| `appid` / `azp` | The **frontend** SPA client ID for a web-console call | The public client obtained the token; the split is working |
+| `tid` | The configured tenant | Cross-tenant callers are rejected |
+| `oid` | The signed-in user's object ID | Identifies the user represented by this delegated token |
+| `scp` | Contains `access_as_user` | A delegated token — app-only tokens do not have `scp` |
+
+For a web-console call, matching `aud` and `appid`/`azp` GUIDs indicate that the browser is still
+using one shared registration instead of the intended split.
 
 The browser must never receive a Power Platform token or the backend secret. The adapter
 validates the browser token and performs OBO for
-`https://api.powerplatform.com/.default`.
+`https://api.powerplatform.com/.default`. The resulting token keeps the same `oid` and never
+leaves the adapter process.
 
 ## Troubleshooting
 
@@ -186,6 +280,41 @@ There are two separate delegated grants:
 Granting one does not grant the other. Check the **Status** column under **API permissions**
 for both registrations.
 
+### `AADSTS500131`
+
+*"Assertion audience does not match the Client app presenting the assertion."*
+
+The adapter accepted a token issued for one application and tried to redeem it as another. The
+audience it validates and the client it performs OBO with must be the same registration:
+
+1. Confirm `Authentication:Audience` is `api://<backend-client-id>`.
+2. Confirm `CopilotStudio:ClientId` is that same `<backend-client-id>`.
+3. Confirm `VITE_ADAPTER_API_CLIENT_ID` is the backend ID, so the browser requests that audience.
+
+`run-adapter --client-id <backend-client-id>` sets both adapter values from one argument, so this
+usually means the adapter was started from hand-written configuration, or with the SPA client ID.
+
+### `AADSTS65001` at the OBO call
+
+*"The user or administrator has not consented to use the application with ID ..."*
+
+Sign-in worked and the adapter's token validation worked, so this is grant 2, not grant 1: the
+backend registration has no delegated grant for `CopilotStudio.Copilots.Invoke` for this user.
+Grant it per user, which is enough for the on-behalf-of exchange:
+
+```text
+dotnet run --project src/FoundryCopilotA2A.Cli -- consent --tenant-id <tenant-id> --client-id <backend-client-id>
+```
+
+Pass the **backend** client ID. Consenting the SPA registration again does not help.
+
+### The browser signs in but every adapter call returns 401
+
+Token acquisition and token validation are different registrations' concerns. A successful
+sign-in only proves the frontend registration works. Decode the bearer token and compare its
+`aud` with `Authentication:Audience` and its `tid` with the tenant in
+`Authentication:Authority`; a mismatch there is the usual cause.
+
 ## Microsoft references
 
 - [Register a single-page application](https://learn.microsoft.com/entra/identity-platform/scenario-spa-app-registration)
@@ -193,3 +322,4 @@ for both registrations.
 - [Single-page application: call a web API](https://learn.microsoft.com/entra/identity-platform/scenario-spa-call-api)
 - [OAuth 2.0 on-behalf-of flow](https://learn.microsoft.com/entra/identity-platform/v2-oauth2-on-behalf-of-flow)
 - [AADSTS500011: resource principal not found](https://learn.microsoft.com/troubleshoot/entra/entra-id/app-integration/error-code-aadsts500011-resource-principal-not-found)
+- [Microsoft Entra authentication and authorization error codes](https://learn.microsoft.com/entra/identity-platform/reference-error-codes)

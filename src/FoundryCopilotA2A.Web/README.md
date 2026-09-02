@@ -25,11 +25,12 @@ Vite origin. Create it against an existing backend registration with:
 dotnet run --project src/FoundryCopilotA2A.Cli -- register-spa --api-client-id <backend-client-id>
 ```
 
-MSAL caches the user's tokens in browser session storage; the app registration client secret
-is used only by the adapter and must never be placed in a Vite environment variable.
+MSAL caches the user's tokens in browser session storage; the backend app registration's client
+secret is used only by the adapter and must never be placed in a Vite environment variable.
 
-See the complete [shared SPA and adapter app registration guide](../../docs/spa-app-registration.md)
-for portal configuration, consent, service-principal checks, and `AADSTS500011` troubleshooting.
+See the [frontend and backend app registration guide](../../docs/spa-app-registration.md) for how
+the two registrations divide responsibilities at runtime, portal configuration, consent,
+service-principal checks, and `AADSTS500011` / `AADSTS500131` / `AADSTS65001` troubleshooting.
 
 ## Run
 
