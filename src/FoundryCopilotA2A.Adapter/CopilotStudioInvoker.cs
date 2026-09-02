@@ -18,7 +18,8 @@ public sealed record CopilotInvocationResult(
 public sealed record CopilotInvocationUpdate(
     string Text,
     string? ConversationId,
-    string? ResponseId);
+    string? ResponseId,
+    bool IsInformative = false);
 
 public interface ICopilotStudioInvoker
 {
@@ -32,6 +33,13 @@ public sealed class MockCopilotStudioInvoker : ICopilotStudioInvoker
 {
     public const string FailureReason =
         "The mock Copilot Studio service is unavailable. Try the request again.";
+
+    /// <summary>Prompt that makes the mock reproduce a streamed Copilot Studio answer.</summary>
+    public const string StreamProgressPrompt = "stream progress response";
+
+    /// <summary>The answer the mock streams token by token for <see cref="StreamProgressPrompt"/>.</summary>
+    public static readonly string[] StreamedAnswerDeltas =
+        ["mock-copilot-studio", ": streamed", " answer", "."];
 
     private int _invocationCount;
 
@@ -66,6 +74,28 @@ public sealed class MockCopilotStudioInvoker : ICopilotStudioInvoker
             : $" | context: {metadata.History.Count} earlier turns";
 
         await Task.Yield();
+        if (string.Equals(prompt, StreamProgressPrompt, StringComparison.Ordinal))
+        {
+            yield return new CopilotInvocationUpdate(
+                "Generating plan...",
+                conversationId,
+                $"mock-progress-{invocation}",
+                IsInformative: true);
+
+            // Mirrors a real streamed answer: the caller receives token-sized chunks and no
+            // repeated aggregate at the end.
+            var index = 0;
+            foreach (var delta in StreamedAnswerDeltas)
+            {
+                yield return new CopilotInvocationUpdate(
+                    delta,
+                    conversationId,
+                    $"mock-delta-{invocation}-{index++}");
+            }
+
+            yield break;
+        }
+
         yield return new CopilotInvocationUpdate(
             $"mock-copilot-studio[{invocation}]: {prompt}{historySuffix}",
             conversationId,
@@ -369,20 +399,23 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
             activitySummary,
             allowOAuthChallenge: true,
             cancellationToken);
-        var emittedText = false;
+        var emittedFinalText = false;
         OAuthCardInfo? cardDuringTurn = null;
         await foreach (var item in answer)
         {
             cardDuringTurn ??= item.Card;
             if (item.Update is not null)
             {
-                emittedText = true;
+                // A stream of whitespace fragments is not a usable answer, so it must not
+                // satisfy the response check or suppress the sign-in retry below.
+                emittedFinalText |= !item.Update.IsInformative &&
+                                    !string.IsNullOrWhiteSpace(item.Update.Text);
                 yield return item.Update;
             }
         }
 
         // The card can also arrive in response to the user's message rather than at startup.
-        if (!emittedText && cardDuringTurn is not null)
+        if (!emittedFinalText && cardDuringTurn is not null)
         {
             traceActivity?.SetTag("copilot_studio.token_exchange.required", true);
             await PerformTokenExchangeAsync(
@@ -400,13 +433,14 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
             {
                 if (item.Update is not null)
                 {
-                    emittedText = true;
+                    emittedFinalText |= !item.Update.IsInformative &&
+                                        !string.IsNullOrWhiteSpace(item.Update.Text);
                     yield return item.Update;
                 }
             }
         }
 
-        if (!emittedText)
+        if (!emittedFinalText)
         {
             var exception = new CopilotStudioResponseException(
                 activitySummary.CreateEmptyResponseMessage());
@@ -444,7 +478,7 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
     {
         using var traceActivity = AdapterTelemetry.StartActivity("copilot_studio.collect_answer");
         var collectionSummary = new CopilotStudioActivitySummary();
-        var needsSeparator = false;
+        var answerStream = new CopilotStudioAnswerStream();
 
         await foreach (var activity in activities.WithCancellation(cancellationToken))
         {
@@ -456,32 +490,44 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
             var card = ExtractOAuthCard(activity);
             var connectionManagerText =
                 CopilotStudioAttachmentText.ExtractConnectionManagerCardText(activity);
-            var responseText = string.IsNullOrWhiteSpace(activity.Text)
-                ? connectionManagerText
-                : activity.Text;
+            var isMessage =
+                string.Equals(activity.Type, "message", StringComparison.OrdinalIgnoreCase);
+            var messageText = isMessage
+                ? string.IsNullOrWhiteSpace(activity.Text)
+                    ? connectionManagerText
+                    : activity.Text
+                : null;
+
+            // A suppressed final message is still observed, so a fully streamed turn is never
+            // misreported as an empty response.
             collectionSummary.Observe(
                 activity,
                 card is not null,
-                responseText,
+                messageText,
                 connectionManagerText is not null);
             if (card is not null)
             {
                 yield return new AnswerStreamItem(null, card);
             }
 
-            if (string.Equals(activity.Type, "message", StringComparison.OrdinalIgnoreCase) &&
-                !string.IsNullOrWhiteSpace(responseText))
+            if (answerStream.Next(activity, messageText) is not { } chunk)
             {
-                var text = needsSeparator
-                    ? Environment.NewLine + responseText
-                    : responseText;
-                needsSeparator = true;
-                yield return new AnswerStreamItem(
-                    new CopilotInvocationUpdate(text, conversationId, activity.Id),
-                    null);
+                continue;
             }
+
+            yield return new AnswerStreamItem(
+                new CopilotInvocationUpdate(
+                    chunk.Text,
+                    conversationId,
+                    activity.Id,
+                    chunk.IsInformative),
+                null);
         }
 
+        traceActivity?.SetTag("copilot_studio.stream.delta.count", answerStream.DeltaCount);
+        traceActivity?.SetTag(
+            "copilot_studio.stream.final.suppressed",
+            answerStream.SuppressedFinalCount);
         turnSummary.Merge(collectionSummary);
         collectionSummary.RecordTelemetry(traceActivity, allowOAuthChallenge);
     }
@@ -836,6 +882,173 @@ internal static class CopilotStudioAttachmentText
                 CollectTextBlocks(property.Value, textBlocks);
             }
         }
+    }
+}
+
+internal readonly record struct CopilotStudioAnswerChunk(string Text, bool IsInformative);
+
+/// <summary>
+/// Assembles one Copilot Studio turn into ordered chunks.
+/// <para>
+/// A streamed answer arrives as informative typing ("Generating plan..."), then typing deltas
+/// that build the answer token by token, then a final message whose text is exactly the
+/// concatenation of those deltas. All three share one stream id. Forwarding both the deltas and
+/// the final message would therefore return the answer twice, so a final message is dropped once
+/// its stream has already been forwarded. Agents that never stream still send only a message,
+/// which is forwarded unchanged.
+/// </para>
+/// </summary>
+internal sealed class CopilotStudioAnswerStream
+{
+    private readonly HashSet<string> _streamedIds = new(StringComparer.Ordinal);
+    private bool _needsSeparator;
+
+    public int DeltaCount { get; private set; }
+
+    public int SuppressedFinalCount { get; private set; }
+
+    /// <param name="messageText">
+    /// The resolved text of a message activity, which may come from an adaptive card rather than
+    /// <see cref="IActivity.Text"/>. Null for every activity that is not a message.
+    /// </param>
+    /// <returns>The chunk to forward, or null when the activity contributes nothing.</returns>
+    public CopilotStudioAnswerChunk? Next(IActivity activity, string? messageText)
+    {
+        var isMessage = messageText is not null ||
+                        string.Equals(activity.Type, "message", StringComparison.OrdinalIgnoreCase);
+        var stream = CopilotStudioStreamingText.ReadStreamInfo(activity);
+
+        // Only a delta that carried text can stand in for the final message; a stream of empty
+        // deltas must still let that message through.
+        var isDelta = stream.Role == CopilotStudioStreamRole.Delta &&
+                      !string.IsNullOrEmpty(activity.Text);
+
+        if (stream.Role == CopilotStudioStreamRole.Final &&
+            stream.StreamId is not null &&
+            _streamedIds.Contains(stream.StreamId))
+        {
+            SuppressedFinalCount++;
+            return null;
+        }
+
+        var text = isMessage
+            ? messageText
+            : stream.Role is CopilotStudioStreamRole.Informative or CopilotStudioStreamRole.Delta
+                ? activity.Text
+                : null;
+
+        // A delta may legitimately be a lone space or newline, so answer fragments are dropped
+        // only when truly empty; everything else keeps the whitespace guard.
+        if (isDelta ? string.IsNullOrEmpty(text) : string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        if (!isMessage && !isDelta)
+        {
+            return new CopilotStudioAnswerChunk(text!, IsInformative: true);
+        }
+
+        // Deltas are fragments of a single answer, so only the first is separated from whatever
+        // preceded it and the rest concatenate verbatim.
+        var continuesStream = isDelta &&
+                              stream.StreamId is not null &&
+                              _streamedIds.Contains(stream.StreamId);
+        var separated = _needsSeparator && !continuesStream
+            ? Environment.NewLine + text
+            : text!;
+        _needsSeparator = true;
+
+        if (isDelta)
+        {
+            DeltaCount++;
+            if (stream.StreamId is not null)
+            {
+                _streamedIds.Add(stream.StreamId);
+            }
+        }
+
+        return new CopilotStudioAnswerChunk(separated, IsInformative: false);
+    }
+}
+
+/// <summary>What a Copilot Studio activity contributes to the streamed answer.</summary>
+internal enum CopilotStudioStreamRole
+{
+    /// <summary>Not part of a stream; treated as a standalone response.</summary>
+    None,
+
+    /// <summary>Transient progress such as "Generating plan..."; never part of the answer.</summary>
+    Informative,
+
+    /// <summary>An incremental chunk of the answer.</summary>
+    Delta,
+
+    /// <summary>The completed answer. Repeats every delta already sent for the same stream.</summary>
+    Final
+}
+
+internal readonly record struct CopilotStudioStreamInfo(
+    CopilotStudioStreamRole Role,
+    string? StreamId)
+{
+    public static readonly CopilotStudioStreamInfo None = new(CopilotStudioStreamRole.None, null);
+}
+
+internal static class CopilotStudioStreamingText
+{
+    /// <summary>
+    /// Classifies an activity against the Copilot Studio streaming protocol. A streamed answer
+    /// arrives as informative typing, then delta typing, then a final message that repeats the
+    /// concatenation of those deltas, all sharing one stream id.
+    /// </summary>
+    public static CopilotStudioStreamInfo ReadStreamInfo(IActivity activity)
+    {
+        if (activity.ChannelData is null)
+        {
+            return CopilotStudioStreamInfo.None;
+        }
+
+        var channelData = activity.ChannelData switch
+        {
+            JsonElement element => element,
+            JsonDocument document => document.RootElement,
+            _ => JsonSerializer.SerializeToElement(
+                activity.ChannelData,
+                activity.ChannelData.GetType())
+        };
+
+        if (channelData.ValueKind != JsonValueKind.Object ||
+            !channelData.TryGetProperty("streamType", out var streamType) ||
+            streamType.ValueKind != JsonValueKind.String)
+        {
+            return CopilotStudioStreamInfo.None;
+        }
+
+        // Progress and deltas ride on typing activities; only the committed answer is a message.
+        // Anything else carrying a streamType is outside the protocol and is ignored.
+        var isTyping = string.Equals(activity.Type, "typing", StringComparison.OrdinalIgnoreCase);
+        var isMessage = string.Equals(activity.Type, "message", StringComparison.OrdinalIgnoreCase);
+        var role = streamType.GetString()?.ToLowerInvariant() switch
+        {
+            "informative" when isTyping => CopilotStudioStreamRole.Informative,
+            "streaming" when isTyping => CopilotStudioStreamRole.Delta,
+            "final" when isMessage => CopilotStudioStreamRole.Final,
+            _ => CopilotStudioStreamRole.None
+        };
+
+        if (role == CopilotStudioStreamRole.None)
+        {
+            return CopilotStudioStreamInfo.None;
+        }
+
+        // The first activity of a stream omits streamId and establishes it through its own id.
+        var streamId = channelData.TryGetProperty("streamId", out var id) &&
+                       id.ValueKind == JsonValueKind.String
+            ? id.GetString()
+            : activity.Id;
+
+        return new CopilotStudioStreamInfo(role, streamId);
     }
 }
 

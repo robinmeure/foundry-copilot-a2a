@@ -93,17 +93,35 @@ export async function listAgents(
   return (await response.json()) as CopilotAgentCatalog
 }
 
+/** A text fragment of an A2A response, plus how it joins the answer so far. */
+interface A2APart {
+  text?: string
+  metadata?: { isInformative?: boolean }
+}
+
 export interface JsonRpcResponse {
   error?: {
     code?: number
     message?: string
   }
   result?: {
-    message?: {
-      parts?: Array<{ text?: string }>
+    /** Incremental answer chunk emitted while the task runs. */
+    artifactUpdate?: {
+      artifact?: { parts?: A2APart[] }
+      /** False on the first chunk of an artifact, true for each chunk appended after it. */
+      append?: boolean
+      lastChunk?: boolean
     }
-    parts?: Array<{ text?: string }>
+    /** Whole answer, used when the response is a single message rather than a task. */
+    message?: { parts?: A2APart[] }
+    parts?: A2APart[]
   }
+}
+
+interface AnswerChunk {
+  text: string
+  isInformative: boolean
+  append: boolean
 }
 
 export interface SendMessageOptions {
@@ -116,6 +134,8 @@ export interface SendMessageOptions {
   history?: ConversationTurn[]
   chainTargetAgentId?: string
   onRequest?: (request: A2AHttpRequest) => void
+  onUpdate?: (answer: string) => void
+  onProgress?: (message: string) => void
   onResponse?: (response: A2AHttpResponse, durationMs: number) => void
   onTrace?: (trace?: AdapterTrace, error?: string) => void
 }
@@ -129,6 +149,8 @@ export async function sendMessage({
   history = [],
   chainTargetAgentId,
   onRequest,
+  onUpdate,
+  onProgress,
   onResponse,
   onTrace,
 }: SendMessageOptions): Promise<A2AExchange> {
@@ -137,7 +159,7 @@ export async function sendMessage({
   const body = {
     jsonrpc: '2.0',
     id: crypto.randomUUID(),
-    method: 'SendMessage',
+    method: 'SendStreamingMessage',
     params: {
       message: {
         role: 'ROLE_USER',
@@ -177,8 +199,14 @@ export async function sendMessage({
   })
 
   const contentType = response.headers.get('Content-Type') ?? ''
-  const responseText = await response.text()
+  const { responseText, answer, rpcError } = await readStreamingResponse(
+    response,
+    onUpdate,
+    onProgress,
+  )
   const responseBody = parseResponseBody(responseText, contentType)
+  const jsonRpcResponse = asJsonRpcResponse(responseBody)
+  const effectiveRpcError = rpcError ?? jsonRpcResponse?.error
   const exchangeResponse: A2AHttpResponse = {
     status: response.status,
     statusText: response.statusText,
@@ -192,28 +220,22 @@ export async function sendMessage({
     accessToken,
     onTrace,
   )
-  const rpcResponse = asJsonRpcResponse(responseBody)
   if (!response.ok) {
     throw new Error(
-      rpcResponse?.error?.message ?? `Adapter returned HTTP ${response.status}.`,
+      effectiveRpcError?.message ?? `Adapter returned HTTP ${response.status}.`,
     )
   }
-  if (!contentType.toLowerCase().includes('application/json')) {
+  if (effectiveRpcError) {
+    throw new Error(
+      effectiveRpcError.message ??
+        `A2A error ${effectiveRpcError.code ?? 'unknown'}.`,
+    )
+  }
+  if (!contentType.toLowerCase().includes('text/event-stream')) {
     throw new Error(
       `Adapter returned unsupported content type '${contentType || 'unknown'}'.`,
     )
   }
-  if (!rpcResponse) {
-    throw new Error('Adapter returned an invalid JSON-RPC response.')
-  }
-  if (rpcResponse.error) {
-    throw new Error(
-      rpcResponse.error.message ??
-        `A2A error ${rpcResponse.error.code ?? 'unknown'}.`,
-    )
-  }
-
-  const answer = extractEventText(rpcResponse)
   if (!answer) {
     throw new Error('The adapter returned no text response.')
   }
@@ -230,12 +252,6 @@ export async function sendMessage({
     }
   }
 
-  function asJsonRpcResponse(value: unknown): JsonRpcResponse | undefined {
-    return typeof value === 'object' && value !== null
-      ? (value as JsonRpcResponse)
-      : undefined
-  }
-
   return {
     answer,
     durationMs,
@@ -244,6 +260,129 @@ export async function sendMessage({
     trace,
     traceError,
   }
+}
+
+async function readStreamingResponse(
+  response: Response,
+  onUpdate?: (answer: string) => void,
+  onProgress?: (message: string) => void,
+) {
+  if (!response.body) {
+    throw new Error('The adapter returned a streaming response without a body.')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let pending = ''
+  let responseText = ''
+  let answer = ''
+  let rpcError: JsonRpcResponse['error']
+
+  const processEvent = (event: string) => {
+    const data = event
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice('data:'.length).trimStart())
+      .join('\n')
+    if (!data || data === 'end') {
+      return
+    }
+
+    let rpcResponse: JsonRpcResponse
+    try {
+      rpcResponse = JSON.parse(data) as JsonRpcResponse
+    } catch {
+      throw new Error('The adapter returned an invalid JSON-RPC streaming event.')
+    }
+
+    if (rpcResponse.error) {
+      rpcError = rpcResponse.error
+      return
+    }
+
+    for (const chunk of answerChunks(rpcResponse)) {
+      if (chunk.isInformative) {
+        onProgress?.(chunk.text)
+        continue
+      }
+
+      // A chunk that does not append restarts the artifact it belongs to.
+      answer = chunk.append ? answer + chunk.text : chunk.text
+      onUpdate?.(answer)
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) {
+      break
+    }
+
+    const chunk = decoder.decode(value, { stream: true })
+    responseText += chunk
+    pending += chunk
+    const events = pending.split(/\r?\n\r?\n/)
+    pending = events.pop() ?? ''
+    events.forEach(processEvent)
+  }
+
+  const remainder = decoder.decode()
+  responseText += remainder
+  pending += remainder
+  if (pending.trim()) {
+    processEvent(pending)
+  }
+
+  return { responseText, answer, rpcError }
+}
+
+function asJsonRpcResponse(value: unknown): JsonRpcResponse | undefined {
+  return typeof value === 'object' && value !== null
+    ? (value as JsonRpcResponse)
+    : undefined
+}
+
+/**
+ * Reads the answer fragments of one streamed event. Only artifact and message parts carry the
+ * answer; task status updates carry generic lifecycle text that must not be shown as the answer.
+ */
+function answerChunks(response: JsonRpcResponse): AnswerChunk[] {
+  const result = response.result
+  if (!result) {
+    return []
+  }
+
+  const artifactUpdate = result.artifactUpdate
+  const parts = artifactUpdate
+    ? artifactUpdate.artifact?.parts
+    : (result.message?.parts ?? result.parts)
+  if (!parts?.length) {
+    return []
+  }
+
+  const chunks: AnswerChunk[] = []
+  for (const part of parts) {
+    if (part.text && part.metadata?.isInformative === true) {
+      chunks.push({ text: part.text, isInformative: true, append: false })
+    }
+  }
+
+  // The answer parts of one event belong to a single chunk, so they are joined before the
+  // append flag is applied once. A2A appends only when the update says so; anything else
+  // restarts the artifact.
+  const answer = parts
+    .filter((part) => part.text && part.metadata?.isInformative !== true)
+    .map((part) => part.text)
+    .join('')
+  if (answer) {
+    chunks.push({
+      text: answer,
+      isInformative: false,
+      append: artifactUpdate?.append === true,
+    })
+  }
+
+  return chunks
 }
 
 async function resolveResponseTrace(
@@ -267,27 +406,6 @@ async function resolveResponseTrace(
   }
   onTrace?.(trace, traceError)
   return { trace, traceError }
-}
-
-function extractEventText(response: JsonRpcResponse): string {
-  const result = response.result as
-    | {
-        message?: { parts?: Array<{ text?: string }> }
-        artifact?: { parts?: Array<{ text?: string }> }
-        status?: { message?: { parts?: Array<{ text?: string }> } }
-        parts?: Array<{ text?: string }>
-      }
-    | undefined
-  const parts =
-    result?.artifact?.parts ??
-    result?.status?.message?.parts ??
-    result?.message?.parts ??
-    result?.parts ??
-    []
-  return parts
-    .map((part) => part.text)
-    .filter((part): part is string => Boolean(part))
-    .join('\n')
 }
 
 async function loadTrace(

@@ -39,6 +39,7 @@ interface TurnRecord {
   index: number
   prompt: string
   answer?: string
+  progress?: string
   error?: string
   agentName: string
   chain?: {
@@ -227,6 +228,8 @@ function App({ config }: AppProps) {
         history,
         chainTargetAgentId: mode === 'chain' ? selectedAgentBId : undefined,
         onRequest: (request) => updateTurn(turnId, { request, status: 'sending' }),
+        onUpdate: (answer) => updateTurn(turnId, { answer }),
+        onProgress: (progress) => updateTurn(turnId, { progress }),
         onResponse: (response, durationMs) => {
           receivedResponse = true
           updateTurn(turnId, { response, durationMs })
@@ -239,7 +242,11 @@ function App({ config }: AppProps) {
           updateTurn(turnId, { trace, traceError })
         },
       })
-      updateTurn(turnId, { answer: exchange.answer, status: 'succeeded' })
+      updateTurn(turnId, {
+        answer: exchange.answer,
+        progress: undefined,
+        status: 'succeeded',
+      })
     } catch (reason) {
       const message = toErrorMessage(reason)
       failTurn(turnId, message)
@@ -571,6 +578,11 @@ function TurnBlock({
               <span className="wire-path">{spanCount} spans</span>
             ) : null}
           </button>
+        </article>
+      ) : turn.progress ? (
+        <article className="message assistant" aria-live="polite">
+          <span>Specialist · {turn.agentName}</span>
+          <p>{turn.progress}</p>
         </article>
       ) : turn.error ? (
         <article className="message assistant failed">

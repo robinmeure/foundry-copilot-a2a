@@ -2,8 +2,10 @@
 
 React/Vite interface for the authenticated A2A adapter. The browser signs in with MSAL,
 requests the adapter's delegated `access_as_user` scope, and sends A2A JSON-RPC messages to
-the adapter. The adapter remains responsible for token validation and the Copilot Studio OBO
-exchange.
+the adapter. Requests use `SendStreamingMessage`, so the answer is rendered chunk by chunk as
+Copilot Studio produces it, and progress such as "Generating plan..." is shown while the turn
+runs without becoming part of the answer. The adapter remains responsible for token validation
+and the Copilot Studio OBO exchange.
 
 ## Configure
 

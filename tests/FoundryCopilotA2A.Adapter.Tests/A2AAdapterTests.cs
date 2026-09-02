@@ -55,6 +55,116 @@ public sealed class A2AAdapterTests : IClassFixture<A2AAdapterFactory>
     }
 
     [Fact]
+    public async Task StreamingMessageMarksInformativeProgressSeparatelyFromFinalText()
+    {
+        using var response = await SendStreamingMessageAsync(
+            NewId(),
+            "ctx-stream-progress",
+            MockCopilotStudioInvoker.StreamProgressPrompt);
+        var content = await response.Content.ReadAsStringAsync();
+
+        response.EnsureSuccessStatusCode();
+        Assert.Contains("Generating plan...", content);
+        Assert.Contains("isInformative", content);
+        Assert.Contains("mock-copilot-studio", content);
+    }
+
+    /// <summary>
+    /// The answer must reach the caller as separate chunks rather than one block, otherwise
+    /// nothing is gained over the non-streaming call.
+    /// </summary>
+    [Fact]
+    public async Task StreamedAnswerArrivesAsSeparateEventsThatFormOneAnswer()
+    {
+        using var response = await SendStreamingMessageAsync(
+            NewId(),
+            "ctx-stream-deltas",
+            MockCopilotStudioInvoker.StreamProgressPrompt);
+        var content = await response.Content.ReadAsStringAsync();
+
+        response.EnsureSuccessStatusCode();
+        var answer = string.Concat(AnswerTexts(content));
+        Assert.Equal(string.Concat(MockCopilotStudioInvoker.StreamedAnswerDeltas), answer);
+        Assert.Equal(
+            MockCopilotStudioInvoker.StreamedAnswerDeltas.Length,
+            AnswerTexts(content).Count);
+    }
+
+    [Fact]
+    public async Task NonStreamingMessageExcludesInformativeProgressFromFinalAnswer()
+    {
+        using var response = await SendMessageAsync(
+            NewId(),
+            "ctx-non-stream-progress",
+            MockCopilotStudioInvoker.StreamProgressPrompt);
+        var content = await response.Content.ReadAsStringAsync();
+
+        response.EnsureSuccessStatusCode();
+        Assert.DoesNotContain("Generating plan...", content);
+        Assert.Contains(string.Concat(MockCopilotStudioInvoker.StreamedAnswerDeltas), content);
+    }
+
+    /// <summary>
+    /// Reads the answer text of every streamed event, in order. Only artifact and message parts
+    /// carry the answer; status updates carry generic lifecycle text that is not part of it.
+    /// </summary>
+    private static List<string> AnswerTexts(string eventStream)
+    {
+        var texts = new List<string>();
+        foreach (var line in eventStream.Split('\n'))
+        {
+            var trimmed = line.Trim();
+            if (!trimmed.StartsWith("data: {", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            using var document = JsonDocument.Parse(trimmed["data: ".Length..]);
+            if (!document.RootElement.TryGetProperty("result", out var result))
+            {
+                continue;
+            }
+
+            var parts =
+                result.TryGetProperty("artifactUpdate", out var artifactUpdate) &&
+                artifactUpdate.TryGetProperty("artifact", out var artifact)
+                    ? artifact.TryGetProperty("parts", out var artifactParts)
+                        ? artifactParts
+                        : default
+                    : result.TryGetProperty("message", out var message) &&
+                      message.TryGetProperty("parts", out var messageParts)
+                        ? messageParts
+                        : default;
+
+            if (parts.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var part in parts.EnumerateArray())
+            {
+                var isInformative =
+                    part.TryGetProperty("metadata", out var metadata) &&
+                    metadata.ValueKind == JsonValueKind.Object &&
+                    metadata.TryGetProperty("isInformative", out var flag) &&
+                    flag.ValueKind == JsonValueKind.True;
+                if (!isInformative &&
+                    part.TryGetProperty("text", out var partText) &&
+                    partText.ValueKind == JsonValueKind.String)
+                {
+                    texts.Add(partText.GetString()!);
+                }
+            }
+        }
+
+        return texts;
+    }
+
+    /// <summary>
+    /// Replaying a messageId must return the same answer without invoking the backend again.
+    /// Each response carries a freshly generated task id, so only the answer can be compared.
+    /// </summary>
+    [Fact]
     public async Task CompletedStreamingMessageIsReplayedWithoutReinvocation()
     {
         var before = Invoker.InvocationCount;
@@ -71,7 +181,9 @@ public sealed class A2AAdapterTests : IClassFixture<A2AAdapterFactory>
             "replay streamed response");
         var secondContent = await second.Content.ReadAsStringAsync();
 
-        Assert.Equal(firstContent, secondContent);
+        var answer = string.Concat(AnswerTexts(firstContent));
+        Assert.Contains("replay streamed response", answer);
+        Assert.Equal(answer, string.Concat(AnswerTexts(secondContent)));
         Assert.Equal(before + 1, Invoker.InvocationCount);
     }
 
@@ -305,6 +417,28 @@ public sealed class A2AAdapterTests : IClassFixture<A2AAdapterFactory>
                 span.Name == "a2a.adapter.get_response" &&
                 span.Attributes.TryGetValue("adapter.failure.reason", out var reason) &&
                 reason.Contains(MockCopilotStudioInvoker.FailureReason, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The console always streams, so a backend failure has to reach it over the event stream
+    /// rather than only through the non-streaming JSON-RPC error body.
+    /// </summary>
+    [Fact]
+    public async Task FailingMockReportsTheFailureOverTheEventStream()
+    {
+        using var response = await SendStreamingMessageAsync(
+            NewId(),
+            "ctx-stream-failure",
+            "fail predictably",
+            agentId: AgentCatalog.MockFailureAgentId);
+        var content = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.DoesNotContain("TASK_STATE_COMPLETED", content);
+        Assert.True(
+            content.Contains("\"error\"", StringComparison.Ordinal) ||
+            content.Contains("FAILED", StringComparison.OrdinalIgnoreCase),
+            $"A streamed failure must be observable by the client. Received: {content}");
     }
 
     [Fact]
@@ -690,7 +824,8 @@ public sealed class A2AAdapterTests : IClassFixture<A2AAdapterFactory>
     private Task<HttpResponseMessage> SendStreamingMessageAsync(
         string messageId,
         string contextId,
-        string text)
+        string text,
+        string? agentId = null)
     {
         var request = new HttpRequestMessage(HttpMethod.Post, AdapterConstants.RuntimePath)
         {
@@ -714,6 +849,11 @@ public sealed class A2AAdapterTests : IClassFixture<A2AAdapterFactory>
                 options: new JsonSerializerOptions(JsonSerializerDefaults.Web))
         };
         request.Headers.Add("A2A-Version", "1.0");
+        if (agentId is not null)
+        {
+            request.Headers.Add(AdapterConstants.AgentHeaderName, agentId);
+        }
+
         return _client.SendAsync(request);
     }
 

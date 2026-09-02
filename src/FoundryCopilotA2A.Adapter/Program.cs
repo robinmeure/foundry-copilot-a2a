@@ -2,6 +2,7 @@ using System.Diagnostics;
 using A2A;
 using A2A.AspNetCore;
 using A2A.V0_3Compat;
+using Microsoft.Agents.AI.Hosting.A2A;
 using Azure.Core;
 using Azure.Identity;
 using FoundryCopilotA2A.Adapter;
@@ -152,7 +153,12 @@ var hostedAgent = builder.AddAIAgent(
             name: AdapterConstants.AgentName,
             description: "A2A facade for a Copilot Studio specialist agent."));
 
-hostedAgent.AddA2AServer();
+#pragma warning disable MEAI001 // AgentRunMode is experimental.
+// Message mode makes the hosting layer aggregate the whole run into a single event, which
+// defeats streaming. Task mode forwards each update as an artifact delta as it is produced.
+hostedAgent.AddA2AServer(options =>
+    options.AgentRunMode = AgentRunMode.AllowBackgroundIfSupported);
+#pragma warning restore MEAI001
 
 var app = builder.Build();
 

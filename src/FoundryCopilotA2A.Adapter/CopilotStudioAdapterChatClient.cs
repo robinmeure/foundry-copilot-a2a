@@ -95,13 +95,22 @@ public sealed class CopilotStudioAdapterChatClient(
             }
 
             var update = enumerator.Current;
-            yield return new ChatResponseUpdate(ChatRole.Assistant, update.Text)
+            var responseUpdate = new ChatResponseUpdate(ChatRole.Assistant, update.Text)
             {
                 ConversationId = metadata.ContextId ?? update.ConversationId,
                 ResponseId = update.ResponseId,
                 MessageId = $"response-{metadata.MessageId}",
                 ModelId = metadata.AgentId
             };
+            if (update.IsInformative)
+            {
+                responseUpdate.Contents[0].AdditionalProperties = new AdditionalPropertiesDictionary
+                {
+                    ["isInformative"] = true
+                };
+            }
+
+            yield return responseUpdate;
         }
     }
 
@@ -464,7 +473,10 @@ public sealed class IdempotencyStore : IDisposable
                         continue;
                     }
 
-                    text.Append(update.Text);
+                    if (!update.IsInformative)
+                    {
+                        text.Append(update.Text);
+                    }
                     conversationId = update.ConversationId ?? conversationId;
                     responseId = update.ResponseId ?? responseId;
                     Publish(update);

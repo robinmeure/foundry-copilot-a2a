@@ -141,6 +141,177 @@ public sealed class CopilotStudioActivitySummaryTests
     }
 
     [Fact]
+    public void InformativeTypingActivityProvidesAStreamingProgressUpdate()
+    {
+        var activity = new BotActivity
+        {
+            Type = "typing",
+            Text = "Generating plan...",
+            ChannelData = new { streamType = "informative", streamSequence = 1 }
+        };
+
+        var chunk = new CopilotStudioAnswerStream().Next(activity, messageText: null);
+
+        Assert.Equal("Generating plan...", chunk?.Text);
+        Assert.True(chunk?.IsInformative);
+    }
+
+    [Theory]
+    [InlineData("typing", null)]
+    [InlineData("event", "informative")]
+    public void ActivityOutsideTheStreamingProtocolContributesNothing(
+        string activityType,
+        string? streamType)
+    {
+        var activity = new BotActivity
+        {
+            Type = activityType,
+            Text = "Do not stream",
+            ChannelData = streamType is null ? null : new { streamType }
+        };
+
+        var chunk = new CopilotStudioAnswerStream().Next(activity, messageText: null);
+
+        Assert.Null(chunk);
+    }
+
+    /// <summary>
+    /// Copilot Studio sends the answer twice: once as typing deltas and again as the final
+    /// message. Forwarding both would return the answer doubled.
+    /// </summary>
+    [Fact]
+    public void StreamedAnswerIsForwardedAsDeltasWithoutRepeatingTheFinalMessage()
+    {
+        const string streamId = "stream-1";
+        var stream = new CopilotStudioAnswerStream();
+        var deltas = new[] { "**Kamervragen**", "\n\nEr zijn", " vragen", "." };
+        var answer = string.Concat(deltas);
+
+        var emitted = new List<CopilotStudioAnswerChunk>();
+        Add(emitted, stream, Typing("Generating plan...", "informative", streamId));
+        foreach (var delta in deltas)
+        {
+            Add(emitted, stream, Typing(delta, "streaming", streamId));
+        }
+
+        Add(emitted, stream, FinalMessage(answer, streamId));
+
+        Assert.Equal(4, stream.DeltaCount);
+        Assert.Equal(1, stream.SuppressedFinalCount);
+        Assert.Equal(
+            "Generating plan...",
+            Assert.Single(emitted, chunk => chunk.IsInformative).Text);
+        Assert.Equal(
+            answer,
+            string.Concat(emitted.Where(chunk => !chunk.IsInformative).Select(chunk => chunk.Text)));
+    }
+
+    /// <summary>A delta can be a lone space or newline, which must survive verbatim.</summary>
+    [Fact]
+    public void WhitespaceOnlyDeltaIsPreservedInTheAnswer()
+    {
+        var stream = new CopilotStudioAnswerStream();
+        var deltas = new[] { "Regel", " ", "\n", "twee" };
+
+        var emitted = new List<CopilotStudioAnswerChunk>();
+        foreach (var delta in deltas)
+        {
+            Add(emitted, stream, Typing(delta, "streaming", "stream-1"));
+        }
+
+        Assert.Equal("Regel \ntwee", string.Concat(emitted.Select(chunk => chunk.Text)));
+    }
+
+    /// <summary>
+    /// A stream that only ever produced whitespace is not a usable answer, so it must not be
+    /// reported as one. The caller decides that from the forwarded text.
+    /// </summary>
+    [Fact]
+    public void StreamOfOnlyWhitespaceProducesNoUsableAnswerText()
+    {
+        var stream = new CopilotStudioAnswerStream();
+        var emitted = new List<CopilotStudioAnswerChunk>();
+
+        Add(emitted, stream, Typing(" ", "streaming", "stream-1"));
+        Add(emitted, stream, Typing("\n", "streaming", "stream-1"));
+        Add(emitted, stream, FinalMessage(" \n", "stream-1"), " \n");
+
+        Assert.All(emitted, chunk => Assert.True(string.IsNullOrWhiteSpace(chunk.Text)));
+    }
+
+    /// <summary>
+    /// An agent that never streams sends only a message, which must still be forwarded.
+    /// </summary>
+    [Fact]
+    public void FinalMessageIsForwardedWhenNoDeltasPrecededIt()
+    {
+        var stream = new CopilotStudioAnswerStream();
+
+        var chunk = stream.Next(FinalMessage("The whole answer.", "stream-1"), "The whole answer.");
+
+        Assert.Equal("The whole answer.", chunk?.Text);
+        Assert.False(chunk?.IsInformative);
+        Assert.Equal(0, stream.SuppressedFinalCount);
+    }
+
+    /// <summary>Empty deltas carry no answer, so the final message is still the only source.</summary>
+    [Fact]
+    public void FinalMessageIsForwardedWhenEveryDeltaWasEmpty()
+    {
+        var stream = new CopilotStudioAnswerStream();
+        var emitted = new List<CopilotStudioAnswerChunk>();
+
+        Add(emitted, stream, Typing(string.Empty, "streaming", "stream-1"));
+        Add(emitted, stream, FinalMessage("Recovered answer.", "stream-1"), "Recovered answer.");
+
+        Assert.Equal(0, stream.DeltaCount);
+        Assert.Equal(0, stream.SuppressedFinalCount);
+        Assert.Equal("Recovered answer.", Assert.Single(emitted).Text);
+    }
+
+    [Fact]
+    public void ProgressUpdatesDoNotSeparateTheAnswerTheyPrecede()
+    {
+        var stream = new CopilotStudioAnswerStream();
+        var emitted = new List<CopilotStudioAnswerChunk>();
+
+        Add(emitted, stream, Typing("Analyzing data...", "informative", "stream-1"));
+        Add(emitted, stream, FinalMessage("Answer.", "stream-1"), "Answer.");
+
+        Assert.Equal("Answer.", emitted.Single(chunk => !chunk.IsInformative).Text);
+    }
+
+    private static void Add(
+        List<CopilotStudioAnswerChunk> emitted,
+        CopilotStudioAnswerStream stream,
+        BotActivity activity,
+        string? messageText = null)
+    {
+        if (stream.Next(activity, messageText) is { } chunk)
+        {
+            emitted.Add(chunk);
+        }
+    }
+
+    private static BotActivity Typing(string text, string streamType, string streamId) =>
+        new()
+        {
+            Type = "typing",
+            Id = $"{streamId}-{Guid.NewGuid():N}",
+            Text = text,
+            ChannelData = new { streamType, streamId }
+        };
+
+    private static BotActivity FinalMessage(string text, string streamId) =>
+        new()
+        {
+            Type = "message",
+            Id = Guid.NewGuid().ToString("N"),
+            Text = text,
+            ChannelData = new { streamType = "final", streamId }
+        };
+
+    [Fact]
     public void TextMessageProducesSuccessfulSafeTelemetry()
     {
         var summary = new CopilotStudioActivitySummary();

@@ -1036,6 +1036,35 @@ The official Copilot Studio sample states that S2S authentication is not current
 supported, so this repro deliberately preserves a delegated user identity instead of using
 client credentials.
 
+### Streaming responses
+
+Copilot Studio returns a turn as a sequence of activities rather than one answer, and the adapter
+forwards that sequence instead of waiting for it to finish. Three kinds matter, all tied together
+by a `streamId` in `channelData`:
+
+| Activity | `streamType` | Meaning |
+| --- | --- | --- |
+| `typing` | `informative` | Progress such as "Generating plan..." |
+| `typing` | `streaming` | One chunk of the answer |
+| `message` | `final` | The finished answer |
+
+The final message repeats the concatenation of every delta verbatim, so forwarding both would
+return the answer twice. The adapter therefore drops a final message once its stream has already
+been forwarded, and counts it only towards the empty-response check. Agents that never stream send
+just a message, which is forwarded unchanged.
+
+Progress is marked with `metadata.isInformative` on its part so a caller can show it while the
+turn runs without it becoming part of the answer. The non-streaming `SendMessage` response never
+contains it.
+
+`SendStreamingMessage` is served in A2A task mode, configured through `AgentRunMode` where the A2A
+server is registered. This matters: in the default message mode the hosting layer aggregates the
+whole run into a single event, which removes the streaming entirely. Task mode emits each chunk as
+an `artifactUpdate` with `append` and `lastChunk`, so a client appends chunks as they arrive and
+treats `append: false` as a restart of that artifact. Task status updates carry generic lifecycle
+text and are not part of the answer. Plain `SendMessage` still returns a single message, so callers
+that do not stream, including chained Foundry calls, are unaffected.
+
 ### Chained call latency
 
 A chained request runs a Foundry LLM turn, an outbound A2A call back into this adapter, and a
