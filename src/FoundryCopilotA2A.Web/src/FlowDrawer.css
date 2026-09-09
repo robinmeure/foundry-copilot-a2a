@@ -1,0 +1,120 @@
+.flow-drawer {
+  position: fixed;
+  inset: 0 0 0 auto;
+  width: min(1440px, calc(100vw - 40px));
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-left: 1px solid #d9e1ec;
+  color: #15233b;
+  background: white;
+  box-shadow: -20px 0 70px #10284e30;
+}
+
+.flow-drawer[open] {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.flow-drawer::backdrop {
+  background: #0d244d73;
+}
+
+.flow-drawer-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 22px 26px;
+  border-bottom: 1px solid #dfe7f2;
+  background: #f8fafd;
+}
+
+.flow-drawer-heading h2 {
+  margin: 0;
+  color: #16335c;
+  font-size: 1.2rem;
+  outline: none;
+}
+
+.flow-drawer-heading p,
+.flow-drawer-footer p {
+  margin: 6px 0 0;
+  color: #687b95;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.flow-drawer-close {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border: 1px solid #d9e2ee;
+  border-radius: 9px;
+  color: #4d6485;
+  background: white;
+  font-size: 1.3rem;
+  cursor: pointer;
+}
+
+.flow-drawer-content {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.flow-drawer-content .flow-designer {
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.flow-drawer-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  padding: 18px 26px;
+  border-top: 1px solid #dfe7f2;
+  background: white;
+}
+
+.flow-drawer-footer p {
+  margin: 0;
+}
+
+.flow-drawer-footer > div {
+  display: flex;
+  flex-shrink: 0;
+  gap: 10px;
+}
+
+.flow-drawer-footer .primary {
+  min-width: 100px;
+}
+
+@media (max-width: 800px) {
+  .flow-drawer {
+    width: 100vw;
+    border-left: 0;
+  }
+
+  .flow-drawer-heading,
+  .flow-drawer-footer {
+    padding: 16px;
+  }
+
+  .flow-drawer-footer {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .flow-drawer-footer > div {
+    margin-left: auto;
+  }
+}

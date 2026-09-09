@@ -31,6 +31,7 @@ export interface AdapterTrace {
   complete: boolean
   durationMs: number
   spans: AdapterTraceSpan[]
+  truncated?: boolean
 }
 
 export interface AdapterTraceSpan {
@@ -64,8 +65,9 @@ export interface CopilotAgent {
   displayName: string
   provider: 'copilotStudio' | 'foundry'
   supported: boolean
-  statusMessage?: string
+  statusMessage?: string | null
   chainTargets: string[]
+  canOrchestrate: boolean
 }
 
 export interface CopilotAgentCatalog {
@@ -90,7 +92,33 @@ export async function listAgents(
     throw new Error(`Unable to load agents (HTTP ${response.status}).`)
   }
 
-  return (await response.json()) as CopilotAgentCatalog
+  const catalog: unknown = await response.json()
+  if (
+    !isRecord(catalog) ||
+    typeof catalog.defaultAgentId !== 'string' ||
+    !Array.isArray(catalog.agents) ||
+    !catalog.agents.every(isCopilotAgent) ||
+    new Set(catalog.agents.map((agent) => agent.id)).size !== catalog.agents.length
+  ) {
+    throw new Error('The selected endpoint returned an invalid agent catalog.')
+  }
+  return { defaultAgentId: catalog.defaultAgentId, agents: catalog.agents }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isCopilotAgent(value: unknown): value is CopilotAgent {
+  return isRecord(value) &&
+    typeof value.id === 'string' && value.id.trim().length > 0 &&
+    typeof value.displayName === 'string' &&
+    (value.provider === 'copilotStudio' || value.provider === 'foundry') &&
+    typeof value.supported === 'boolean' &&
+    typeof value.canOrchestrate === 'boolean' &&
+    Array.isArray(value.chainTargets) &&
+    value.chainTargets.every((target) => typeof target === 'string') &&
+    (value.statusMessage == null || typeof value.statusMessage === 'string')
 }
 
 /** A text fragment of an A2A response, plus how it joins the answer so far. */
@@ -397,6 +425,9 @@ async function resolveResponseTrace(
   if (traceId) {
     try {
       trace = await loadTrace(adapterBaseUrl, accessToken, traceId)
+      if (trace.truncated) {
+        traceError = 'The adapter trace reached its retention limit; some diagnostics are unavailable.'
+      }
     } catch (reason) {
       traceError =
         reason instanceof Error ? reason.message : 'Unable to load the adapter trace.'

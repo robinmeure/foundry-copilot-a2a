@@ -14,99 +14,90 @@ without provisioning Azure resources. The real backend uses the official
 
 ### What this is
 
-A governed bridge that lets a Microsoft Foundry agent delegate work to a Copilot Studio agent
-over the open A2A protocol, **while preserving the end user's identity end to end**. Copilot
-Studio does not speak A2A, so this adapter publishes an A2A facade in front of it.
+A governed bridge that exposes supported Copilot Studio agents over A2A. A Microsoft Foundry
+agent or a standard-harness Copilot Studio agent can be the native orchestrator. The adapter
+uses delegated OBO; it does not implement an in-process Agent A-then-Agent B pipeline.
 
-Status: the full chain is verified working against live Foundry and Copilot Studio tenants, on a
-developer machine exposed through a Dev Tunnel. It is not deployed to Azure.
+Status: the signed-in browser can call a separate Citadel/APIM development API through Dev
+Tunnel to the local adapter, preserving the two-registration OBO flow. Provider-neutral native
+orchestration is implemented. The migrated Foundry-to-Reverser Citadel path has returned the
+specialist answer with same-user delegated OBO on the real callback. Foundry started a separate
+downstream trace, so the console cannot yet join that hop automatically. The parliament
+connection still needs its own end-user authorization, and Copilot Studio orchestration still
+needs maker-side native connection setup. Historical direct-tunnel runs do not prove either path.
 
 ### End-to-end flow
 
 ```text
 Browser (user signs in)
-  │  delegated token, audience api://<adapter>
-  ▼
-Adapter — A2A runtime  ──────────────────────────────┐
-  │  routes on X-Copilot-Agent / X-A2A-Chain-Target  │  Direct mode stops here
-  ▼                                                  │  and calls Copilot Studio
-Foundry agent (Agent A)                              │
-  │  A2A tool call, OAuth identity passthrough       │
-  ▼                                                  │
-Adapter — target-specific A2A route  ◄───────────────┘
-  │  /a2a-agents/<agent-id>/a2a
-  │  OBO exchange: user assertion → Power Platform token
-  ▼
+  | delegated token, backend audience and access_as_user
+  v
+Citadel / APIM -> adapter entry runtime
+  | validates the user token; OBO for the selected provider
+  v
+Foundry or standard-harness Copilot Studio (Agent A)
+  | native A2A tool; separately authorized per-user backend token
+  v
+Citadel / APIM -> adapter target-specific A2A route
+  | /a2a-agents/<agent-id>/a2a
+  | validates the user token; OBO for Power Platform
+  v
 Copilot Studio agent (Agent B)
 ```
 
-The adapter appears **twice**, and that is the essential design point. It is the entry point for
-the browser, and it is also the remote A2A endpoint that Foundry calls back into. The request
-leaves the process, goes to Foundry, and returns — which is why the public URL must be reachable
-from Azure, not just from the developer machine.
+With one agent block the entry runtime invokes only the selected agent. A native-chain flow
+shows the adapter twice: it invokes the native orchestrator, and later handles a separate
+inbound request if that orchestrator calls a specialist. The APIM-twice preset places Citadel
+before both adapter appearances; APIM is optional independently on either leg. The
+**Native chain / no APIM** preset uses both adapters without a gateway. Native delegation
+uses the orchestrator's existing A2A OAuth connection, while OBO remains server-side.
+Drawing or changing the native leg does not retarget that provider-managed connection.
+The public URL must be reachable from the provider, not just from the developer machine.
 
 Each Copilot Studio specialist gets its own route (`/a2a-agents/<id>/a2a`) and its own agent
-card, so Foundry addresses one specialist explicitly rather than a generic router.
+card, so a native tool addresses one specialist rather than a generic router.
 
 ### Who decides to call the specialist
 
-The Foundry agent does. In chain mode this repository never calls Copilot Studio itself — it
-posts to Foundry, and the model decides whether to invoke an A2A tool. The tool it picks
-determines which adapter route it calls back into, and that route determines which specialist
-runs.
+The native orchestrator does. The adapter dispatches one provider invocation and never follows
+it with a locally sequenced specialist invocation. Foundry selects from its attached A2A tools;
+Copilot Studio requires the standard harness, generative orchestration, and connected A2A agents.
 
-This is verified with natural prompts that name no tool and involve no adapter steering:
+`ChainTargets` bounds the console's choices and accepted `X-A2A-Chain-Target` values. A selected
+target adds a prompt hint, not deterministic enforcement of a model's tool choice. Neither the
+allow-list nor the hint restricts every tool attached to the remote agent; its native definition,
+connection authentication, and gateway authorization remain authoritative.
 
-| Prompt sent straight to the Foundry agent | Route the agent called back into | Answer |
-| --- | --- | --- |
-| `Hoeveel zetels heeft de Tweede Kamer?` | `/a2a-agents/tweede-kamer-classic/a2a` | `De Tweede Kamer heeft 150 zetels.` |
-| `Please reverse this text: architecture` | `/a2a-agents/reverser-classic/a2a` | `erutcetihcra` |
+The catalog's `canOrchestrate` indicates configured capability, not connection health or consent
+readiness. A generated answer is not proof of delegation: even a reversed string can be generated
+without calling a Reverser tool. The console labels an unobserved selected hop as `(requested)`;
+an `execute_tool` span is emitted only for an actual target-specific inbound request.
 
-What *is* application logic is the steering around that decision, and it is deliberately narrow:
-
-- **An allow-list.** `ChainTargets` bounds which specialists a given Foundry agent may reach, so
-  a prompt cannot talk the agent into calling an unapproved backend.
-- **A prompt hint.** When the console's dropdown selects Agent B, the adapter prefixes the
-  request with an instruction naming that specialist. This makes an operator's explicit choice
-  deterministic; it is not required for the agent to choose correctly.
-- **One route per specialist.** Identity and routing stay bound to a single backend per request
-  rather than a generic router deciding late.
-
-Remove the dropdown and the hint and the chain still works — the agent selects from the tools
-attached to its own definition. The console's Chain mode is a control surface over an autonomous
-decision, not a substitute for it.
-
-This distinction matters when APIM is introduced. APIM does not need to implement a local agent
-chain or decide which specialist should run. Each approved specialist is published through APIM as
-a separate A2A agent API and attached to the Foundry orchestrator as a separate A2A tool. Foundry
-continues to select the tool from its instructions and the user's request; APIM governs the selected
-tool call and forwards it to that specialist's target-specific adapter route.
-
-A single generic APIM A2A API would hide the available specialists from Foundry and force the
-adapter or APIM policy to become a second router. Keep one agent card and runtime surface per
-specialist instead. The optional `X-A2A-Chain-Target` header and prompt hint may still be used for
-explicit operator steering, tests, and demonstrations, but neither is required for autonomous
-Foundry orchestration.
+Keep one Citadel card/runtime API and one native A2A connection per specialist. APIM governs the
+selected callback and forwards it to the bound route; it does not decide which agent runs next.
 
 ### Where the token exchange actually happens
 
-Foundry does **not** perform OBO, and it does not hold a Copilot Studio token. The exchange is
-split:
+The adapter performs the resource-specific OBO exchanges. For a secured Foundry orchestrator:
 
 ```text
-Foundry  --OAuth identity passthrough-->  token for api://<adapter>, as the user
-Adapter  --OBO exchange-->                token for Power Platform, as the same user
-Adapter  ------------------------------>  Copilot Studio
+Browser  -> adapter OBO -> token for https://ai.azure.com -> Foundry
+Foundry  -> per-user OAuth connection -> backend token -> Citadel -> adapter
+Adapter  -> OBO -> Power Platform token -> Copilot Studio specialist
 ```
 
-Foundry authenticates *to the adapter* as the signed-in user. Only the adapter can turn that into
-a Power Platform token, because OBO requires the confidential client that owns the adapter's API.
+The Foundry request must authenticate as the actual browser user, not the adapter's developer or
+managed identity. The backend needs Foundry delegated permission and the user needs access to the
+agent. Foundry's downstream OAuth connection has a separate consent lifecycle.
 
-This is also why the adapter cannot be removed from the path. A Foundry agent cannot call a
-Copilot Studio agent directly over A2A, because Copilot Studio does not publish an A2A endpoint —
-supplying one is the reason this component exists. If Copilot Studio ever speaks A2A natively and
-accepts a delegated token for its own audience, the hop collapses and the adapter is needed only
-for governance.
+For a Copilot Studio orchestrator, the first OBO target is Power Platform instead. Its native
+A2A connection must use end-user authentication, not the maker's saved identity. Verify that
+behavior through this application's Direct Connect channel with a non-maker user; a successful
+maker test alone does not establish same-user delegation.
+
+The existing backend registration remains the API audience and confidential OBO client.
+Neither provider's OAuth connection removes the specialist adapter, which exposes the A2A facade
+and exchanges the callback's backend token for Power Platform.
 
 ### Why app registrations are required
 
@@ -209,8 +200,8 @@ single-page application should pass its token to a middle-tier confidential clie
 attempt OBO itself.
 
 **The Foundry path reuses only the backend registration.** A Foundry OAuth identity passthrough
-connection requests `api://<backend-client-id>/access_as_user`, and the callback the portal
-generates is added as a Web redirect URI on that same backend registration. Foundry replaces the
+connection requests `api://<backend-client-id>/access_as_user`, and the generated callback
+is added as a Web redirect URI on that same backend registration. Foundry replaces the
 browser as the front door while the adapter validation and OBO sequence stays the same, so the
 frontend SPA registration plays no part in a Foundry-originated call.
 
@@ -219,12 +210,10 @@ Step-by-step configuration for both registrations is in
 
 ### Is Dev Tunnel → App Service + APIM sufficient?
 
-**Yes. APIM does not need to reproduce the application's local Chain mode or perform agent
-orchestration.** The Foundry agent remains the orchestrator and selects among its attached A2A
-tools. The token chain also survives unchanged: the APIM policy validates the same audience and
-issuers the adapter already validates, so Foundry's passthrough token and the adapter's OBO
-exchange keep working. It is not a drop-in URL swap, however; four integration details still need
-attention.
+**APIM does not need to reproduce Chain mode or perform agent orchestration.** The selected
+Foundry or Copilot Studio agent remains the native orchestrator. The gateway validates the same
+delegated backend audience and scope on each callback. Moving the hosting boundary is not a
+drop-in URL swap, however; native connections and user consent must move with it.
 
 | Concern | Local today | After APIM / App Service |
 | --- | --- | --- |
@@ -241,19 +230,36 @@ attention.
 2. **The agent card must stay anonymous.** Foundry fetches agent cards without credentials. The
    card operations must remain unauthenticated while the runtime stays protected — the current
    policy split already does this and must be preserved for every specialist API.
-3. **Changing the URL is not an edit.** A Foundry OAuth connection stores its target URL and
-   **cannot be updated in place**. Moving from the tunnel to APIM means deleting and recreating
-   each connection, registering a new redirect URI, and re-consenting — once per specialist.
+3. **Migrate without deleting shared connections.** Create a new Foundry OAuth connection for
+   the Citadel runtime, register its actual callback, and consent it. Use
+   `configure-foundry-chain --reuse-connection --replace-connection-name <old>` to replace only
+   the selected agent's tool reference. Preserve the old connection for its other consumers.
 4. **The APIM policy accepts only delegated tokens.** It requires an `scp` claim, which app-only
    tokens do not have. This correctly enforces user identity, but it also means the
    managed-identity fallback cannot be used behind APIM without a policy change.
 
-Timeouts are already aligned: the APIM `forward-request` timeout is 120s and the adapter's
-Foundry client uses the same budget, both well above the 12–25s a chained call takes.
+The APIM `forward-request` timeout is 120s. AppHost's `AdapterRequestTimeoutSeconds` defaults to
+120 and supplies the adapter/provider request budget. Existing hosts must reload the AppHost
+model to receive that setting. Configured Copilot Studio orchestrators do not automatically
+retry or restart a conversation after an error, because that could repeat native tool actions.
 
 Beyond this, production readiness still needs the adapter deployed to Container Apps or App
 Service with its secret in Key Vault, and the broader Citadel layers (Defender, Purview) that
 this repository does not provision.
+
+### Run the browser through Citadel now
+
+Use the [local Citadel workflow](docs/citadel-local.md) to create a separate
+`copilot-studio-local` API in an existing APIM instance without repointing the hosted API.
+`configure-citadel` publishes the card, catalog, runtime, and protected traces with CORS
+and unbuffered streaming. `VITE_GATEWAY_BASE_URL` enables APIM blocks and the initial
+gateway route in the executable [flow builder](src/FoundryCopilotA2A.Web/README.md#build-and-execute-a-flow).
+Keep `VITE_ADAPTER_BASE_URL` pointed at the actual adapter to also offer direct ingress.
+Catalog, runtime, and trace calls follow the selected route without automatic failover.
+`GatewayBaseUrl` makes Aspire advertise the public gateway runtime and inject both endpoints.
+The SPA still requests the backend's `access_as_user` scope; only the adapter performs OBO.
+`test-citadel --require-obo` exercises the gateway contract and requires an actual
+delegated exchange in the caller's trace.
 
 ## Copilot Studio agent compatibility
 
@@ -328,16 +334,16 @@ credentials, token validation, and OBO.
 The [`infra`](./infra) folder contains modular Bicep for the adapter and initial
 Citadel governance layer:
 
-- A private ACR, user-assigned identity, Key Vault, and single-replica Azure
-  Container App for the .NET adapter.
-- API Management with public agent-card discovery and a delegated-OAuth-protected
-  A2A runtime.
+- A user-assigned identity, Key Vault, and single-instance Linux App Service for
+  the .NET adapter.
+- API Management with public agent-card/catalog discovery, delegated-OAuth-protected
+  A2A and trace endpoints, browser CORS, and unbuffered SSE.
 - A Microsoft Foundry account and project with system-assigned managed identities
   and local authentication disabled.
 - Log Analytics and workspace-based Application Insights.
 
-The adapter image is built between a bootstrap deployment and the full
-deployment; secret inputs come from process environment variables and are
+The adapter is published to the Web App separately from the bootstrap and full
+infrastructure deployments; secret inputs come from process environment variables and are
 stored in Key Vault. The infrastructure does not deploy models or the broader
 Defender/Purview layers of Citadel. See
 [`infra/README.md`](./infra/README.md) and
@@ -352,11 +358,12 @@ deployment.
 | Conversation and message propagation | Local mock backend | Verified |
 | Duplicate-message protection and replay refusal | Local integration tests plus live probes | Verified |
 | Cross-caller and cross-tenant isolation | Local tests with authentication enabled | Verified (mutation-checked) |
-| Foundry native A2A tool | Existing Foundry project through a Dev Tunnel | Verified |
-| Foundry Agent A calling Copilot Studio Agent B through the adapter | Live Foundry prompt agent, OAuth identity passthrough, live standard-harness agent | Verified end to end with the signed-in user's identity |
-| One Foundry agent offering several Copilot Studio specialists | Two portal connections on one agent version | Verified: each target routed to its own specialist |
-| GenAI OpenTelemetry spans for the chain | Aspire dashboard | Verified: `invoke_workflow` / `invoke_agent` / `execute_tool` tree with `gen_ai.*` attributes |
-| Foundry A2A connection created by raw ARM `PUT` | Foundry project connection | Does not work: the agent fails before calling the adapter. Create OAuth connections in the portal |
+| Foundry native A2A tool | Historical Foundry project run through a Dev Tunnel | Observed before Citadel migration; not proof of the current native gateway path |
+| Foundry Agent A calling Copilot Studio Agent B through the adapter | Historical prompt-agent/OAuth connection setup | Direct-tunnel delegation observed; current Citadel connections must be configured and exercised separately |
+| One Foundry agent offering several Copilot Studio specialists | Historical two-connection agent version | Does not establish which tools remain attached to the current published version |
+| Native orchestration through Citadel, either provider | Browser -> entry adapter -> native orchestrator -> Citadel specialist | Provider-neutral code implemented; remote connection setup and same-user callbacks remain environment-specific |
+| GenAI OpenTelemetry spans for the chain | Adapter traces / Aspire dashboard | `execute_tool` now requires a real specialist request; cross-provider correlation requires trace-context propagation |
+| Foundry OAuth connection created by raw ARM `PUT` | Earlier project experiments | Metadata-less connections failed before outbound calls; current Foundry also documents CLI creation, so verify the resulting native callback |
 | Delegated user token, JWT validation and OBO | Real Entra app plus a live Copilot Studio agent | Verified against two real tenants |
 | Copilot Studio conversation established with a delegated token | Live Copilot Studio agent | Verified (real conversation IDs returned) |
 | A published standard-harness Copilot Studio agent answering through the adapter | Live published standard-harness agent | Verified: real agent text relayed as an A2A message |
@@ -364,8 +371,8 @@ deployment.
 | `contextId` mapped to one Copilot Studio conversation across turns | Live published agent | Verified (same conversation id reused, observed in the HTTP log) |
 | Replay refusal and idempotency against a live backend | Live published agent | Verified (refused calls never reach Copilot Studio) |
 | OAuthCard SSO token exchange | Published Copilot Studio agent | Code complete, never executed against a real agent |
-| Citadel/APIM governance | Azure APIM | No APIM instance exists in the current subscription |
-| Adapter hosting infrastructure | Azure Container Apps | Bicep generated; not deployed |
+| Citadel/APIM browser path | Separate APIM development API -> Dev Tunnel -> local adapter | Live SPA sign-in, streamed Copilot Studio answer, delegated OBO and caller-scoped trace observed |
+| Adapter hosting infrastructure | Azure App Service | Separate from the local Citadel workflow; hosted API left unchanged |
 
 Treat "code complete" as untested. Only the rows marked "Verified" have been observed working.
 
@@ -557,12 +564,13 @@ aspire start
 ```
 
 The Aspire AppHost exposes the frontend at `http://localhost:5173`, injects the adapter
-endpoint into Vite, and keeps the mock backend runnable without Azure resources.
+and optional gateway endpoints separately into Vite, and keeps the mock backend runnable
+without Azure resources.
 
 In the console, every A2A call is attached to the message bubbles it belongs to: the user
 bubble carries the outgoing request chip, the adapter hops appear as pills between the
-bubbles, and the agent bubble carries the response chip. The **Network** column on the right
-is always visible and shows a vertical timeline of the whole session grouped per turn;
+bubbles, and the agent bubble carries the response chip. The **Network** panel sits beside
+the conversation (below it on narrow screens) and shows a timeline grouped per turn;
 selecting a chip or pill expands the matching entry. **Enter** sends a message and
 **Shift + Enter** adds a new line.
 
@@ -588,7 +596,7 @@ Parameters:copilot-studio-tweede-kamer-classic-direct-connect-url
 Parameters:copilot-studio-orchestrator-direct-connect-url
 ```
 
-To include an incoming-A2A-enabled Foundry prompt agent in the same dropdown, keep its
+To include an incoming-A2A-enabled Foundry prompt agent in the resource palette, keep its
 environment-specific endpoint in AppHost user secrets:
 
 ```text
@@ -596,17 +604,21 @@ dotnet user-secrets set FoundryAgentEndpoint "https://<account>.services.ai.azur
 dotnet user-secrets set FoundryAgentDisplayName "Foundry Web Research" --project src/FoundryCopilotA2A.AppHost
 ```
 
-The Foundry entry remains available alongside the mock agent, so local startup still requires
-no Azure resources. Azure authentication is only attempted after selecting the Foundry entry.
-Locally, the adapter uses the active Azure CLI identity so Foundry access matches the operational
-CLI workflows. Outside Development it uses managed identity, selecting the deployed Web App's
-user-assigned identity through `AZURE_CLIENT_ID` when configured and otherwise using the
-system-assigned identity.
+The Foundry entry remains available alongside the mock agent, so mock startup still requires
+no Azure resources. With authentication enabled, the adapter exchanges the incoming delegated
+user token for `https://ai.azure.com/.default`; missing or app-only callers cannot fall back to
+the developer or managed identity. Grant Foundry delegated permission on the existing backend
+and give the user Foundry Agent Consumer (or broader) access.
 
-The frontend retrieves only stable IDs and display names from `GET /api/agents`, then
-sends the selected ID in `X-Copilot-Agent`. Direct-connect URLs, credentials, and
-Foundry endpoints, and delegated tokens are never returned to the browser. Changing the selected agent starts
-a separate A2A conversation.
+Only explicitly enabled anonymous development retains the Azure CLI credential locally or
+managed identity outside Development. That mode does not preserve a browser user's identity
+and is not the secured Citadel path.
+
+The frontend retrieves stable IDs, display names, providers, and capabilities from
+`GET /api/agents`, then sends the entry ID in `X-Copilot-Agent` and an optional native target
+hint in `X-A2A-Chain-Target`. The catalog never returns direct-connect URLs, Foundry service
+endpoints, credentials, or provider access tokens. Changing the endpoint, entry agent, or
+target starts a separate conversation on the next message; moving blocks preserves context.
 
 To run the frontend separately, start the live adapter as described below, then run:
 
@@ -722,35 +734,43 @@ For local development:
    [`AppHost.cs`](./src/FoundryCopilotA2A.AppHost/AppHost.cs) with `Id`, `DisplayName`, and
    `Endpoint`. Use a distinct user-secret key when registering more than one Foundry agent.
 
-The adapter uses the active Azure CLI identity locally. In a deployed environment it uses managed
-identity, so grant that identity access to the Foundry project. The current Bicep deployment
+Secured calls use the browser user's identity through OBO, both locally and when deployed.
+Grant the backend's Foundry delegated permission and authorize the user on the Foundry agent;
+granting only the adapter's managed identity does not authorize that user. The current Bicep deployment
 derives its Foundry endpoint from `foundryProjectEndpoint` plus `foundryAgentName`; add another
 `Foundry__Agents__<key>` block in
 [`adapter-hosting.bicep`](./infra/modules/adapter-hosting.bicep) when exposing another deployed
 Foundry agent.
 
-### Optionally allow Foundry to call a Copilot Studio specialist
+### Optionally enable native orchestration
 
-Catalog registration alone enables direct calls. To enable Chain mode as well:
+Catalog registration alone enables one-agent calls. To enable native-chain flows as well:
 
-1. Add the Copilot Studio ID to the Foundry agent's indexed `ChainTargets`. The current local
-   `web-research` registration reads a comma-separated list:
+1. Configure indexed `ChainTargets` on the chosen supported orchestrator. The current local
+   `web-research` Foundry entry reads `FoundryChainTargetAgent`; the existing Copilot Studio
+   `orchestrator` entry reads `CopilotStudioChainTargetAgent`. Both accept comma-separated IDs:
 
    ```text
    dotnet user-secrets set "FoundryChainTargetAgent" "my-specialist,another-specialist" --project src/FoundryCopilotA2A.AppHost
+   dotnet user-secrets set "CopilotStudioChainTargetAgent" "my-specialist,another-specialist" --project src/FoundryCopilotA2A.AppHost
    ```
 
-2. Create one Foundry project A2A connection per specialist, targeting:
+2. Create or reuse one native A2A OAuth connection per specialist, targeting its reachable
+   adapter runtime rather than the card. For an APIM native leg, publish a Citadel specialist
+   API and use:
 
    ```text
-   https://<public-adapter-host>/a2a-agents/<specialist-id>/a2a
+   https://<apim-host>/<api-path>/a2a-agents/<specialist-id>/a2a
    ```
 
-3. Attach that connection with `configure-foundry-chain` as described in
-   [Chain a Foundry agent to Copilot Studio](#chain-a-foundry-agent-to-copilot-studio).
+3. For Foundry, attach the connection with `configure-foundry-chain` as described below.
+   For standard-harness Copilot Studio, use generative orchestration and **Agents > Add agent >
+   A2A agent**, selecting end-user OAuth authentication. Follow
+   [the native Citadel setup](docs/citadel-local.md#6-configure-native-orchestrators) for both.
 
-Every chain target must name a configured, supported Copilot Studio agent. Never attach two A2A
-tools for the same target route.
+Every target must name a configured, supported Copilot Studio agent other than the orchestrator.
+Never attach two native tools for the same target route. Catalog capability is not proof that
+the remote tools are configured or that their user consent has completed.
 
 ### Verify the registration
 
@@ -837,71 +857,83 @@ to mint adapter-audience tokens; `test-adapter` can obtain one directly through 
 
 ## Chain a Foundry agent to Copilot Studio
 
-The web console supports two execution modes:
+The web console's executable flow builder supports one-agent routes with direct or APIM
+ingress, and native-chain routes with a second adapter leg to a specialist. APIM is optional
+on either leg; a native leg without APIM uses the orchestrator's configured A2A OAuth connection.
+Configure the blocks in the flow-builder drawer and choose **Done** to apply the valid route
+and return to the conversation. **Edit flow** reopens the drawer; Cancel discards pending
+changes without changing the active flow. Applying a changed route starts fresh conversation
+context on the next message; moving blocks does not.
 
-- **Direct** sends the request to one selected agent.
-- **Chain** sends the request to Foundry Agent A, which invokes the selected Copilot Studio
-  Agent B through that agent's target-specific A2A adapter route. The route, per-agent output,
-  and trace timeline remain visible in the console's Network column.
+A native chain sends one request to the configured orchestrator, with a hint naming the
+selected specialist. Either provider can orchestrate; this section covers Foundry.
+[The Citadel guide](docs/citadel-local.md#6-configure-native-orchestrators) also covers
+standard-harness Copilot Studio. The canvas neither creates nor repairs remote connections.
+The route and observed spans remain visible in Network; a requested target without a callback
+is not shown as a completed tool call.
 
 For a custom adapter API, use Foundry OAuth identity passthrough. `UserEntraToken` is intended
 primarily for supported managed Microsoft services and can fail before the adapter is called
 with `ARA OBO token request failed with status BadRequest`.
 
-> **Create the OAuth connection in the Foundry portal, not via ARM.**
-> A raw ARM `PUT` creates the connection record and stores the client credentials, but the
-> resulting connection never works. It looks healthy in ARM and in the agent definition while
-> every A2A tool call fails with an opaque JSON-RPC `-32603 Internal error` /
-> `"Received 400 from a service request"` — raised *before* Foundry makes any outbound request,
-> so nothing reaches the adapter and no inbound request appears in its traces.
+> **Connection existence is not native OAuth readiness.**
+> Earlier raw ARM-created connections in this project had no native connector metadata and
+> failed with JSON-RPC `-32603` / `"Received 400 from a service request"` before any adapter
+> request. Portal-created connections worked in those experiments. Current
+> [Foundry documentation](https://learn.microsoft.com/azure/foundry/agents/how-to/tools/agent-to-agent)
+> also supports CLI OAuth connection creation; the earlier failure is not a universal platform
+> restriction.
 >
-> The reliable way to tell the two apart is the connection `metadata`. A portal-created
-> connection carries `type: custom_A2A` and `oAuthProvider`, while a raw ARM `PUT` leaves
-> `metadata` empty:
->
-> ```text
-> az rest --method get --url "https://management.azure.com/<connection-id>?api-version=2025-06-01" --query "properties.metadata"
-> ```
+> This CLI accepts the documented `ApiType: Azure` metadata or the portal's `type: custom_A2A`
+> marker, as well as requiring the exact target, auth mode, and delegated scope. A portal-only
+> marker would incorrectly reject the documented API creation contract. Neither marker proves
+> successful native user-token retrieval or a specialist callback.
 >
 > Do **not** use `listConsentLinks` as a health probe. It returns
 > `ConnectorNamespaceConnectionNotFound` for *every* OAuth connection in the project, including
 > ones that work, so it cannot distinguish a broken connection from a healthy one.
 >
-> An existing OAuth connection **cannot be repaired in place**. The portal's Edit dialog reports
-> "OAuth doesn't support updating the configuration" and disables **Update**, so a connection
-> created out-of-band must be deleted and recreated through the portal. Recreating issues a new
-> redirect URL, which must be added as an **additional** Web redirect URI on the backend app
-> registration — keep the existing ones, since every connection has its own.
+> When the portal reports "OAuth doesn't support updating the configuration", create a new
+> connection rather than deleting a shared one. Register the new connection's actual generated
+> redirect URL as an **additional** Web redirect URI on the same backend registration, preserving
+> existing redirects. Do not borrow a callback from another connection.
 > In the create dialog, leave **Agent Card Path** at its `/.well-known/agent-card.json` default
 > and leave **Authenticate when retrieving agent card** unchecked, because the adapter serves
 > chain agent cards anonymously.
 
-The working sequence is: create the connection in the portal, then attach it with the CLI.
+Use a two-phase migration: prepare a new connection, register its real callback, then attach
+it. [The Citadel guide](docs/citadel-local.md#foundry-as-agent-a) contains the complete
+`configure-foundry-chain --prepare-connection` and `register-foundry-redirect` commands.
+Secured browser-to-Foundry entry calls first require the separate delegated
+Foundry permission described in [the registration guide](docs/spa-app-registration.md#optional-foundry-orchestrator-grant).
 
-1. **Foundry portal → Build → Tools → Connect a tool → Agent2agent (A2A) → "Connect via endpoint"**,
-   targeting the target-specific route `https://<public-adapter-host>/a2a-agents/<target-id>/a2a`
-   with **OAuth Identity Passthrough**.
-2. Add the redirect URL the portal generates as an **additional** Web redirect URI on the backend
-   app registration — the one whose `access_as_user` scope the connection requests.
+1. Use `--prepare-connection`, the existing backend's OAuth client ID, and its secret in the
+   named environment variable. The CLI follows the Custom OAuth ARM contract and refuses to
+   overwrite an existing OAuth connection. Alternatively use **Foundry portal > Build > Tools >
+   Connect a tool > Agent2agent (A2A) > Connect via endpoint** with OAuth Identity Passthrough.
+2. Use `register-foundry-redirect` to add the generated callback as an **additional** Web redirect
+   on the existing backend whose `access_as_user` scope the connection requests.
 3. Attach the connection and publish a new agent version:
 
 ```text
-dotnet run --project src/FoundryCopilotA2A.Cli -- configure-foundry-chain --agent-url https://<account>.services.ai.azure.com/api/projects/<project>/agents/<agent> --adapter-url https://<public-adapter-host> --audience api://<adapter-client-id> --tenant-id <tenant-id> --subscription-id <subscription-id> --resource-group <resource-group> --account-name <account> --project-name <project> --target-agent-id <adapter-target-id> --target-agent-name "<display-name>" --connection-name <portal-connection-name> --reuse-connection
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- configure-foundry-chain --agent-url https://<account>.services.ai.azure.com/api/projects/<project>/agents/<agent> --adapter-url https://<public-adapter-host> --audience api://<adapter-client-id> --tenant-id <tenant-id> --subscription-id <subscription-id> --resource-group <resource-group> --account-name <account> --project-name <project> --target-agent-id <adapter-target-id> --target-agent-name "<display-name>" --connection-name <new-connection-name> --reuse-connection
 ```
 
-`--reuse-connection` attaches the named connection without touching its credentials. The command
-preserves the existing agent definition and metadata and prunes A2A tools whose connection no
-longer exists.
+`--adapter-url` can be the full Citadel API base, including its API path.
+`--reuse-connection` attaches the named connection without touching its credentials and refuses
+an old tunnel target. When replacing that specialist's existing connection, add
+`--replace-connection-name <old-name>`; only this agent's tool reference is replaced, not the
+shared connection. The command preserves the model, instructions, unrelated tools, and metadata.
 
-Without `--reuse-connection` the CLI creates the connection itself through ARM. That path does
-not produce a working OAuth connection (see the warning above), so it fails fast with guidance
-instead of publishing an agent version that cannot work. It remains useful for
-`--auth-mode project-managed-identity`, which is created entirely through ARM.
+Without `--reuse-connection` the CLI creates the connection through ARM, then reads it back.
+For OAuth it refuses to publish an agent version if the native metadata check fails. A successful
+ARM response alone is insufficient. `--auth-mode project-managed-identity` is an app-only
+experiment, not an alternative for this delegated Citadel workflow.
 
-Attach exactly one A2A connection per target. `configure-foundry-chain` prunes A2A tools whose
-project connection no longer exists, so replacing a connection no longer leaves a dangling
-reference to a deleted one. Tools pointing at connections that still exist are preserved, which
-is what lets one Foundry agent offer several specialists.
+Attach exactly one A2A connection per target. The command reads every page of the project
+connection inventory and prunes references only to connections confirmed absent. Inventory
+errors abort the operation instead of being treated as an empty project. Unrelated tools and
+connections are preserved.
 
 This matters more than it appears. Two A2A tools pointing at the *same* target URL are
 indistinguishable to the model, and attaching both an OAuth and a managed-identity connection
@@ -917,8 +949,8 @@ Copilot Studio specialists:
 dotnet user-secrets set "FoundryChainTargetAgent" "reverser-classic,tweede-kamer-classic" --project src/FoundryCopilotA2A.AppHost
 ```
 
-Each target still needs its own Foundry project connection pointing at that target's
-`/a2a-agents/<id>/a2a` route, created in the portal and consented separately.
+Each target still needs its own functioning Foundry project connection pointing at that target's
+`/a2a-agents/<id>/a2a` route and authorized for the calling user.
 
 Consent is per connection and expires independently. Consenting to one specialist does nothing
 for the other, so with several targets expect to re-consent each one occasionally. The challenge
@@ -945,6 +977,9 @@ grant, so treat it as inconclusive: re-send the request and check the task state
 assuming consent failed.
 
 ### Calling as the project managed identity
+
+This is a separate app-only experiment. Citadel's delegated runtime policy rejects it; do not
+switch to it to bypass a user-consent failure.
 
 `--auth-mode project-managed-identity` avoids the connector gateway and interactive consent
 entirely. Foundry then calls the adapter as the project identity, and the request carries an
@@ -1295,7 +1330,7 @@ After the direct Foundry-to-adapter pass succeeds:
 
 APIM mediates and governs the JSON-RPC calls; it does not choose the specialist. The Foundry
 agent makes that decision from its instructions and the tools attached to it. Consequently, the
-console's local Chain mode and `X-A2A-Chain-Target` steering are not prerequisites for APIM.
+console's flow builder and `X-A2A-Chain-Target` steering are not prerequisites for APIM.
 Publishing only one generic APIM agent API would change that design by requiring a downstream
 router, so preserve the one-card-and-runtime-per-specialist model.
 

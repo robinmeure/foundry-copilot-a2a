@@ -38,6 +38,10 @@ internal sealed class CliApplication(CliContext context)
                     context, commandArguments, cancellationToken),
                 "consent" => await EntraCommands.ConsentAsync(
                     context, commandArguments, cancellationToken),
+                "grant-foundry-consent" => await FoundryAccessCommands.GrantConsentAsync(
+                    context, commandArguments, cancellationToken),
+                "register-foundry-redirect" => await FoundryAccessCommands.RegisterRedirectAsync(
+                    context, commandArguments, cancellationToken),
                 "run-adapter" => await RuntimeCommands.RunAdapterAsync(
                     context, commandArguments, cancellationToken),
                 "run-mock" => await RuntimeCommands.RunMockAsync(
@@ -45,6 +49,10 @@ internal sealed class CliApplication(CliContext context)
                 "start-tunnel" => await RuntimeCommands.StartTunnelAsync(
                     context, commandArguments, cancellationToken),
                 "test-adapter" => await SmokeTestCommands.TestAdapterAsync(
+                    context, commandArguments, cancellationToken),
+                "configure-citadel" => await CitadelCommands.ConfigureAsync(
+                    context, commandArguments, cancellationToken),
+                "test-citadel" => await CitadelSmokeTest.RunAsync(
                     context, commandArguments, cancellationToken),
                 "test-foundry" => await SmokeTestCommands.TestFoundryAsync(
                     context, commandArguments, cancellationToken),
@@ -81,6 +89,16 @@ internal sealed class CliApplication(CliContext context)
             context.Error.WriteLine($"HTTP error: {exception.Message}");
             return 1;
         }
+        catch (System.Text.Json.JsonException exception)
+        {
+            context.Error.WriteLine($"Invalid JSON response: {exception.Message}");
+            return 1;
+        }
+        catch (System.Text.RegularExpressions.RegexMatchTimeoutException)
+        {
+            context.Error.WriteLine("Error: The expected-output pattern exceeded its matching time limit.");
+            return 2;
+        }
     }
 
     private void WriteHelp()
@@ -96,10 +114,17 @@ internal sealed class CliApplication(CliContext context)
               register-app  Create the backend API app used by the adapter and OBO flow.
               register-spa  Create a frontend SPA app with delegated access to the backend API.
               consent       Grant CopilotStudio.Copilots.Invoke for the signed-in user.
+              grant-foundry-consent
+                            Grant only Foundry's delegated scope to the existing backend app.
+              register-foundry-redirect
+                            Add a generated Foundry OAuth Web callback to the existing backend.
               run-adapter   Start the adapter against a live Copilot Studio connection URL.
               run-mock      Start the adapter with its local mock backend.
               test-adapter  Exercise an adapter directly over A2A.
               start-tunnel  Expose the local adapter through an anonymous Dev Tunnel.
+              configure-citadel
+                            Publish a separate delegated-OAuth API in an existing APIM instance.
+              test-citadel   Exercise browser CORS, streaming, traces, and optional OBO through APIM.
               test-foundry  Connect Foundry to an adapter and run the cloud smoke test.
               enable-foundry-a2a
                             Expose an existing Foundry prompt agent through incoming A2A.
@@ -146,6 +171,29 @@ internal sealed class CliApplication(CliContext context)
                 Runs MSAL device-code authentication and records a per-user delegated grant.
                 The backend app must have public client flow enabled; register-app configures it.
                 """,
+            "grant-foundry-consent" =>
+                """
+                grant-foundry-consent --tenant-id <tenant-id> --api-client-id <backend-application-id>
+
+                Resolves the Entra service principal for https://ai.azure.com, adds its enabled
+                user_impersonation delegated permission to the existing backend registration,
+                and grants tenant-wide consent for that resource only. Requires an authorized
+                tenant administrator's Azure CLI login. Preserves other permissions and grants;
+                does not create an app, rotate credentials, or grant application roles.
+                Consumers separately need Foundry Agent Consumer access to the calling agent.
+                """,
+            "register-foundry-redirect" =>
+                """
+                register-foundry-redirect --tenant-id <tenant-id>
+                                         --api-client-id <backend-application-id>
+                                         --redirect-uri <generated-azure-apim-consent-callback>
+
+                Adds only the actual callback returned for a new native Foundry OAuth connection
+                as a Web redirect on the existing access_as_user backend. Accepts HTTPS callbacks
+                on the Azure APIM consent domain. Preserves existing Web settings and redirects,
+                does not change credentials or permissions, and does not create an application.
+                Native end-user connection consent is a separate step after attaching the tool.
+                """,
             "run-adapter" =>
                 """
                 run-adapter --tenant-id <tenant-id> --client-id <application-id>
@@ -181,6 +229,43 @@ internal sealed class CliApplication(CliContext context)
 
                 Runs `devtunnel host --allow-anonymous` for the local adapter port.
                 """,
+            "configure-citadel" =>
+                """
+                configure-citadel --resource-group <name> --service-name <existing-apim>
+                                  --backend-url <https-dev-tunnel-or-adapter-base-url>
+                                  --tenant-id <tenant-id> --api-client-id <backend-client-id>
+                                  [--subscription-id <id>] [--allowed-origin <origin>]
+                                  [--api-id <id>] [--api-path <path>]
+                                  [--agent-ids <comma-separated-specialist-ids>] [--replace]
+
+                Defaults to a separate copilot-studio-local API and http://localhost:5173.
+                Creates no APIM service or app registrations. Only APIs owned by this command
+                may be updated, and only with --replace. Existing hosted APIs are untouched.
+                Optional specialists each receive a separate card/runtime API beneath
+                <api-path>/a2a-agents/<id>. Set Adapter:PublicBaseUrl and the frontend's
+                VITE_GATEWAY_BASE_URL to the printed gateway API base URL, including its path.
+                Uses the current Azure CLI login for management operations. No client secret
+                or delegated user token is stored in APIM; Authorization is forwarded unchanged.
+                """,
+            "test-citadel" =>
+                """
+                test-citadel --base-url <https-gateway-api-base-url>
+                             --bearer-token-env <environment-variable-name>
+                             --agent-id <agent-id> --prompt <text>
+                             --expected-output-pattern <regex>
+                             [--allowed-origin <origin>] [--require-obo]
+                             [--specialist-route | --chain-target <specialist-id>]
+                             [--require-native-callback]
+
+                Checks the gateway's card and catalog, CORS preflight, unauthenticated rejection,
+                streamed A2A answer, and caller-scoped trace. --require-obo also requires an
+                on_behalf_of trace span. The token must target the backend API, not APIM or
+                Power Platform. Keep token values in the environment, never command arguments.
+                --specialist-route invokes the target-bound endpoint that native agents use.
+                --chain-target selects a configured Foundry or Copilot Studio orchestrator target.
+                --require-native-callback additionally requires an observed successful specialist
+                execution in the same trace, not merely a generated answer or a requested target.
+                """,
             "test-foundry" =>
                 """
                 test-foundry --adapter-url <url> --project-endpoint <url>
@@ -208,7 +293,7 @@ internal sealed class CliApplication(CliContext context)
             "configure-foundry-chain" =>
                 """
                 configure-foundry-chain --agent-url <Foundry-agent-url>
-                                        --adapter-url <public-adapter-url>
+                                        --adapter-url <public-adapter-or-gateway-base-url>
                                         --audience <adapter-application-id-uri>
                                         --tenant-id <tenant-id>
                                         --subscription-id <subscription-id>
@@ -219,6 +304,8 @@ internal sealed class CliApplication(CliContext context)
                                         [--oauth-client-id <application-id>]
                                         [--oauth-client-secret-env <name>]
                                         [--reuse-connection]
+                                        [--prepare-connection]
+                                        [--replace-connection-name <old-connection>]
                                         [--connection-name <name>] [--smoke-prompt <text>]
 
                 Creates an authenticated remote-A2A connection to one target-specific adapter
@@ -238,7 +325,16 @@ internal sealed class CliApplication(CliContext context)
                 passthrough. UserEntraToken remains available for supported managed Microsoft
                 services.
                 --reuse-connection attaches an existing named project connection without reading
-                or replacing its credentials.
+                or replacing its credentials. Its target, authentication mode, delegated OAuth
+                scope, and connector metadata must match the requested specialist endpoint.
+                --replace-connection-name replaces this agent's old tool reference for the same
+                specialist, without deleting the shared project connection. Create a NEW OAuth
+                connection when migrating from a tunnel to Citadel; reuse does not retarget it.
+                --prepare-connection creates and reads back a new connection without publishing
+                an agent version. Register its real generated callback before attaching with
+                --reuse-connection. Creation follows the documented Custom OAuth ARM contract;
+                metadata is not proof of native user consent or successful specialist execution.
+                Existing OAuth connections are never overwritten by the creation path.
                 """,
             _ => $"Unknown command '{command}'."
         };

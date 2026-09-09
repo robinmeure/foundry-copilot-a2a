@@ -264,9 +264,8 @@ public sealed class A2AAdapterTests : IClassFixture<A2AAdapterFactory>
         Assert.Contains(
             $"https://adapter.test{AdapterConstants.ChainAgentRuntimePath("mock")}",
             card);
-        Assert.Contains(
-            "\"protocolBinding\":\"JSONRPC\",\"protocolVersion\":\"1.0\"",
-            card);
+        Assert.Contains("\"preferredTransport\":\"JSONRPC\"", card);
+        Assert.DoesNotContain("\"supportedInterfaces\"", card);
 
         // Remote callers resolve the card either as a sibling of the runtime or by appending
         // /.well-known/agent-card.json to the target URL. Both must return the same chain-bound
@@ -275,9 +274,18 @@ public sealed class A2AAdapterTests : IClassFixture<A2AAdapterFactory>
             $"{AdapterConstants.ChainAgentRuntimePath("mock")}/.well-known/agent-card.json");
         Assert.Equal(HttpStatusCode.OK, targetRelativeCardResponse.StatusCode);
         Assert.Equal(card, await targetRelativeCardResponse.Content.ReadAsStringAsync());
+        foreach (var path in new[]
+                 {
+                     $"{AdapterConstants.ChainAgentBasePath("mock")}/.well-known/agent.json",
+                     $"{AdapterConstants.ChainAgentRuntimePath("mock")}/.well-known/agent.json"
+                 })
+        {
+            using var legacyCardResponse = await client.GetAsync(path);
+            Assert.Equal(HttpStatusCode.OK, legacyCardResponse.StatusCode);
+            Assert.Equal(card, await legacyCardResponse.Content.ReadAsStringAsync());
+        }
 
-        // The card format version stays 0.3.0 while supportedInterfaces advertises the 1.0
-        // binding, matching the shape the A2A library emits for the root card.
+        // Discovery stays strictly v0.3 for Copilot Studio; the runtime also accepts v1 below.
         Assert.Contains("\"protocolVersion\":\"0.3.0\"", card);
         Assert.Contains("\"supportsAuthenticatedExtendedCard\"", card);
         Assert.Contains("\"additionalInterfaces\"", card);

@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Internal;
 using Microsoft.Extensions.Options;
 using OpenTelemetry;
 
@@ -12,7 +13,8 @@ public sealed record TraceSnapshot(
     string TraceId,
     bool Complete,
     double DurationMs,
-    IReadOnlyList<TraceSpanSnapshot> Spans);
+    IReadOnlyList<TraceSpanSnapshot> Spans,
+    bool Truncated = false);
 
 public sealed record TraceSpanSnapshot(
     string SpanId,
@@ -43,41 +45,75 @@ public sealed record TraceHttpResponse(int Status, string? Body);
 public sealed class SanitizedTraceStore : IDisposable
 {
     private static readonly TimeSpan TraceTtl = TimeSpan.FromMinutes(15);
+    internal const int MaxRequestsPerTrace = 128;
+    internal const int MaxSpansPerTrace = 1024;
+    private const string OwnerProperty = "adapter.trace.owner";
+    private const string AgentProperty = "adapter.trace.agent";
+    private const string BufferProperty = "adapter.trace.buffer";
     private readonly MemoryCache _cache;
+    private readonly Lock _gate = new();
 
     public SanitizedTraceStore(IOptions<AdapterOptions> options)
+        : this(options, null)
+    {
+    }
+
+    internal SanitizedTraceStore(IOptions<AdapterOptions> options, ISystemClock? clock)
     {
         _cache = new MemoryCache(new MemoryCacheOptions
         {
+            Clock = clock,
             SizeLimit = options.Value.MaxCacheEntries,
             ExpirationScanFrequency = TimeSpan.FromMinutes(1)
         });
     }
 
-    public void Register(ActivityTraceId traceId, string ownerId, string agentId)
+    public bool Register(Activity activity, string ownerId, string agentId)
     {
-        _cache.Set(
-            traceId.ToHexString(),
-            new TraceBuffer(ownerId, agentId),
-            new MemoryCacheEntryOptions
+        activity.SetCustomProperty(BufferProperty, null);
+        activity.SetCustomProperty(OwnerProperty, ownerId);
+        activity.SetCustomProperty(AgentProperty, agentId);
+        lock (_gate)
+        {
+            if (TryGetBuffer(activity.TraceId, out var existing))
             {
-                SlidingExpiration = TraceTtl,
-                Size = 1
-            });
+                if (!string.Equals(existing.OwnerId, ownerId, StringComparison.Ordinal))
+                {
+                    return false;
+                }
+                if (!existing.BeginRequest(activity.SpanId))
+                {
+                    return false;
+                }
+                activity.SetCustomProperty(BufferProperty, existing);
+                existing.Record(activity, agentId);
+                return true;
+            }
+
+            var buffer = new TraceBuffer(ownerId, agentId);
+            buffer.BeginRequest(activity.SpanId);
+            _cache.Set(
+                activity.TraceId.ToHexString(),
+                buffer,
+                new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = TraceTtl, Size = 1 });
+            activity.SetCustomProperty(BufferProperty, buffer);
+            buffer.Record(activity, agentId);
+            return true;
+        }
     }
 
     public void Record(Activity activity)
     {
-        if (!TryGetBuffer(activity.TraceId, out var buffer))
+        if (!TryGetBuffer(activity, out var buffer, out var agentId))
         {
             return;
         }
 
-        buffer.Record(activity);
+        buffer.Record(activity, agentId);
         if (activity.Kind == ActivityKind.Server &&
             activity.GetTagItem("a2a.runtime") is true)
         {
-            buffer.MarkComplete();
+            buffer.MarkComplete(activity.SpanId);
         }
     }
 
@@ -87,9 +123,9 @@ public sealed class SanitizedTraceStore : IDisposable
         TraceHttpResponse? response,
         string? error)
     {
-        if (TryGetBuffer(activity.TraceId, out var buffer))
+        if (TryGetBuffer(activity, out var buffer, out var agentId))
         {
-            buffer.RecordHttpExchange(activity, request, response, error);
+            buffer.RecordHttpExchange(activity, agentId, request, response, error);
         }
     }
 
@@ -112,6 +148,20 @@ public sealed class SanitizedTraceStore : IDisposable
 
     public void Dispose() => _cache.Dispose();
 
+    private bool TryGetBuffer(Activity activity, out TraceBuffer buffer, out string agentId)
+    {
+        Activity? request = activity;
+        while (request is not null && request.GetCustomProperty(OwnerProperty) is not string)
+        {
+            request = request.Parent;
+        }
+        agentId = request?.GetCustomProperty(AgentProperty) as string ?? string.Empty;
+        return TryGetBuffer(activity.TraceId, out buffer) &&
+               ReferenceEquals(request?.GetCustomProperty(BufferProperty), buffer) &&
+               string.Equals(
+                   request?.GetCustomProperty(OwnerProperty) as string, buffer.OwnerId, StringComparison.Ordinal);
+    }
+
     private bool TryGetBuffer(ActivityTraceId traceId, out TraceBuffer buffer)
     {
         if (_cache.TryGetValue(traceId.ToHexString(), out TraceBuffer? value) &&
@@ -128,33 +178,70 @@ public sealed class SanitizedTraceStore : IDisposable
     private sealed class TraceBuffer(string ownerId, string agentId)
     {
         private readonly ConcurrentDictionary<string, CapturedSpan> _spans = new();
-        private int _complete;
+        private readonly ConcurrentDictionary<ActivitySpanId, bool> _requests = new();
+        private readonly Lock _gate = new();
+        private volatile bool _truncated;
 
         public string OwnerId { get; } = ownerId;
 
         public string AgentId { get; } = agentId;
 
-        public void Record(Activity activity)
+        public void Record(Activity activity, string currentAgentId)
         {
-            var span = _spans.GetOrAdd(
-                activity.SpanId.ToHexString(),
-                _ => CapturedSpan.FromActivity(activity, AgentId));
-            span.UpdateFromActivity(activity, AgentId);
+            var span = GetOrCreateSpan(activity, currentAgentId);
+            span?.UpdateFromActivity(activity, currentAgentId);
         }
 
         public void RecordHttpExchange(
             Activity activity,
+            string currentAgentId,
             TraceHttpRequest request,
             TraceHttpResponse? response,
             string? error)
         {
-            var span = _spans.GetOrAdd(
-                activity.SpanId.ToHexString(),
-                _ => CapturedSpan.FromActivity(activity, AgentId));
-            span.SetHttp(new TraceHttpExchange(request, response, error));
+            var span = GetOrCreateSpan(activity, currentAgentId);
+            span?.SetHttp(new TraceHttpExchange(request, response, error));
         }
 
-        public void MarkComplete() => Interlocked.Exchange(ref _complete, 1);
+        private CapturedSpan? GetOrCreateSpan(Activity activity, string currentAgentId)
+        {
+            var spanId = activity.SpanId.ToHexString();
+            lock (_gate)
+            {
+                if (_spans.TryGetValue(spanId, out var existing))
+                {
+                    return existing;
+                }
+                if (_spans.Count >= MaxSpansPerTrace)
+                {
+                    _truncated = true;
+                    return null;
+                }
+
+                var span = CapturedSpan.FromActivity(activity, currentAgentId);
+                _spans[spanId] = span;
+                return span;
+            }
+        }
+
+        public bool BeginRequest(ActivitySpanId spanId)
+        {
+            lock (_gate)
+            {
+                if (_requests.ContainsKey(spanId))
+                {
+                    return true;
+                }
+                if (_requests.Count >= MaxRequestsPerTrace)
+                {
+                    _truncated = true;
+                    return false;
+                }
+                return _requests.TryAdd(spanId, false);
+            }
+        }
+
+        public void MarkComplete(ActivitySpanId spanId) => _requests.TryUpdate(spanId, true, false);
 
         public TraceSnapshot CreateSnapshot(string traceId)
         {
@@ -172,9 +259,10 @@ public sealed class SanitizedTraceStore : IDisposable
 
             return new TraceSnapshot(
                 traceId,
-                Volatile.Read(ref _complete) == 1,
+                !_requests.IsEmpty && _requests.Values.All(complete => complete),
                 Math.Round(duration, 1),
-                spans);
+                spans,
+                _truncated);
         }
     }
 
@@ -308,6 +396,7 @@ internal static class TraceSanitizer
         "a2a.outcome",
         "adapter.failure.reason",
         "auth.flow",
+        "auth.scope",
         "copilot_studio.agent.id",
         "copilot_studio.activity.count",
         "copilot_studio.activity.types",

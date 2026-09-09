@@ -1,0 +1,42 @@
+<policies>
+  <inbound>
+    <base />
+    <validate-jwt header-name="Authorization"
+                  require-scheme="Bearer"
+                  failed-validation-httpcode="401"
+                  failed-validation-error-message="Unauthorized. A delegated adapter API token is required."
+                  output-token-variable-name="validatedJwt"
+                  clock-skew="60">
+      <openid-config url="__ENTRA_LOGIN_ENDPOINT__{{entra-tenant-id}}/v2.0/.well-known/openid-configuration" />
+      <audiences>
+        <audience>{{adapter-api-audience}}</audience>
+        <audience>{{adapter-api-bare-audience}}</audience>
+      </audiences>
+      <issuers>
+        <issuer>__ENTRA_LOGIN_ENDPOINT__{{entra-tenant-id}}/v2.0</issuer>
+        <issuer>https://sts.windows.net/{{entra-tenant-id}}/</issuer>
+      </issuers>
+      <required-claims>
+        <claim name="scp" match="any" separator=" ">
+          <value>{{adapter-delegated-scope}}</value>
+        </claim>
+        <claim name="tid" match="all">
+          <value>{{entra-tenant-id}}</value>
+        </claim>
+      </required-claims>
+    </validate-jwt>
+    <rate-limit-by-key calls="__RATE_LIMIT_CALLS__"
+                       renewal-period="60"
+                       counter-key='@(context.Api.Id + ":" + context.Operation.Id + ":" + ((Jwt)context.Variables["validatedJwt"]).Claims.GetValueOrDefault("tid", "unknown") + ":" + ((Jwt)context.Variables["validatedJwt"]).Claims.GetValueOrDefault("oid", "unknown"))' />
+    __REQUEST_VALIDATION__
+  </inbound>
+  <backend>
+    <base />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>

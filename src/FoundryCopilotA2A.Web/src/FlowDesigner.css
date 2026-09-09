@@ -1,0 +1,372 @@
+.flow-designer {
+  grid-column: 1 / -1;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #d9e1ec;
+  border-radius: 18px;
+  background: white;
+  box-shadow: 0 12px 40px rgba(28, 48, 79, 0.08);
+}
+
+.designer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+  padding: 22px 26px;
+  border-bottom: 1px solid #e5ebf4;
+}
+
+.designer-header h3 {
+  margin: 7px 0;
+  color: #10284e;
+  font-size: clamp(1.3rem, 2vw, 1.8rem);
+  letter-spacing: -0.035em;
+}
+
+.designer-header p:not(.eyebrow),
+.designer-palette > p {
+  margin: 0;
+  color: #687991;
+  font-size: 0.8rem;
+  line-height: 1.55;
+}
+
+.designer-presets {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.designer-presets > span {
+  width: 100%;
+  color: #6d7d94;
+  font-size: 0.7rem;
+  text-align: right;
+}
+
+.designer-presets .button,
+.designer-connect .button {
+  padding: 9px 12px;
+  font-size: 0.76rem;
+}
+
+.designer-body {
+  display: grid;
+  grid-template-columns: 238px minmax(0, 1fr);
+}
+
+.designer-palette {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px;
+  max-height: 492px;
+  overflow-y: auto;
+  border-right: 1px solid #e1e8f2;
+  background: #f8fafd;
+}
+
+.designer-palette > strong {
+  color: #263e60;
+  font-size: 0.78rem;
+}
+
+.designer-palette > p {
+  font-size: 0.72rem;
+}
+
+.designer-resource {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid #d7e0ee;
+  border-radius: 9px;
+  background: white;
+  color: #284367;
+  text-align: left;
+  cursor: grab;
+}
+
+.designer-resource > span:nth-child(2) {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.designer-resource strong,
+.designer-resource small {
+  display: block;
+}
+
+.designer-resource strong {
+  font-size: 0.74rem;
+}
+
+.designer-resource small {
+  margin-top: 3px;
+  color: #718299;
+  font-size: 0.64rem;
+  line-height: 1.4;
+}
+
+.designer-resource:hover:not(:disabled) {
+  border-color: #6191de;
+  box-shadow: 0 2px 8px #356ccd16;
+}
+
+.designer-badge {
+  display: inline-block;
+  width: fit-content;
+  padding: 4px 5px;
+  border-radius: 5px;
+  background: #e8f0fc;
+  color: #3565a1;
+  font-size: 0.56rem;
+  font-weight: 800;
+  letter-spacing: 0.035em;
+}
+
+.gateway .designer-badge {
+  background: #e4f4f1;
+  color: #28786e;
+}
+
+.adapter .designer-badge {
+  background: #fff1dc;
+  color: #946315;
+}
+
+.agent .designer-badge {
+  background: #f1eafa;
+  color: #8255a4;
+}
+
+.designer-editor {
+  min-width: 0;
+}
+
+.designer-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+  min-height: 38px;
+  color: #6e7f98;
+  font-size: 0.67rem;
+}
+
+.designer-toolbar > button:first-of-type {
+  margin-left: auto;
+}
+
+.designer-toolbar button,
+.designer-status button {
+  padding: 3px 7px;
+  border: 1px solid #d6dfed;
+  border-radius: 5px;
+  background: white;
+  color: #3f5d86;
+  cursor: pointer;
+}
+
+.flow-designer button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.designer-line {
+  display: inline-block;
+  width: 20px;
+  margin-right: 5px;
+  border-top: 2px solid #356ccd;
+  vertical-align: middle;
+}
+
+.designer-line.native {
+  border-top: 2px dashed #9253b7;
+}
+
+.designer-canvas {
+  height: 390px;
+  background: #f9fbfe;
+}
+
+.designer-node {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  width: 174px;
+  min-height: 109px;
+  padding: 14px;
+  border: 1px solid #b6c8e3;
+  border-radius: 12px;
+  background: white;
+  box-shadow: 0 5px 16px #264b7c14;
+}
+
+.designer-node.selected {
+  border-color: #3978d7;
+  box-shadow: 0 0 0 2px #3978d735;
+}
+
+.designer-node.unavailable {
+  border-color: #d88585;
+  background: #fff7f7;
+}
+
+.designer-node > strong {
+  color: #18365f;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.designer-node > small {
+  color: #6d7f98;
+  font-size: 0.64rem;
+  line-height: 1.4;
+}
+
+.designer-node .react-flow__handle {
+  width: 12px;
+  height: 12px;
+  border: 2px solid white;
+  background: #4c80c9;
+}
+
+.designer-remove {
+  position: absolute;
+  top: 6px;
+  right: 7px;
+  padding: 2px 5px;
+  border: none;
+  background: transparent;
+  color: #7c8ea7;
+  cursor: pointer;
+  font-size: 0.72rem;
+}
+
+.designer-native-tag {
+  color: #8953a9;
+  font-size: 0.58rem;
+  font-weight: 700;
+}
+
+.designer-connect {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 14px;
+  border-top: 1px solid #e1e8f2;
+  color: #607694;
+  font-size: 0.71rem;
+}
+
+.designer-connect select {
+  min-width: 0;
+  flex: 1;
+  padding: 7px;
+  border: 1px solid #d0dcee;
+  border-radius: 7px;
+  background: white;
+  color: #284467;
+  font-size: 0.72rem;
+}
+
+.designer-status {
+  padding: 16px 24px;
+  border-top: 1px solid #dce5f1;
+  color: #795c26;
+  background: #fffcf5;
+  font-size: 0.77rem;
+  line-height: 1.6;
+}
+
+.designer-status.valid {
+  color: #285f55;
+  background: #f5faf8;
+}
+
+.designer-status p {
+  margin: 6px 0 0;
+}
+
+.designer-status ul {
+  margin: 6px 0 0;
+  padding-left: 20px;
+}
+
+.designer-route-details {
+  color: #5c708d;
+}
+
+.designer-route-details code,
+.designer-config-note code {
+  overflow-wrap: anywhere;
+  font-size: 0.9em;
+}
+
+.designer-route-details .designer-native-notice {
+  color: #835b94;
+}
+
+.designer-status .designer-footnote {
+  margin-top: 9px;
+  color: #7a8a9f;
+  font-size: 0.7rem;
+}
+
+@media (max-width: 1050px) {
+  .designer-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .designer-presets {
+    justify-content: flex-start;
+  }
+
+  .designer-presets > span {
+    text-align: left;
+  }
+
+  .designer-body {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 650px) {
+  .designer-header {
+    padding: 18px;
+  }
+
+  .designer-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .designer-palette {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    max-height: 230px;
+    border-right: 0;
+    border-bottom: 1px solid #e1e8f2;
+  }
+
+  .designer-palette > strong,
+  .designer-palette > p {
+    grid-column: 1 / -1;
+  }
+
+  .designer-connect {
+    flex-wrap: wrap;
+  }
+
+  .designer-connect select {
+    flex-basis: 30%;
+  }
+}

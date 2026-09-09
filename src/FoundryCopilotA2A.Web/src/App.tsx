@@ -17,10 +17,28 @@ import {
   type AdapterTraceSpan,
   type ConversationTurn,
   type CopilotAgent,
+  type CopilotAgentCatalog,
   listAgents,
   sendMessage,
 } from './a2aClient'
 import { createLoginRequest, type RuntimeConfig } from './authConfig'
+import { FlowDesigner } from './FlowDesigner'
+import { FlowDrawer } from './FlowDrawer'
+import {
+  applyFlowConfiguration,
+  cancelFlowConfiguration,
+  createFlowConfiguration,
+  editFlowConfiguration,
+} from './flowConfiguration'
+import {
+  createFlowNode,
+  createFlowPreset,
+  getFlowEntryBaseUrl,
+  parseFlowGraph,
+  serializeFlowGraph,
+  validateFlow,
+  type FlowGraph,
+} from './flowModel'
 import './App.css'
 
 interface AppProps {
@@ -28,7 +46,6 @@ interface AppProps {
 }
 
 type TurnStatus = 'preparing' | 'sending' | 'succeeded' | 'failed'
-type ConversationMode = 'direct' | 'chain'
 
 /**
  * One user turn and everything the wire did for it. The conversation is stored as turns so the
@@ -42,6 +59,10 @@ interface TurnRecord {
   progress?: string
   error?: string
   agentName: string
+  route: {
+    apiBaseUrl: string
+    viaGateway: boolean
+  }
   chain?: {
     agentA: string
     agentB: string
@@ -70,67 +91,121 @@ function App({ config }: AppProps) {
   const [draft, setDraft] = useState('')
   const [turns, setTurns] = useState<TurnRecord[]>([])
   const [agents, setAgents] = useState<CopilotAgent[]>([])
-  const [selectedAgentId, setSelectedAgentId] = useState('')
-  const [mode, setMode] = useState<ConversationMode>('direct')
-  const [selectedAgentAId, setSelectedAgentAId] = useState('')
-  const [selectedAgentBId, setSelectedAgentBId] = useState('')
+  const [agentCatalogs, setAgentCatalogs] = useState(() => new Map<string, CopilotAgentCatalog>())
+  const storageKey = `a2a-flow-v1:${config.tenantId}:${config.adapterApiClientId}:${config.spaClientId}`
+  const appliedStorageKey = `${storageKey}:applied`
+  const [restoredFlow] = useState(() => loadFlowDraft(storageKey))
+  const [restoredAppliedFlow] = useState(() => loadFlowDraft(appliedStorageKey))
+  const [flow, setFlow] = useState(() => createFlowConfiguration(
+    restoredFlow.graph,
+    restoredAppliedFlow.error ? undefined : restoredAppliedFlow.graph,
+  ))
+  const graph = flow.draft
+  const [storageError, setStorageError] = useState<string>()
+  const [appliedStorageError, setAppliedStorageError] = useState<string>()
+  const [conversationSignature, setConversationSignature] = useState<string>()
+  const [catalogResult, setCatalogResult] = useState<{
+    url: string
+    revision: number
+    error?: string
+  }>()
+  const [catalogRevision, setCatalogRevision] = useState(0)
   const [isSending, setIsSending] = useState(false)
   const [error, setError] = useState<string>()
   const [selectedEntryId, setSelectedEntryId] = useState<string>()
   const messagesRef = useRef<HTMLDivElement>(null)
+  const composerRef = useRef<HTMLTextAreaElement>(null)
+  const configureButtonRef = useRef<HTMLButtonElement>(null)
+  const signInButtonRef = useRef<HTMLButtonElement>(null)
   const account = instance.getActiveAccount() ?? accounts[0]
-  const selectedAgent = agents.find((agent) => agent.id === selectedAgentId)
-  const foundryChainAgents = agents.filter(
-    (agent) => agent.provider === 'foundry' && agent.chainTargets.length > 0,
+  const validation = useMemo(
+    () => graph ? validateFlow(graph, config, agents) : undefined,
+    [graph, config, agents],
   )
-  const selectedAgentA = agents.find((agent) => agent.id === selectedAgentAId)
-  const availableAgentBs = agents.filter(
-    (agent) =>
-      agent.provider === 'copilotStudio' &&
-      agent.supported &&
-      selectedAgentA?.chainTargets.includes(agent.id),
+  const draftPlan = validation?.plan
+  const appliedEndpoint = flow.applied && getFlowEntryBaseUrl(flow.applied, config)
+  const appliedCatalog = appliedEndpoint ? agentCatalogs.get(appliedEndpoint) : undefined
+  const appliedValidation = useMemo(
+    () => flow.applied && appliedCatalog ? validateFlow(flow.applied, config, appliedCatalog.agents) : undefined,
+    [flow.applied, config, appliedCatalog],
   )
-  const selectedAgentB = agents.find((agent) => agent.id === selectedAgentBId)
+  const plan = appliedValidation?.plan
+  const entryAgent = appliedCatalog?.agents.find((agent) => agent.id === plan?.entryAgentId)
+  const targetAgent = appliedCatalog?.agents.find((agent) => agent.id === plan?.targetAgentId)
+  const needsNewConversation = Boolean(
+    conversationSignature && plan && conversationSignature !== plan.signature,
+  )
+  const discoveryUrl = (graph && getFlowEntryBaseUrl(graph, config)) ?? config.adapterBaseUrl
+  const catalogLoading = catalogResult?.url !== discoveryUrl || catalogResult?.revision !== catalogRevision
+  const catalogError = catalogLoading ? undefined : catalogResult?.error
+  const appliedFlowStatus = !flow.applied ? 'Configure a flow to start'
+    : !appliedEndpoint || (appliedValidation && !appliedValidation.valid) ? 'Flow needs attention'
+      : catalogLoading ? 'Loading your flow...' : 'Saved flow'
+  const savedGraph = useMemo(() => {
+    if (!graph) return {}
+    try {
+      return { value: serializeFlowGraph(graph) }
+    } catch (reason) {
+      if (!(reason instanceof Error)) throw reason
+      return { error: `This flow cannot be saved: ${reason.message}` }
+    }
+  }, [graph])
   const timeline = useMemo(() => turns.map(buildTimelineGroup), [turns])
+
+  const changeFlow = useCallback((update: (current: FlowGraph) => FlowGraph) => {
+    setFlow((current) => current.isOpen
+      ? { ...current, draft: update(current.draft ?? { nodes: [], edges: [] }) }
+      : current)
+  }, [])
 
   useEffect(() => {
     const controller = new AbortController()
 
-    listAgents(config.adapterBaseUrl, controller.signal)
+    listAgents(discoveryUrl, controller.signal)
       .then((catalog) => {
+        if (controller.signal.aborted) {
+          return
+        }
         setAgents(catalog.agents)
-        setSelectedAgentId((current) =>
-          catalog.agents.some((agent) => agent.id === current)
-            ? current
-            : catalog.defaultAgentId,
-        )
-        const chainAgent = catalog.agents.find(
-          (agent) => agent.provider === 'foundry' && agent.chainTargets.length > 0,
-        )
-        setSelectedAgentAId((current) =>
-          catalog.agents.some(
-            (agent) =>
-              agent.id === current &&
-              agent.provider === 'foundry' &&
-              agent.chainTargets.length > 0,
-          )
-            ? current
-            : (chainAgent?.id ?? ''),
-        )
-        setSelectedAgentBId((current) =>
-          chainAgent?.chainTargets.includes(current)
-            ? current
-            : (chainAgent?.chainTargets[0] ?? ''),
-        )
+        setAgentCatalogs((current) => new Map(current).set(discoveryUrl, catalog))
+        setCatalogResult({ url: discoveryUrl, revision: catalogRevision })
+        const defaultGraph = createFlowPreset(config.gatewayBaseUrl ? 'apim' : 'direct', config, catalog.agents)
+        setFlow((current) => current.draft ? current : { ...current, draft: defaultGraph })
       })
       .catch((reason: unknown) => {
-        if (!(reason instanceof DOMException && reason.name === 'AbortError')) {
-          setError(toErrorMessage(reason))
+        if (!controller.signal.aborted) {
+          setCatalogResult({ url: discoveryUrl, revision: catalogRevision, error: toErrorMessage(reason) })
         }
       })
 
     return () => controller.abort()
-  }, [config.adapterBaseUrl])
+  }, [discoveryUrl, config, catalogRevision])
+
+  const writeFlowDraft = useCallback((value: string) => {
+    try {
+      sessionStorage.setItem(storageKey, value)
+      setStorageError(undefined)
+    } catch (reason) {
+      if (!(reason instanceof DOMException)) {
+        throw reason
+      }
+      setStorageError(
+        'Browser session storage is unavailable. This flow will not survive a reload or sign-in redirect.',
+      )
+    }
+  }, [storageKey])
+
+  const persistFlowDraft = useCallback(() => {
+    if (savedGraph.value !== undefined) {
+      writeFlowDraft(savedGraph.value)
+    }
+  }, [savedGraph.value, writeFlowDraft])
+
+  useEffect(() => {
+    // Coalesce canvas updates; redirect handlers flush before leaving the page.
+    const frame = requestAnimationFrame(persistFlowDraft)
+    return () => cancelAnimationFrame(frame)
+  }, [persistFlowDraft])
 
   useEffect(() => {
     const container = messagesRef.current
@@ -143,6 +218,7 @@ function App({ config }: AppProps) {
 
   async function signIn() {
     setError(undefined)
+    persistFlowDraft()
     try {
       await instance.loginRedirect(loginRequest)
     } catch (reason) {
@@ -152,21 +228,58 @@ function App({ config }: AppProps) {
 
   async function signOut() {
     setError(undefined)
+    persistFlowDraft()
     await instance.logoutRedirect({ account })
   }
 
+  const canFinishFlow =
+    flow.isOpen &&
+    !isSending &&
+    !catalogLoading &&
+    !catalogError &&
+    !savedGraph.error &&
+    Boolean(draftPlan && catalogResult?.url === draftPlan.apiBaseUrl)
+
   const canSend =
     Boolean(draft.trim()) &&
+    !flow.isOpen &&
     !isSending &&
-    (mode === 'direct'
-      ? Boolean(selectedAgentId)
-      : Boolean(selectedAgentAId) && Boolean(selectedAgentBId))
+    !catalogLoading &&
+    !catalogError &&
+    !savedGraph.error &&
+    Boolean(plan && draftPlan?.signature === plan.signature && catalogResult?.url === plan.apiBaseUrl) &&
+    isAuthenticated
 
-  async function submit(event?: FormEvent) {
-    event?.preventDefault()
+  function finishFlow() {
+    if (!canFinishFlow) return
+    const next = applyFlowConfiguration(flow, config, agents)
+    const snapshot = serializeFlowGraph(next.applied)
+    writeFlowDraft(snapshot)
+    try {
+      sessionStorage.setItem(appliedStorageKey, snapshot)
+      setAppliedStorageError(undefined)
+    } catch (reason) {
+      if (!(reason instanceof DOMException)) throw reason
+      setAppliedStorageError('This flow is active for this page, but could not be saved for reloads or sign-in redirects.')
+    }
+    setFlow(next)
+    requestAnimationFrame(() => {
+      if (isAuthenticated) composerRef.current?.focus()
+      else signInButtonRef.current?.focus()
+    })
+  }
+
+  function dismissFlow() {
+    const next = cancelFlowConfiguration(flow)
+    if (next.draft) writeFlowDraft(serializeFlowGraph(next.draft))
+    setFlow(next)
+    requestAnimationFrame(() => configureButtonRef.current?.focus())
+  }
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault()
     const text = draft.trim()
-    const entryAgentId = mode === 'chain' ? selectedAgentAId : selectedAgentId
-    if (!text || !account || !entryAgentId || !canSend) {
+    if (!text || !account || !plan || !canSend) {
       return
     }
 
@@ -174,28 +287,30 @@ function App({ config }: AppProps) {
     setError(undefined)
     setIsSending(true)
     const turnId = crypto.randomUUID()
-    const agentName =
-      mode === 'chain'
-        ? `${selectedAgentA?.displayName ?? selectedAgentAId} → ${selectedAgentB?.displayName ?? selectedAgentBId}`
-        : (selectedAgent?.displayName ?? selectedAgentId)
+    const startedAt = performance.timeOrigin + event.timeStamp
+    const entryName = entryAgent?.displayName ?? plan.entryAgentId
+    const targetName = targetAgent?.displayName ?? plan.targetAgentId
+    const agentName = targetName ? `${entryName} → ${targetName}` : entryName
+    const previousTurns = needsNewConversation ? [] : turns
+    const requestContextId = needsNewConversation ? crypto.randomUUID() : contextId
+    if (needsNewConversation) {
+      setContextId(requestContextId)
+      setSelectedEntryId(undefined)
+    }
+    setConversationSignature(plan.signature)
     // The history relayed to the agent is the transcript as it stood before this turn.
-    const history = toConversationHistory(turns)
-    setTurns((current) => [
-      ...current,
+    const history = toConversationHistory(previousTurns)
+    setTurns([
+      ...previousTurns,
       {
         id: turnId,
-        index: current.length + 1,
+        index: previousTurns.length + 1,
         prompt: text,
         agentName,
+        route: { apiBaseUrl: plan.apiBaseUrl, viaGateway: plan.viaGateway },
         status: 'preparing',
-        startedAt: Date.now(),
-        chain:
-          mode === 'chain'
-            ? {
-                agentA: selectedAgentA?.displayName ?? selectedAgentAId,
-                agentB: selectedAgentB?.displayName ?? selectedAgentBId,
-              }
-            : undefined,
+        startedAt,
+        chain: targetName ? { agentA: entryName, agentB: targetName } : undefined,
       },
     ])
 
@@ -212,6 +327,7 @@ function App({ config }: AppProps) {
         if (!(reason instanceof InteractionRequiredAuthError)) {
           throw reason
         }
+        persistFlowDraft()
         await instance.acquireTokenRedirect({
           ...loginRequest,
           account,
@@ -220,13 +336,13 @@ function App({ config }: AppProps) {
       }
 
       const exchange = await sendMessage({
-        adapterBaseUrl: config.adapterBaseUrl,
+        adapterBaseUrl: plan.apiBaseUrl,
         accessToken: token.accessToken,
-        agentId: entryAgentId,
-        contextId,
+        agentId: plan.entryAgentId,
+        contextId: requestContextId,
         text,
         history,
-        chainTargetAgentId: mode === 'chain' ? selectedAgentBId : undefined,
+        chainTargetAgentId: plan.targetAgentId,
         onRequest: (request) => updateTurn(turnId, { request, status: 'sending' }),
         onUpdate: (answer) => updateTurn(turnId, { answer }),
         onProgress: (progress) => updateTurn(turnId, { progress }),
@@ -265,36 +381,15 @@ function App({ config }: AppProps) {
     }
 
     event.preventDefault()
-    void submit()
+    void handleSubmit(event)
   }
 
   function startNewConversation() {
     setContextId(crypto.randomUUID())
+    setConversationSignature(undefined)
     setTurns([])
     setError(undefined)
     setSelectedEntryId(undefined)
-  }
-
-  function selectAgent(agentId: string) {
-    setSelectedAgentId(agentId)
-    startNewConversation()
-  }
-
-  function selectMode(nextMode: ConversationMode) {
-    setMode(nextMode)
-    startNewConversation()
-  }
-
-  function selectAgentA(agentId: string) {
-    const agent = agents.find((candidate) => candidate.id === agentId)
-    setSelectedAgentAId(agentId)
-    setSelectedAgentBId(agent?.chainTargets[0] ?? '')
-    startNewConversation()
-  }
-
-  function selectAgentB(agentId: string) {
-    setSelectedAgentBId(agentId)
-    startNewConversation()
   }
 
   function updateTurn(id: string, update: Partial<TurnRecord>) {
@@ -326,7 +421,7 @@ function App({ config }: AppProps) {
           <span className="brand-mark" aria-hidden="true">A2A</span>
           <div>
             <strong>A2A specialist agents</strong>
-            <span>Foundry delegation console</span>
+            <span>Delegated agent console</span>
           </div>
         </div>
         {isAuthenticated ? (
@@ -335,7 +430,7 @@ function App({ config }: AppProps) {
               <strong>{account?.name ?? 'Signed-in user'}</strong>
               <span>{account?.username}</span>
             </div>
-            <button className="button secondary" type="button" onClick={signOut}>
+            <button className="button secondary" type="button" onClick={signOut} disabled={isSending}>
               Sign out
             </button>
           </div>
@@ -343,120 +438,42 @@ function App({ config }: AppProps) {
       </header>
 
       <section className="workspace">
-        <aside className="sidebar">
-          <p className="eyebrow">Agent orchestration</p>
-          <h1>Run direct calls or chain two agents.</h1>
-          <p>
-            Your browser obtains an <code>access_as_user</code> token. The adapter
-            validates it, then routes direct calls or lets Foundry Agent A use
-            Copilot Studio Agent B as an A2A tool.
-          </p>
-          <div className="mode-picker" role="group" aria-label="Conversation mode">
-           <button
-             type="button"
-             className={mode === 'direct' ? 'active' : ''}
-             onClick={() => selectMode('direct')}
-             disabled={isSending}
-           >
-             Direct
-           </button>
-           <button
-             type="button"
-             className={mode === 'chain' ? 'active' : ''}
-             onClick={() => selectMode('chain')}
-             disabled={isSending || foundryChainAgents.length === 0}
-           >
-             Chain
-           </button>
+        <section className="active-flow" aria-label="Active conversation flow">
+          <div>
+            <p className="eyebrow">Active flow</p>
+            <strong>
+              {plan ? `${entryAgent?.displayName ?? plan.entryAgentId}${targetAgent ? ` → ${targetAgent.displayName}` : ''}`
+                : appliedFlowStatus}
+            </strong>
+            <span title={plan?.apiBaseUrl}>
+              {plan ? `${plan.viaGateway ? 'Via APIM' : 'Direct to adapter'} · Server-side OBO${plan.targetAgentId ? ` · Native handoff ${plan.nativeViaGateway ? 'via APIM' : 'without APIM'} (requested)` : ''}`
+                : flow.applied && flow.isOpen ? 'Your saved flow stays unchanged until you select Done.'
+                  : 'Choose your route in the flow builder, then select Done.'}
+            </span>
+            {!flow.isOpen && catalogError ? <p className="active-flow-warning" role="alert">{catalogError}</p> : null}
+            {!flow.isOpen && (appliedStorageError ?? storageError) ? (
+              <p className="active-flow-warning" role="alert">{appliedStorageError ?? storageError}</p>
+            ) : null}
           </div>
-          {mode === 'direct' ? (
-           <div className="agent-picker">
-             <label htmlFor="agent">Agent</label>
-            <select
-              id="agent"
-              value={selectedAgentId}
-              onChange={(event) => selectAgent(event.target.value)}
-              disabled={agents.length === 0 || isSending}
-            >
-              {agents.length === 0 ? (
-                <option value="">Loading agents...</option>
-              ) : (
-                agents.map((agent) => (
-                  <option key={agent.id} value={agent.id} disabled={!agent.supported}>
-                    {agent.displayName} · {formatProvider(agent.provider)}
-                    {agent.supported ? '' : ' (requires standard harness)'}
-                  </option>
-                ))
-              )}
-              </select>
-            </div>
-          ) : (
-            <div className="chain-pickers">
-              <div className="agent-picker">
-                <label htmlFor="agent-a">Agent A · orchestrator</label>
-                <select
-                  id="agent-a"
-                  value={selectedAgentAId}
-                  onChange={(event) => selectAgentA(event.target.value)}
-                  disabled={foundryChainAgents.length === 0 || isSending}
-                >
-                  {foundryChainAgents.map((agent) => (
-                    <option key={agent.id} value={agent.id}>
-                      {agent.displayName} · Foundry
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="chain-picker-arrow" aria-hidden="true">↓ A2A tool</div>
-              <div className="agent-picker">
-                <label htmlFor="agent-b">Agent B · specialist</label>
-                <select
-                  id="agent-b"
-                  value={selectedAgentBId}
-                  onChange={(event) => selectAgentB(event.target.value)}
-                  disabled={availableAgentBs.length === 0 || isSending}
-                >
-                  {availableAgentBs.map((agent) => (
-                    <option key={agent.id} value={agent.id}>
-                      {agent.displayName} · Copilot Studio
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          )}
-          <dl>
-            <div>
-              <dt>Adapter</dt>
-              <dd>{config.adapterBaseUrl}</dd>
-            </div>
-            <div>
-              <dt>Conversation</dt>
-              <dd>
-                {contextId.slice(0, 8)} · {turns.length}{' '}
-                {turns.length === 1 ? 'turn' : 'turns'}
-              </dd>
-            </div>
-            <div>
-              <dt>{mode === 'chain' ? 'Route' : 'Agent'}</dt>
-              <dd>
-                {mode === 'chain'
-                  ? `${selectedAgentA?.displayName ?? 'Agent A'} → ${selectedAgentB?.displayName ?? 'Agent B'}`
-                  : (selectedAgent?.displayName ?? 'Loading...')}
-              </dd>
-            </div>
-          </dl>
-          <button
-            className="button secondary full"
-            type="button"
-            onClick={startNewConversation}
-            disabled={turns.length === 0}
-          >
-            New conversation
+          <button type="button" className="button secondary" ref={configureButtonRef}
+            aria-haspopup="dialog" aria-controls="flow-configuration" aria-expanded={flow.isOpen}
+            disabled={isSending} onClick={() => setFlow(editFlowConfiguration)}>
+            {flow.applied ? 'Edit flow' : 'Configure flow'}
           </button>
-        </aside>
+        </section>
 
         <section className="chat-panel" aria-label="Specialist agent conversation">
+          <header className="chat-heading">
+            <div>
+              <p className="eyebrow">Conversation</p>
+              <h2>{entryAgent?.displayName ?? 'Your conversation'}</h2>
+              <span>{contextId.slice(0, 8)} · {turns.length} {turns.length === 1 ? 'turn' : 'turns'}</span>
+            </div>
+            <button className="button secondary" type="button" onClick={startNewConversation}
+              disabled={turns.length === 0 || isSending}>
+              New conversation
+            </button>
+          </header>
           {!isAuthenticated ? (
             <div className="empty-state">
               <span className="lock" aria-hidden="true">ID</span>
@@ -465,7 +482,7 @@ function App({ config }: AppProps) {
                 Use an account in the configured tenant. Tokens stay in browser
                 session storage; the client secret remains server-side.
               </p>
-              <button className="button primary" type="button" onClick={signIn}>
+              <button className="button primary" type="button" onClick={signIn} ref={signInButtonRef}>
                 Sign in with Microsoft
               </button>
             </div>
@@ -474,12 +491,13 @@ function App({ config }: AppProps) {
               <div className="messages" aria-live="polite" ref={messagesRef}>
                 {turns.length === 0 ? (
                   <div className="conversation-start">
-                    <p className="eyebrow">Ready</p>
-                    <h2>What should the specialist handle?</h2>
+                    <p className="eyebrow">{plan ? 'Your flow' : 'Build a route'}</p>
+                    <h2>{plan ? 'What should the agent handle?' : 'Configure your flow first'}</h2>
                     <p>
-                      {mode === 'chain'
-                        ? `${selectedAgentA?.displayName ?? 'Agent A'} will call ${selectedAgentB?.displayName ?? 'Agent B'} through the A2A adapter.`
-                        : `Every turn is replayed to ${selectedAgent?.displayName ?? 'the selected agent'} as conversation history.`}
+                      {!plan ? 'Open the flow builder and select Done when your route is ready. Your conversation will use that configuration.'
+                        : targetAgent
+                          ? `${entryAgent?.displayName} will be asked to delegate to ${targetAgent.displayName} through its native A2A tool.`
+                          : `Messages go ${plan.viaGateway ? 'through Citadel' : 'directly to the adapter'}, then to ${entryAgent?.displayName}. The adapter keeps the OBO exchange server-side.`}
                     </p>
                   </div>
                 ) : (
@@ -488,21 +506,27 @@ function App({ config }: AppProps) {
                   ))
                 )}
               </div>
-              <form className="composer" onSubmit={submit}>
+              <form className="composer" onSubmit={handleSubmit}>
+                {needsNewConversation ? (
+                  <p className="route-change-note" role="status">
+                    Flow changed. Your next message starts a new conversation; previous history will not be sent to the new route.
+                  </p>
+                ) : null}
                 <label htmlFor="prompt">Message</label>
                 <div>
                   <textarea
                     id="prompt"
+                    ref={composerRef}
                     value={draft}
                     onChange={(event) => setDraft(event.target.value)}
                     onKeyDown={onComposerKeyDown}
                     placeholder={
-                      mode === 'chain'
-                        ? 'Ask Agent A to delegate to Agent B...'
-                        : 'Ask the selected specialist...'
+                      plan?.targetAgentId
+                        ? 'Ask the orchestrator to delegate to the specialist...'
+                        : 'Send a message through this flow...'
                     }
                     rows={3}
-                    disabled={isSending}
+                    disabled={isSending || flow.isOpen || !plan}
                   />
                   <button className="button primary" type="submit" disabled={!canSend}>
                     Send
@@ -524,8 +548,53 @@ function App({ config }: AppProps) {
           onSelect={setSelectedEntryId}
         />
       </section>
+      {flow.isOpen ? (
+        <FlowDrawer canFinish={canFinishFlow} loading={catalogLoading}
+          onFinish={finishFlow} onDismiss={dismissFlow}>
+          <FlowDesigner
+            config={config}
+            agents={agents}
+            graph={graph}
+            validation={validation}
+            disabled={isSending}
+            catalogLoading={catalogLoading}
+            catalogError={catalogError}
+            storageError={savedGraph.error ?? appliedStorageError ?? storageError ??
+              (!flow.applied ? restoredAppliedFlow.error : undefined) ??
+              (!validation?.valid ? restoredFlow.error : undefined)}
+            onChange={changeFlow}
+            onRetryCatalog={() => setCatalogRevision((current) => current + 1)}
+          />
+        </FlowDrawer>
+      ) : null}
     </main>
   )
+}
+
+function loadFlowDraft(storageKey: string): { graph?: FlowGraph; error?: string } {
+  let saved: string | null
+  try {
+    saved = sessionStorage.getItem(storageKey)
+  } catch (reason) {
+    if (!(reason instanceof DOMException)) {
+      throw reason
+    }
+    return { error: 'Browser session storage is unavailable; choose a flow for this session.' }
+  }
+  if (!saved) {
+    return {}
+  }
+  try {
+    return { graph: parseFlowGraph(saved) }
+  } catch (reason) {
+    if (!(reason instanceof Error)) {
+      throw reason
+    }
+    return {
+      graph: { nodes: [createFlowNode('browser', 'browser', { x: 0, y: 100 })], edges: [] },
+      error: 'The saved flow is invalid and was not restored. Choose a preset or build a new route.',
+    }
+  }
 }
 
 function TurnBlock({
@@ -741,8 +810,8 @@ function deriveHops(turn: TurnRecord): Hop[] {
       },
       {
         id: `${turn.id}-chain-b`,
-        label: turn.chain.agentB,
-        tone,
+        label: `${turn.chain.agentB} (requested)`,
+        tone: 'pending',
         entryId: requestEntryId(turn.id),
       },
     )
@@ -824,6 +893,8 @@ function participantForSource(source: string) {
 }
 
 function buildTimelineGroup(turn: TurnRecord): TimelineGroup {
+  const viaGateway = turn.route.viaGateway
+  const apiParticipant = viaGateway ? 'Citadel (APIM)' : adapterParticipant
   const totalMs = Math.max(
     turn.durationMs ?? 0,
     turn.trace?.durationMs ?? 0,
@@ -834,14 +905,14 @@ function buildTimelineGroup(turn: TurnRecord): TimelineGroup {
   rows.push({
     id: requestEntryId(turn.id),
     label: `${turn.request?.method ?? 'POST'} ${requestPath(turn)}`,
-    sublabel: 'Browser → A2A adapter',
+    sublabel: `${browserParticipant} → ${apiParticipant}`,
     kind: 'request',
     tone: turn.response ? 'client' : turn.status === 'failed' ? 'error' : 'pending',
     depth: 0,
     offsetMs: 0,
     durationMs: turn.durationMs,
     from: browserParticipant,
-    to: adapterParticipant,
+    to: apiParticipant,
     sections: [
       ...(turn.request
         ? [
@@ -849,7 +920,10 @@ function buildTimelineGroup(turn: TurnRecord): TimelineGroup {
             { label: 'Headers', value: turn.request.headers },
             { label: 'Body payload', value: turn.request.body },
           ]
-        : [{ label: 'Status', value: 'Acquiring the delegated access token...' }]),
+        : [
+            { label: 'API base URL', value: turn.route.apiBaseUrl },
+            { label: 'Status', value: 'Acquiring the delegated access token...' },
+          ]),
       ...(turn.error ? [{ label: 'Error', value: turn.error }] : []),
     ],
   })
@@ -858,12 +932,20 @@ function buildTimelineGroup(turn: TurnRecord): TimelineGroup {
   if (spans.length > 0) {
     const firstStart = Math.min(...spans.map((span) => Date.parse(span.startedAt)))
     const depths = computeSpanDepths(spans)
+    // The browser controls only entry ingress, not a native callback's actual transport.
+    const entryServerSpan = spans
+      .filter((span) => span.kind.toLowerCase() === 'server' &&
+        !spans.some((parent) => parent.spanId === span.parentSpanId))
+      .sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt))[0]
     for (const span of spans) {
       const source = participantForSource(span.source)
+      const gatewayIngress = viaGateway && span.spanId === entryServerSpan?.spanId
       rows.push({
         id: spanEntryId(turn.id, span.spanId),
         label: span.name,
-        sublabel: span.destination
+        sublabel: gatewayIngress
+          ? `${apiParticipant} → ${adapterParticipant}`
+          : span.destination
           ? `${span.source} → ${span.destination}`
           : span.source,
         kind: 'span',
@@ -874,7 +956,7 @@ function buildTimelineGroup(turn: TurnRecord): TimelineGroup {
         depth: (depths.get(span.spanId) ?? 0) + 1,
         offsetMs: Math.max(0, Date.parse(span.startedAt) - firstStart),
         durationMs: span.durationMs,
-        from: source,
+        from: gatewayIngress ? apiParticipant : source,
         to: span.destination ?? source,
         sections: buildSpanSections(span),
       })
@@ -902,12 +984,12 @@ function buildTimelineGroup(turn: TurnRecord): TimelineGroup {
     rows.push({
       id: responseEntryId(turn.id),
       label: rpcError ? 'Request failed' : `${turn.response.status} ${turn.response.statusText}`,
-      sublabel: failureMessage ?? 'A2A adapter → browser',
+      sublabel: failureMessage ?? `${apiParticipant} → ${browserParticipant}`,
       kind: 'response',
       tone: turn.response.status >= 400 || rpcError ? 'error' : 'ok',
       depth: 0,
       offsetMs: totalMs,
-      from: adapterParticipant,
+      from: apiParticipant,
       to: browserParticipant,
       sections: [
         ...(rpcError
@@ -1559,10 +1641,6 @@ function describeSpanFailure(span: AdapterTraceSpan) {
   return lines.length > 0
     ? lines.join('\n')
     : `${span.name} reported an error without further detail.`
-}
-
-function formatProvider(provider: CopilotAgent['provider']) {
-  return provider === 'foundry' ? 'Foundry' : 'Copilot Studio'
 }
 
 function formatDuration(milliseconds: number) {

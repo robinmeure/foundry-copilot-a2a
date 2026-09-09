@@ -6,7 +6,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.46.1.21595",
-      "templateHash": "11789125736043439603"
+      "templateHash": "18348254799201860418"
     },
     "name": "Foundry Copilot A2A Citadel infrastructure",
     "description": "Deploys the A2A adapter, APIM governance gateway, Microsoft Foundry project, and shared monitoring."
@@ -110,6 +110,13 @@
       ],
       "metadata": {
         "description": "Browser origins allowed to call the adapter through APIM."
+      }
+    },
+    "specialistAgentIds": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Approved Copilot Studio agent IDs to publish as separate APIM A2A specialist APIs."
       }
     },
     "appServicePlanSku": {
@@ -1106,6 +1113,12 @@
           "adapterDelegatedScope": {
             "value": "[parameters('adapterDelegatedScope')]"
           },
+          "allowedOrigins": {
+            "value": "[parameters('adapterAllowedOrigins')]"
+          },
+          "specialistAgentIds": {
+            "value": "[parameters('specialistAgentIds')]"
+          },
           "appInsightsName": {
             "value": "[reference('monitoring').outputs.appInsightsName.value]"
           },
@@ -1126,7 +1139,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.46.1.21595",
-              "templateHash": "4070375088367541142"
+              "templateHash": "5581227945516912742"
             },
             "name": "Citadel A2A gateway",
             "description": "Deploys API Management as a governed delegated-OAuth entry point for the A2A adapter."
@@ -1170,6 +1183,14 @@
             "adapterDelegatedScope": {
               "type": "string"
             },
+            "allowedOrigins": {
+              "type": "array",
+              "minLength": 1
+            },
+            "specialistAgentIds": {
+              "type": "array",
+              "defaultValue": []
+            },
             "appInsightsName": {
               "type": "string"
             },
@@ -1184,13 +1205,20 @@
             }
           },
           "variables": {
+            "$fxv#0": "<policies>\r\n  <inbound>\r\n    <cors allow-credentials=\"false\" terminate-unmatched-request=\"true\">\r\n      <allowed-origins>\r\n        __ALLOWED_ORIGINS__\r\n      </allowed-origins>\r\n      <allowed-methods preflight-result-max-age=\"300\">\r\n        <method>GET</method>\r\n        <method>POST</method>\r\n      </allowed-methods>\r\n      <allowed-headers>\r\n        <header>Authorization</header>\r\n        <header>Content-Type</header>\r\n        <header>A2A-Version</header>\r\n        <header>X-Copilot-Agent</header>\r\n        <header>X-A2A-Chain-Target</header>\r\n        <header>X-Correlation-ID</header>\r\n        <header>traceparent</header>\r\n        <header>tracestate</header>\r\n      </allowed-headers>\r\n      <expose-headers>\r\n        <header>X-Trace-Id</header>\r\n        <header>X-Correlation-ID</header>\r\n        <header>WWW-Authenticate</header>\r\n        <header>Retry-After</header>\r\n      </expose-headers>\r\n    </cors>\r\n    <base />\r\n    __BACKEND_HEADERS__\r\n    <set-header name=\"X-Correlation-ID\" exists-action=\"skip\">\r\n      <value>@(context.RequestId.ToString())</value>\r\n    </set-header>\r\n  </inbound>\r\n  <backend>\r\n    <forward-request timeout=\"120\" buffer-response=\"false\" />\r\n  </backend>\r\n  <outbound>\r\n    <base />\r\n    <set-header name=\"X-Correlation-ID\" exists-action=\"override\">\r\n      <value>@(context.Request.Headers.GetValueOrDefault(\"X-Correlation-ID\", context.RequestId.ToString()))</value>\r\n    </set-header>\r\n  </outbound>\r\n  <on-error>\r\n    <base />\r\n    <set-header name=\"X-Correlation-ID\" exists-action=\"override\">\r\n      <value>@(context.Request.Headers.GetValueOrDefault(\"X-Correlation-ID\", context.RequestId.ToString()))</value>\r\n    </set-header>\r\n  </on-error>\r\n</policies>\r\n",
+            "$fxv#1": "<policies>\r\n  <inbound>\r\n    <base />\r\n    <validate-jwt header-name=\"Authorization\"\r\n                  require-scheme=\"Bearer\"\r\n                  failed-validation-httpcode=\"401\"\r\n                  failed-validation-error-message=\"Unauthorized. A delegated adapter API token is required.\"\r\n                  output-token-variable-name=\"validatedJwt\"\r\n                  clock-skew=\"60\">\r\n      <openid-config url=\"__ENTRA_LOGIN_ENDPOINT__{{entra-tenant-id}}/v2.0/.well-known/openid-configuration\" />\r\n      <audiences>\r\n        <audience>{{adapter-api-audience}}</audience>\r\n        <audience>{{adapter-api-bare-audience}}</audience>\r\n      </audiences>\r\n      <issuers>\r\n        <issuer>__ENTRA_LOGIN_ENDPOINT__{{entra-tenant-id}}/v2.0</issuer>\r\n        <issuer>https://sts.windows.net/{{entra-tenant-id}}/</issuer>\r\n      </issuers>\r\n      <required-claims>\r\n        <claim name=\"scp\" match=\"any\" separator=\" \">\r\n          <value>{{adapter-delegated-scope}}</value>\r\n        </claim>\r\n        <claim name=\"tid\" match=\"all\">\r\n          <value>{{entra-tenant-id}}</value>\r\n        </claim>\r\n      </required-claims>\r\n    </validate-jwt>\r\n    <rate-limit-by-key calls=\"__RATE_LIMIT_CALLS__\"\r\n                       renewal-period=\"60\"\r\n                       counter-key='@(context.Api.Id + \":\" + context.Operation.Id + \":\" + ((Jwt)context.Variables[\"validatedJwt\"]).Claims.GetValueOrDefault(\"tid\", \"unknown\") + \":\" + ((Jwt)context.Variables[\"validatedJwt\"]).Claims.GetValueOrDefault(\"oid\", \"unknown\"))' />\r\n    __REQUEST_VALIDATION__\r\n  </inbound>\r\n  <backend>\r\n    <base />\r\n  </backend>\r\n  <outbound>\r\n    <base />\r\n  </outbound>\r\n  <on-error>\r\n    <base />\r\n  </on-error>\r\n</policies>\r\n",
+            "$fxv#2": "<validate-content unspecified-content-type-action=\"prevent\"\r\n                  max-size=\"1048576\"\r\n                  size-exceeded-action=\"prevent\"\r\n                  errors-variable-name=\"requestBodyValidation\">\r\n  <content type=\"application/json\" validate-as=\"json\" action=\"prevent\" />\r\n</validate-content>\r\n",
             "apiManagementServiceContributorRoleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '312a565d-c81f-4fd8-895a-4e21e48d571c')]",
             "adapterBareAudience": "[replace(parameters('adapterApiAudience'), 'api://', '')]",
             "apiPath": "copilot-studio",
             "agentCardPath": ".well-known/agent-card.json",
             "runtimePath": "a2a/copilot-studio",
-            "runtimePolicyTemplate": "  <policies>\r\n    <inbound>\r\n      <base />\r\n      <validate-jwt header-name=\"Authorization\"\r\n                    require-scheme=\"Bearer\"\r\n                    failed-validation-httpcode=\"401\"\r\n                    failed-validation-error-message=\"Unauthorized. The delegated access token is missing or invalid.\"\r\n                    output-token-variable-name=\"validatedJwt\"\r\n                    clock-skew=\"60\">\r\n        <openid-config url=\"__ENTRA_LOGIN_ENDPOINT__{{entra-tenant-id}}/v2.0/.well-known/openid-configuration\" />\r\n        <audiences>\r\n          <audience>{{adapter-api-audience}}</audience>\r\n          <audience>{{adapter-api-bare-audience}}</audience>\r\n        </audiences>\r\n        <issuers>\r\n          <issuer>__ENTRA_LOGIN_ENDPOINT__{{entra-tenant-id}}/v2.0</issuer>\r\n          <issuer>https://sts.windows.net/{{entra-tenant-id}}/</issuer>\r\n        </issuers>\r\n        <required-claims>\r\n          <claim name=\"scp\" match=\"any\" separator=\" \">\r\n            <value>{{adapter-delegated-scope}}</value>\r\n          </claim>\r\n        </required-claims>\r\n      </validate-jwt>\r\n      <validate-content unspecified-content-type-action=\"prevent\"\r\n                        max-size=\"1048576\"\r\n                        size-exceeded-action=\"prevent\"\r\n                        errors-variable-name=\"requestBodyValidation\">\r\n        <content type=\"application/json\" validate-as=\"json\" action=\"prevent\" />\r\n      </validate-content>\r\n      <rate-limit-by-key calls=\"60\"\r\n                         renewal-period=\"60\"\r\n                         counter-key='@(((Jwt)context.Variables[\"validatedJwt\"]).Claims.GetValueOrDefault(\"tid\", \"unknown\") + \":\" + ((Jwt)context.Variables[\"validatedJwt\"]).Claims.GetValueOrDefault(\"oid\", \"unknown\"))' />\r\n      <set-header name=\"X-Correlation-ID\" exists-action=\"skip\">\r\n        <value>@(context.RequestId.ToString())</value>\r\n      </set-header>\r\n    </inbound>\r\n    <backend>\r\n      <forward-request timeout=\"120\" />\r\n    </backend>\r\n    <outbound>\r\n      <set-header name=\"X-Correlation-ID\" exists-action=\"override\">\r\n        <value>@(context.Request.Headers.GetValueOrDefault(\"X-Correlation-ID\", context.RequestId.ToString()))</value>\r\n      </set-header>\r\n    </outbound>\r\n    <on-error>\r\n      <base />\r\n      <set-header name=\"X-Correlation-ID\" exists-action=\"override\">\r\n        <value>@(context.Request.Headers.GetValueOrDefault(\"X-Correlation-ID\", context.RequestId.ToString()))</value>\r\n      </set-header>\r\n    </on-error>\r\n  </policies>\r\n",
-            "runtimePolicyValue": "[replace(variables('runtimePolicyTemplate'), '__ENTRA_LOGIN_ENDPOINT__', parameters('entraLoginEndpoint'))]"
+            "originElements": "[map(parameters('allowedOrigins'), lambda('origin', format('<origin>{0}</origin>', replace(replace(replace(lambdaVariables('origin'), '&', '&amp;'), '<', '&lt;'), '>', '&gt;'))))]",
+            "apiPolicyValue": "[replace(replace(variables('$fxv#0'), '__ALLOWED_ORIGINS__', join(variables('originElements'), '')), '__BACKEND_HEADERS__', '')]",
+            "delegatedPolicyTemplate": "[replace(variables('$fxv#1'), '__ENTRA_LOGIN_ENDPOINT__', parameters('entraLoginEndpoint'))]",
+            "discoveryPolicyValue": "<policies>\r\n  <inbound>\r\n    <cors allow-credentials=\"false\" terminate-unmatched-request=\"true\">\r\n      <allowed-origins>\r\n        <origin>*</origin>\r\n      </allowed-origins>\r\n      <allowed-methods preflight-result-max-age=\"300\">\r\n        <method>GET</method>\r\n      </allowed-methods>\r\n      <allowed-headers>\r\n        <header>Content-Type</header>\r\n        <header>A2A-Version</header>\r\n      </allowed-headers>\r\n    </cors>\r\n    <base />\r\n  </inbound>\r\n  <backend>\r\n    <base />\r\n  </backend>\r\n  <outbound>\r\n    <base />\r\n  </outbound>\r\n  <on-error>\r\n    <base />\r\n  </on-error>\r\n</policies>\r\n",
+            "runtimePolicyValue": "[replace(replace(variables('delegatedPolicyTemplate'), '__RATE_LIMIT_CALLS__', '60'), '__REQUEST_VALIDATION__', variables('$fxv#2'))]",
+            "tracePolicyValue": "[replace(replace(variables('delegatedPolicyTemplate'), '__RATE_LIMIT_CALLS__', '600'), '__REQUEST_VALIDATION__', '')]"
           },
           "resources": [
             {
@@ -1294,6 +1322,18 @@
               ]
             },
             {
+              "type": "Microsoft.ApiManagement/service/apis/policies",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}/{2}', parameters('apimName'), 'copilot-studio-a2a', 'policy')]",
+              "properties": {
+                "format": "rawxml",
+                "value": "[variables('apiPolicyValue')]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service/apis', parameters('apimName'), 'copilot-studio-a2a')]"
+              ]
+            },
+            {
               "type": "Microsoft.ApiManagement/service/apis/operations",
               "apiVersion": "2024-05-01",
               "name": "[format('{0}/{1}/{2}', parameters('apimName'), 'copilot-studio-a2a', 'get-agent-card')]",
@@ -1311,6 +1351,86 @@
               },
               "dependsOn": [
                 "[resourceId('Microsoft.ApiManagement/service/apis', parameters('apimName'), 'copilot-studio-a2a')]"
+              ]
+            },
+            {
+              "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}/{2}/{3}', parameters('apimName'), 'copilot-studio-a2a', 'get-agent-card', 'policy')]",
+              "properties": {
+                "format": "rawxml",
+                "value": "[variables('discoveryPolicyValue')]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service/apis/operations', parameters('apimName'), 'copilot-studio-a2a', 'get-agent-card')]",
+                "[resourceId('Microsoft.ApiManagement/service/apis/policies', parameters('apimName'), 'copilot-studio-a2a', 'policy')]"
+              ]
+            },
+            {
+              "type": "Microsoft.ApiManagement/service/apis/operations",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}/{2}', parameters('apimName'), 'copilot-studio-a2a', 'get-agent-catalog')]",
+              "properties": {
+                "displayName": "Get agent catalog",
+                "method": "GET",
+                "urlTemplate": "/api/agents",
+                "templateParameters": [],
+                "responses": [
+                  {
+                    "statusCode": 200
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service/apis', parameters('apimName'), 'copilot-studio-a2a')]"
+              ]
+            },
+            {
+              "type": "Microsoft.ApiManagement/service/apis/operations",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}/{2}', parameters('apimName'), 'copilot-studio-a2a', 'get-caller-trace')]",
+              "properties": {
+                "displayName": "Get caller-scoped trace",
+                "method": "GET",
+                "urlTemplate": "/api/traces/{traceId}",
+                "templateParameters": [
+                  {
+                    "name": "traceId",
+                    "type": "string",
+                    "required": true
+                  }
+                ],
+                "responses": [
+                  {
+                    "statusCode": 200
+                  },
+                  {
+                    "statusCode": 401
+                  },
+                  {
+                    "statusCode": 404
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service/apis', parameters('apimName'), 'copilot-studio-a2a')]"
+              ]
+            },
+            {
+              "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}/{2}/{3}', parameters('apimName'), 'copilot-studio-a2a', 'get-caller-trace', 'policy')]",
+              "properties": {
+                "format": "rawxml",
+                "value": "[variables('tracePolicyValue')]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service/apis/policies', parameters('apimName'), 'copilot-studio-a2a', 'policy')]",
+                "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimName'), 'adapter-api-audience')]",
+                "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimName'), 'adapter-api-bare-audience')]",
+                "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimName'), 'adapter-delegated-scope')]",
+                "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimName'), 'entra-tenant-id')]",
+                "[resourceId('Microsoft.ApiManagement/service/apis/operations', parameters('apimName'), 'copilot-studio-a2a', 'get-caller-trace')]"
               ]
             },
             {
@@ -1370,10 +1490,240 @@
                 "value": "[variables('runtimePolicyValue')]"
               },
               "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service/apis/policies', parameters('apimName'), 'copilot-studio-a2a', 'policy')]",
                 "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimName'), 'adapter-api-audience')]",
                 "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimName'), 'adapter-api-bare-audience')]",
                 "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimName'), 'adapter-delegated-scope')]",
                 "[resourceId('Microsoft.ApiManagement/service/apis/operations', parameters('apimName'), 'copilot-studio-a2a', 'invoke-a2a-runtime')]",
+                "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimName'), 'entra-tenant-id')]"
+              ]
+            },
+            {
+              "copy": {
+                "name": "specialistApis",
+                "count": "[length(parameters('specialistAgentIds'))]"
+              },
+              "type": "Microsoft.ApiManagement/service/apis",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]))]",
+              "properties": {
+                "displayName": "[format('Copilot Studio A2A - {0}', parameters('specialistAgentIds')[copyIndex()])]",
+                "path": "[format('{0}/a2a-agents/{1}', variables('apiPath'), parameters('specialistAgentIds')[copyIndex()])]",
+                "protocols": [
+                  "https"
+                ],
+                "serviceUrl": "[format('{0}/a2a-agents/{1}', parameters('adapterBackendUrl'), parameters('specialistAgentIds')[copyIndex()])]",
+                "subscriptionRequired": false,
+                "type": "http"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service', parameters('apimName'))]"
+              ]
+            },
+            {
+              "copy": {
+                "name": "specialistApiPolicies",
+                "count": "[length(parameters('specialistAgentIds'))]"
+              },
+              "type": "Microsoft.ApiManagement/service/apis/policies",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}/{2}', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]), 'policy')]",
+              "properties": {
+                "format": "rawxml",
+                "value": "[variables('apiPolicyValue')]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service/apis', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]))]"
+              ]
+            },
+            {
+              "copy": {
+                "name": "specialistCards",
+                "count": "[length(parameters('specialistAgentIds'))]"
+              },
+              "type": "Microsoft.ApiManagement/service/apis/operations",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}/{2}', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]), 'get-agent-card')]",
+              "properties": {
+                "displayName": "Get specialist agent card",
+                "method": "GET",
+                "urlTemplate": "/.well-known/agent-card.json",
+                "templateParameters": [],
+                "responses": []
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service/apis', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]))]"
+              ]
+            },
+            {
+              "copy": {
+                "name": "specialistCardPolicies",
+                "count": "[length(parameters('specialistAgentIds'))]"
+              },
+              "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}/{2}/{3}', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]), 'get-agent-card', 'policy')]",
+              "properties": {
+                "format": "rawxml",
+                "value": "[variables('discoveryPolicyValue')]"
+              },
+              "dependsOn": [
+                "specialistApiPolicies",
+                "[resourceId('Microsoft.ApiManagement/service/apis/operations', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]), 'get-agent-card')]"
+              ]
+            },
+            {
+              "copy": {
+                "name": "specialistRuntimeCards",
+                "count": "[length(parameters('specialistAgentIds'))]"
+              },
+              "type": "Microsoft.ApiManagement/service/apis/operations",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}/{2}', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]), 'get-runtime-agent-card')]",
+              "properties": {
+                "displayName": "Get runtime-relative specialist agent card",
+                "method": "GET",
+                "urlTemplate": "/a2a/.well-known/agent-card.json",
+                "templateParameters": [],
+                "responses": []
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service/apis', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]))]"
+              ]
+            },
+            {
+              "copy": {
+                "name": "specialistRuntimeCardPolicies",
+                "count": "[length(parameters('specialistAgentIds'))]"
+              },
+              "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}/{2}/{3}', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]), 'get-runtime-agent-card', 'policy')]",
+              "properties": {
+                "format": "rawxml",
+                "value": "[variables('discoveryPolicyValue')]"
+              },
+              "dependsOn": [
+                "specialistApiPolicies",
+                "[resourceId('Microsoft.ApiManagement/service/apis/operations', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]), 'get-runtime-agent-card')]"
+              ]
+            },
+            {
+              "copy": {
+                "name": "specialistLegacyCards",
+                "count": "[length(parameters('specialistAgentIds'))]"
+              },
+              "type": "Microsoft.ApiManagement/service/apis/operations",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}/{2}', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]), 'get-legacy-agent-card')]",
+              "properties": {
+                "displayName": "Get legacy specialist agent card",
+                "method": "GET",
+                "urlTemplate": "/.well-known/agent.json",
+                "templateParameters": [],
+                "responses": []
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service/apis', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]))]"
+              ]
+            },
+            {
+              "copy": {
+                "name": "specialistLegacyCardPolicies",
+                "count": "[length(parameters('specialistAgentIds'))]"
+              },
+              "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}/{2}/{3}', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]), 'get-legacy-agent-card', 'policy')]",
+              "properties": {
+                "format": "rawxml",
+                "value": "[variables('discoveryPolicyValue')]"
+              },
+              "dependsOn": [
+                "specialistApiPolicies",
+                "[resourceId('Microsoft.ApiManagement/service/apis/operations', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]), 'get-legacy-agent-card')]"
+              ]
+            },
+            {
+              "copy": {
+                "name": "specialistRuntimeLegacyCards",
+                "count": "[length(parameters('specialistAgentIds'))]"
+              },
+              "type": "Microsoft.ApiManagement/service/apis/operations",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}/{2}', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]), 'get-runtime-legacy-agent-card')]",
+              "properties": {
+                "displayName": "Get legacy runtime-relative specialist agent card",
+                "method": "GET",
+                "urlTemplate": "/a2a/.well-known/agent.json",
+                "templateParameters": [],
+                "responses": []
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service/apis', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]))]"
+              ]
+            },
+            {
+              "copy": {
+                "name": "specialistRuntimeLegacyCardPolicies",
+                "count": "[length(parameters('specialistAgentIds'))]"
+              },
+              "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}/{2}/{3}', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]), 'get-runtime-legacy-agent-card', 'policy')]",
+              "properties": {
+                "format": "rawxml",
+                "value": "[variables('discoveryPolicyValue')]"
+              },
+              "dependsOn": [
+                "specialistApiPolicies",
+                "[resourceId('Microsoft.ApiManagement/service/apis/operations', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]), 'get-runtime-legacy-agent-card')]"
+              ]
+            },
+            {
+              "copy": {
+                "name": "specialistRuntimes",
+                "count": "[length(parameters('specialistAgentIds'))]"
+              },
+              "type": "Microsoft.ApiManagement/service/apis/operations",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}/{2}', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]), 'invoke-a2a-runtime')]",
+              "properties": {
+                "displayName": "Invoke specialist A2A runtime",
+                "method": "POST",
+                "urlTemplate": "/a2a",
+                "request": {
+                  "representations": [
+                    {
+                      "contentType": "application/json"
+                    }
+                  ]
+                },
+                "templateParameters": [],
+                "responses": []
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service/apis', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]))]"
+              ]
+            },
+            {
+              "copy": {
+                "name": "specialistRuntimePolicies",
+                "count": "[length(parameters('specialistAgentIds'))]"
+              },
+              "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}/{2}/{3}', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]), 'invoke-a2a-runtime', 'policy')]",
+              "properties": {
+                "format": "rawxml",
+                "value": "[variables('runtimePolicyValue')]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimName'), 'adapter-api-audience')]",
+                "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimName'), 'adapter-api-bare-audience')]",
+                "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimName'), 'adapter-delegated-scope')]",
+                "specialistApiPolicies",
+                "[resourceId('Microsoft.ApiManagement/service/apis/operations', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]), 'invoke-a2a-runtime')]",
                 "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimName'), 'entra-tenant-id')]"
               ]
             },
@@ -1547,6 +1897,10 @@
     "apimGatewayUrl": {
       "type": "string",
       "value": "[reference('citadel').outputs.gatewayUrl.value]"
+    },
+    "apimApiBaseUrl": {
+      "type": "string",
+      "value": "[reference('citadel').outputs.apiBaseUrl.value]"
     },
     "agentCardUrl": {
       "type": "string",

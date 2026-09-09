@@ -127,7 +127,16 @@ public sealed class FoundryA2AInvokerTests
         return new FoundryA2AInvoker(
             catalog,
             new StubCredential(),
-            new StubHttpClientFactory(client));
+            new StubHttpClientFactory(client),
+            new UnusedTokenBroker(),
+            Options.Create(new AuthenticationOptions { Enabled = false }));
+    }
+
+    private sealed class UnusedTokenBroker : IOboTokenBroker
+    {
+        public Task<string> AcquireAsync(
+            string scope, A2ARequestMetadata metadata, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Anonymous development does not perform OBO.");
     }
 
     private sealed class StubCredential : TokenCredential

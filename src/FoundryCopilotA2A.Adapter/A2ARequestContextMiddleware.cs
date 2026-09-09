@@ -107,6 +107,8 @@ public sealed class A2ARequestContextMiddleware(
                         requestedChainTarget);
                     context.Items[AdapterConstants.ChainTargetItem] = target.Id;
                     Activity.Current?.SetTag("a2a.chain.target_agent", target.Id);
+                    payloadHash = PayloadHash.ComputeFromPrompt($"{payloadHash}\n{target.Id}");
+                    context.Items[AdapterConstants.PayloadHashItem] = payloadHash;
                 }
             }
             catch (AdapterRequestException exception)
@@ -391,6 +393,8 @@ public sealed record A2ARequestMetadata
 
     public string? ChainTargetAgentId { get; init; }
 
+    public bool IsAgentRoute { get; init; }
+
     /// <summary>Prior turns supplied by the caller, oldest first. Empty when the caller sent none.</summary>
     public IReadOnlyList<A2AConversationTurn> History { get; init; } = [];
 
@@ -462,6 +466,7 @@ public sealed class A2ARequestMetadataAccessor(
                 BearerToken = ReadBearerToken(context),
                 ChainTargetAgentId =
                     context.Items[AdapterConstants.ChainTargetItem] as string,
+                IsAgentRoute = context.Items[AdapterConstants.RouteAgentItem] is string,
                 History =
                     context.Items[AdapterConstants.HistoryItem]
                         as IReadOnlyList<A2AConversationTurn> ?? []

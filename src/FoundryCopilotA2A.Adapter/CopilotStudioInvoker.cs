@@ -216,7 +216,8 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
                 return new CopilotStudioAgentRuntime(
                     connectionSettings,
                     CopilotClient.ScopeFromSettings(connectionSettings),
-                    agent.DisplayName);
+                    agent.DisplayName,
+                    agent.ChainTargets.Count > 0);
             },
             StringComparer.OrdinalIgnoreCase);
     }
@@ -275,7 +276,7 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
     {
         var isAppOnlyCaller = TokenInspector.IsAppOnly(metadata.BearerToken ?? string.Empty);
         var accessToken = await _tokenBroker.AcquireAsync(agent.Scope, metadata, cancellationToken);
-        var client = CreateClient(agent.ConnectionSettings, accessToken);
+        var client = CreateClient(agent, accessToken);
 
         var cachedConversationId = _conversationStore.Get(
             metadata.UserId,
@@ -320,6 +321,7 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
                 }
                 catch (Exception exception) when (!emitted &&
                                                   cachedConversationId is not null &&
+                                                  !agent.IsOrchestrator &&
                                                   !restarted &&
                                                   exception is not OperationCanceledException)
                 {
@@ -597,15 +599,15 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
         return (Activity)activity;
     }
 
-    private CopilotClient CreateClient(ConnectionSettings connectionSettings, string accessToken) =>
+    private CopilotClient CreateClient(CopilotStudioAgentRuntime agent, string accessToken) =>
         new(
-            connectionSettings,
+            agent.ConnectionSettings,
             _httpClientFactory,
             // The argument is the request URI and is deliberately discarded: the token was
             // already acquired for the correct Copilot Studio scope.
             (string _) => Task.FromResult(accessToken),
             _loggerFactory.CreateLogger<CopilotClient>(),
-            "copilot-studio");
+            agent.IsOrchestrator ? "copilot-studio-orchestrator" : "copilot-studio");
 
     private static OAuthCardInfo? ExtractOAuthCard(IActivity activity)
     {
@@ -663,7 +665,8 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
     private sealed record CopilotStudioAgentRuntime(
         ConnectionSettings ConnectionSettings,
         string Scope,
-        string DisplayName);
+        string DisplayName,
+        bool IsOrchestrator);
 }
 
 /// <summary>
@@ -1106,7 +1109,15 @@ public static class TokenInspector
     }
 }
 
-public sealed class OboTokenBroker
+public interface IOboTokenBroker
+{
+    Task<string> AcquireAsync(
+        string scope,
+        A2ARequestMetadata metadata,
+        CancellationToken cancellationToken);
+}
+
+public sealed class OboTokenBroker : IOboTokenBroker
 {
     private readonly CopilotStudioOptions _options;
     private readonly AuthenticationOptions _authenticationOptions;
@@ -1139,6 +1150,7 @@ public sealed class OboTokenBroker
             "entra.obo.acquire_token",
             System.Diagnostics.ActivityKind.Client);
         traceActivity?.SetTag("auth.flow", "on_behalf_of");
+        traceActivity?.SetTag("auth.scope", scope);
         if (string.IsNullOrWhiteSpace(metadata.BearerToken))
         {
             throw new UnauthorizedAccessException(

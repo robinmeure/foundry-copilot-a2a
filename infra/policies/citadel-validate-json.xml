@@ -1,0 +1,6 @@
+<validate-content unspecified-content-type-action="prevent"
+                  max-size="1048576"
+                  size-exceeded-action="prevent"
+                  errors-variable-name="requestBodyValidation">
+  <content type="application/json" validate-as="json" action="prevent" />
+</validate-content>

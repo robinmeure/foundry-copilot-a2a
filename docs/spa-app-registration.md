@@ -6,6 +6,7 @@ responsibilities:
 ```text
 React SPA
   -> token for api://<backend-client-id>/access_as_user
+  -> Citadel / APIM (when configured; same token, no additional registration)
   -> A2A adapter API
   -> OBO token for CopilotStudio.Copilots.Invoke
   -> Copilot Studio
@@ -14,7 +15,7 @@ React SPA
 | Registration | Purpose | Secret | Permissions |
 | --- | --- | --- | --- |
 | Frontend SPA | Signs in the user and requests the backend API scope | None | Delegated `access_as_user` on the backend API |
-| Backend API | Validates the SPA token and performs OBO | Required by the adapter | Exposes `access_as_user`; delegated `CopilotStudio.Copilots.Invoke` |
+| Backend API | Validates the SPA token and performs OBO | Required by the adapter | Exposes `access_as_user`; delegated `CopilotStudio.Copilots.Invoke`; optional Foundry `user_impersonation` |
 
 Never put the backend client secret in the React application or a `VITE_*` variable. Vite
 variables are compiled into browser-visible JavaScript.
@@ -33,7 +34,9 @@ browser-held token becomes a Copilot Studio-usable one.
 2. **Token A.** The SPA requests `api://<backend-client-id>/access_as_user`. Entra issues a token
    whose `aud` is the *backend* registration and whose `oid` identifies the signed-in user. The
    `appid`/`azp` claim identifies the frontend registration as the client that asked.
-3. **Call.** The browser sends token A to the adapter as `Authorization: Bearer`. The adapter
+3. **Call.** The browser sends token A as `Authorization: Bearer`, through Citadel when
+   configured. APIM validates the backend audience, tenant, and `access_as_user`, then forwards
+   that same header without exchanging or replacing the token. The adapter
    validates issuer, audience, tenant, and lifetime against its `Authentication:*` settings, all
    of which describe the backend registration. The requested `access_as_user` scope is also
    advertised in the agent card and appears in the delegated token's `scp` claim.
@@ -105,6 +108,50 @@ backend registration's `knownClientApplications` and the client uses the documen
 consent pattern. This repository does not rely on that, because the backend's Power Platform
 grant is normally established once, out of band, by the `consent` command or an administrator.
 
+### Optional Foundry orchestrator grant
+
+When the adapter invokes Foundry for a signed-in browser user, it performs another OBO exchange
+for `https://ai.azure.com/.default`. That requires a third **grant**, not a third registration:
+the existing backend needs delegated `user_impersonation` on **Azure Machine Learning Services**,
+the resource registered for `https://ai.azure.com`. This is distinct from the Power Platform
+permission and from Azure Cognitive Services permissions.
+
+An authorized administrator can grant only that resource with the project CLI:
+
+```powershell
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- grant-foundry-consent `
+  --tenant-id <tenant-id> --api-client-id <backend-client-id>
+```
+
+The command resolves the resource and scope dynamically, preserves other permissions, and
+creates or merges its tenant-wide delegated grant. It does not create a registration, grant
+application roles, change credentials, or modify the frontend. If Graph rejects the consent
+operation with 403 after the manifest update, the declaration remains and the command can be
+retried with an appropriately authorized identity/client. A declared permission is not consent.
+Do not enable public-client flow on the confidential backend or grant unrelated permissions as
+a workaround.
+
+The calling user also needs **Foundry Agent Consumer** or broader access to the agent. Secured
+Foundry calls reject missing/app-only callers instead of falling back to a shared identity.
+Keep Foundry tokens on the server; the SPA continues to request only backend `access_as_user`.
+
+Native tool authorization is another independent boundary. Foundry or Copilot Studio must
+obtain a delegated backend token for the actual end user. Reuse the backend registration for
+the OAuth client and add each connection's real generated callback as a **Web** redirect,
+preserving existing callbacks. For a Foundry-generated callback, the CLI can make that narrow
+registration change:
+
+```powershell
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- register-foundry-redirect `
+  --tenant-id <tenant-id> --api-client-id <backend-client-id> `
+  --redirect-uri "<generated-https-azure-apim-consent-callback>"
+```
+
+The command preserves existing Web settings and callbacks and changes no permissions or
+credentials. Neither the Foundry grant above nor a maker's successful
+connection proves downstream per-user authorization. Follow
+[the native Citadel workflow](citadel-local.md#6-configure-native-orchestrators).
+
 ## 1. Configure the backend API registration
 
 The existing adapter registration can be retained as the backend registration.
@@ -143,8 +190,10 @@ Under **API permissions**, add the Power Platform delegated permission
 possible. Consent is granted to the application but the resulting OBO token still represents
 the signed-in user.
 
-For a per-user development grant, enable **Authentication > Allow public client flows** and
-run:
+For a per-user development grant, the following command uses device-code authentication and
+requires an explicitly approved **Authentication > Allow public client flows** configuration.
+Do not change an existing confidential-only backend just to run it; use administrator consent
+instead when public-client flows are not part of the intended registration design:
 
 ```text
 dotnet run --project src/FoundryCopilotA2A.Cli -- consent --tenant-id <tenant-id> --client-id <backend-client-id>
@@ -204,6 +253,7 @@ VITE_ENTRA_TENANT_ID=<directory-tenant-id>
 VITE_ENTRA_CLIENT_ID=<frontend-spa-client-id>
 VITE_ADAPTER_API_CLIENT_ID=<backend-api-client-id>
 VITE_ADAPTER_BASE_URL=http://localhost:5099
+VITE_GATEWAY_BASE_URL=
 ```
 
 `VITE_ENTRA_CLIENT_ID` identifies the public SPA client. `VITE_ADAPTER_API_CLIENT_ID`
@@ -212,6 +262,14 @@ identifies the protected resource and forms the requested scope:
 ```text
 api://<VITE_ADAPTER_API_CLIENT_ID>/access_as_user
 ```
+
+For Citadel, set `VITE_GATEWAY_BASE_URL` to the full HTTPS gateway API base URL,
+including its API path. This enables APIM blocks and the initial APIM route in the
+flow builder. Keep `VITE_ADAPTER_BASE_URL` set to the distinct direct adapter endpoint
+to allow frontend -> adapter -> orchestrator as well. Catalog, runtime, and trace
+requests follow the chosen route; the requested scope and both registrations stay unchanged.
+APIM requires neither a third registration nor a browser-held subscription key.
+See [the local Citadel workflow](citadel-local.md) for the gateway policies and Dev Tunnel setup.
 
 Restart Vite after changing `.env.local`:
 
@@ -267,8 +325,11 @@ This error occurs during token acquisition, before the browser calls the adapter
 
 ### Redirect URI mismatch
 
-Use `http://localhost:5173` consistently. `http://127.0.0.1:5173`,
-`http://localhost:5137`, and `https://localhost:5173` are different redirect URIs.
+Use the exact origin registered on the SPA consistently. For example,
+`http://localhost:5173`, `http://127.0.0.1:5173`, `http://localhost:5137`, and
+`https://localhost:5173` are different redirect URIs. Match the Vite port and both
+adapter/APIM allowed origins to that registration; moving the API behind APIM does
+not change the browser's redirect URI.
 
 ### Consent or OBO failure
 
@@ -276,6 +337,9 @@ There are two separate delegated grants:
 
 1. Frontend SPA -> backend `access_as_user`
 2. Backend API -> Power Platform `CopilotStudio.Copilots.Invoke`
+
+With a Foundry orchestrator, add backend -> Azure Machine Learning Services
+`user_impersonation`. Native A2A connections also have their own end-user authorization.
 
 Granting one does not grant the other. Check the **Status** column under **API permissions**
 for both registrations.
@@ -298,9 +362,10 @@ usually means the adapter was started from hand-written configuration, or with t
 
 *"The user or administrator has not consented to use the application with ID ..."*
 
-Sign-in worked and the adapter's token validation worked, so this is grant 2, not grant 1: the
-backend registration has no delegated grant for `CopilotStudio.Copilots.Invoke` for this user.
-Grant it per user, which is enough for the on-behalf-of exchange:
+Sign-in and adapter token validation worked. Identify the failed OBO scope first: Power
+Platform needs `CopilotStudio.Copilots.Invoke`, while Foundry needs the separate
+`user_impersonation` grant above. For Power Platform, a per-user grant is enough when the backend
+already permits the device-code development workflow:
 
 ```text
 dotnet run --project src/FoundryCopilotA2A.Cli -- consent --tenant-id <tenant-id> --client-id <backend-client-id>
