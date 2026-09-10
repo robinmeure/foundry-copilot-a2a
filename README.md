@@ -10,6 +10,10 @@ The default backend is a deterministic mock, so the A2A contract can be tested l
 without provisioning Azure resources. The real backend uses the official
 `Microsoft.Agents.CopilotStudio.Client` and an OAuth on-behalf-of (OBO) flow.
 
+Operational setup, provider wiring, APIM publication, and end-to-end smoke tests are centralized
+in the versioned [Foundry Copilot A2A CLI](src/FoundryCopilotA2A.Cli/README.md). Its README
+explains what every command does and why the project lives beside the application code.
+
 ## Management summary
 
 ### What this is
