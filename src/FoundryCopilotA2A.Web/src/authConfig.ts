@@ -1,34 +1,74 @@
 import type { Configuration, RedirectRequest } from '@azure/msal-browser'
 
 export interface RuntimeConfig {
+  /** Initial catalog endpoint; prefers APIM when configured. */
   adapterBaseUrl: string
+  /** Explicit direct endpoint, absent for gateway-only or identical-URL configurations. */
+  directAdapterBaseUrl?: string
+  gatewayBaseUrl?: string
   adapterApiClientId: string
   spaClientId: string
   tenantId: string
 }
 
-export function readRuntimeConfig(): RuntimeConfig {
+export function readRuntimeConfig(
+  env: Record<string, string | undefined> = import.meta.env,
+): RuntimeConfig {
+  const directUrl = readEndpoint(env.VITE_ADAPTER_BASE_URL, 'VITE_ADAPTER_BASE_URL')
+  const gatewayBaseUrl = readEndpoint(env.VITE_GATEWAY_BASE_URL, 'VITE_GATEWAY_BASE_URL', true)
   const values = {
-    VITE_ADAPTER_BASE_URL: import.meta.env.VITE_ADAPTER_BASE_URL?.trim().replace(/\/$/, ''),
-    VITE_ADAPTER_API_CLIENT_ID: import.meta.env.VITE_ADAPTER_API_CLIENT_ID?.trim(),
-    VITE_ENTRA_CLIENT_ID: import.meta.env.VITE_ENTRA_CLIENT_ID?.trim(),
-    VITE_ENTRA_TENANT_ID: import.meta.env.VITE_ENTRA_TENANT_ID?.trim(),
+    VITE_ADAPTER_API_CLIENT_ID: env.VITE_ADAPTER_API_CLIENT_ID?.trim(),
+    VITE_ENTRA_CLIENT_ID: env.VITE_ENTRA_CLIENT_ID?.trim(),
+    VITE_ENTRA_TENANT_ID: env.VITE_ENTRA_TENANT_ID?.trim(),
   }
 
   const missing = Object.entries(values)
     .filter(([, value]) => !value)
     .map(([name]) => name)
+  if (!directUrl && !gatewayBaseUrl) {
+    missing.push('VITE_ADAPTER_BASE_URL or VITE_GATEWAY_BASE_URL')
+  }
 
   if (missing.length > 0) {
     throw new Error(`Missing frontend configuration: ${missing.join(', ')}`)
   }
 
   return {
-    adapterBaseUrl: values.VITE_ADAPTER_BASE_URL!,
+    adapterBaseUrl: (gatewayBaseUrl ?? directUrl)!,
+    directAdapterBaseUrl: directUrl !== gatewayBaseUrl ? directUrl : undefined,
+    gatewayBaseUrl,
     adapterApiClientId: values.VITE_ADAPTER_API_CLIENT_ID!,
     spaClientId: values.VITE_ENTRA_CLIENT_ID!,
     tenantId: values.VITE_ENTRA_TENANT_ID!,
   }
+}
+
+function readEndpoint(value: string | undefined, name: string, requireHttps = false) {
+  if (!value?.trim()) {
+    return undefined
+  }
+
+  const message = `${name} must be an absolute ${requireHttps ? 'HTTPS' : 'HTTP(S)'} API base URL without credentials, a query, or a fragment.`
+  let endpoint: URL
+  try {
+    endpoint = new URL(value.trim())
+  } catch (reason) {
+    if (!(reason instanceof TypeError)) {
+      throw reason
+    }
+    throw new Error(message)
+  }
+  if (
+    !['http:', 'https:'].includes(endpoint.protocol) ||
+    (requireHttps && endpoint.protocol !== 'https:') ||
+    endpoint.username ||
+    endpoint.password ||
+    endpoint.href.includes('?') ||
+    endpoint.href.includes('#')
+  ) {
+    throw new Error(message)
+  }
+  return endpoint.href.replace(/\/+$/, '')
 }
 
 export function createMsalConfig(config: RuntimeConfig): Configuration {

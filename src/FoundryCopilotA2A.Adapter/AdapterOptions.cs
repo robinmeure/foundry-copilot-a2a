@@ -305,7 +305,10 @@ public sealed class CopilotStudioOptions
                 entry.Value.DirectConnectUrl,
                 entry.Value.EnvironmentId,
                 entry.Value.SchemaName,
-                entry.Value.Harness))
+                entry.Value.Harness)
+            {
+                ChainTargets = entry.Value.ChainTargets
+            })
             .OrderBy(agent => agent.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
@@ -347,6 +350,8 @@ public sealed class CopilotStudioAgentOptions
     public string SchemaName { get; set; } = string.Empty;
 
     public CopilotStudioHarness Harness { get; set; } = CopilotStudioHarness.Standard;
+
+    public string[] ChainTargets { get; set; } = [];
 }
 
 public enum CopilotStudioHarness
@@ -361,7 +366,10 @@ public sealed record ResolvedCopilotStudioAgent(
     string? DirectConnectUrl,
     string EnvironmentId,
     string SchemaName,
-    CopilotStudioHarness Harness);
+    CopilotStudioHarness Harness)
+{
+    public IReadOnlyList<string> ChainTargets { get; init; } = [];
+}
 
 public enum AgentProvider
 {
@@ -377,6 +385,8 @@ public sealed record AgentDescriptor(
     string? StatusMessage,
     IReadOnlyList<string> ChainTargets)
 {
+    public bool CanOrchestrate => Supported && ChainTargets.Count > 0;
+
     public string Provider => ProviderKind switch
     {
         AgentProvider.CopilotStudio => "copilotStudio",
@@ -430,7 +440,7 @@ public sealed class AgentCatalog
                         AgentProvider.CopilotStudio,
                         supported,
                         supported ? null : CopilotStudioResponseClassifier.Guidance,
-                        []);
+                        agent.ChainTargets);
                 })
                 .ToArray();
         var copilotStudioAgents =
@@ -447,34 +457,14 @@ public sealed class AgentCatalog
                 : configuredCopilotStudioAgents;
         _foundryAgents = foundryOptions.Value.ResolveAgents()
             .ToDictionary(agent => agent.Id, StringComparer.OrdinalIgnoreCase);
-        var copilotTargets = copilotStudioAgents
-            .Where(agent => agent.Supported)
-            .ToDictionary(agent => agent.Id, StringComparer.OrdinalIgnoreCase);
         var foundryAgents = _foundryAgents.Values
-            .Select(agent =>
-            {
-                var chainTargets = agent.ChainTargets
-                    .Select(target => target.Trim())
-                    .Where(target => target.Length > 0)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToArray();
-                var missingTarget = chainTargets.FirstOrDefault(
-                    target => !copilotTargets.ContainsKey(target));
-                if (missingTarget is not null)
-                {
-                    throw new InvalidOperationException(
-                        $"Foundry agent '{agent.Id}' chain target '{missingTarget}' is not a " +
-                        "supported Copilot Studio agent.");
-                }
-
-                return new AgentDescriptor(
-                    agent.Id,
-                    agent.DisplayName,
-                    AgentProvider.Foundry,
-                    true,
-                    null,
-                    chainTargets);
-            });
+            .Select(agent => new AgentDescriptor(
+                agent.Id,
+                agent.DisplayName,
+                AgentProvider.Foundry,
+                true,
+                null,
+                agent.ChainTargets));
         _agents = copilotStudioAgents.Concat(foundryAgents).ToArray();
 
         var duplicate = _agents
@@ -485,6 +475,42 @@ public sealed class AgentCatalog
             throw new InvalidOperationException(
                 $"Agent ID '{duplicate.Key}' is configured more than once.");
         }
+
+        var copilotTargets = copilotStudioAgents
+            .Where(agent => agent.Supported)
+            .ToDictionary(agent => agent.Id, StringComparer.OrdinalIgnoreCase);
+        _agents = _agents.Select(agent =>
+        {
+            var chainTargets = agent.ChainTargets
+                .Select(target => target.Trim())
+                .Where(target => target.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(target =>
+                {
+                    if (!agent.Supported)
+                    {
+                        throw new InvalidOperationException(
+                            $"Unsupported agent '{agent.Id}' cannot have chain targets.");
+                    }
+
+                    if (string.Equals(agent.Id, target, StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new InvalidOperationException(
+                            $"Agent '{agent.Id}' cannot be its own chain target.");
+                    }
+
+                    if (!copilotTargets.TryGetValue(target, out var specialist))
+                    {
+                        throw new InvalidOperationException(
+                            $"Agent '{agent.Id}' chain target '{target}' is not a " +
+                            "supported Copilot Studio agent.");
+                    }
+
+                    return specialist.Id;
+                })
+                .ToArray();
+            return agent with { ChainTargets = chainTargets };
+        }).ToArray();
     }
 
     public IReadOnlyList<AgentDescriptor> Agents => _agents;
@@ -524,21 +550,21 @@ public sealed class AgentCatalog
             : throw new AdapterRequestException(
                 $"Foundry agent '{agentId}' is not configured.");
 
-    public AgentDescriptor ResolveChainTarget(string foundryAgentId, string targetAgentId)
+    public AgentDescriptor ResolveChainTarget(string orchestratorAgentId, string targetAgentId)
     {
-        var foundryAgent = ResolveAgent(foundryAgentId);
-        if (foundryAgent.ProviderKind != AgentProvider.Foundry)
+        var orchestrator = ResolveAgent(orchestratorAgentId);
+        if (!orchestrator.CanOrchestrate)
         {
             throw new AdapterRequestException(
-                $"Agent '{foundryAgent.Id}' cannot be used as Agent A in a chain.");
+                $"Agent '{orchestrator.Id}' has no configured native chain targets.");
         }
 
         var target = ResolveAgent(targetAgentId);
         if (target.ProviderKind != AgentProvider.CopilotStudio ||
-            !foundryAgent.ChainTargets.Contains(target.Id, StringComparer.OrdinalIgnoreCase))
+            !orchestrator.ChainTargets.Contains(target.Id, StringComparer.OrdinalIgnoreCase))
         {
             throw new AdapterRequestException(
-                $"Agent '{target.Id}' is not a configured chain target for '{foundryAgent.Id}'.");
+                $"Agent '{target.Id}' is not a configured chain target for '{orchestrator.Id}'.");
         }
 
         return target;

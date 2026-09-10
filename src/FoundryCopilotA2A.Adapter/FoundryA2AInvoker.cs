@@ -3,41 +3,17 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using Azure.Core;
+using Microsoft.Extensions.Options;
+using Microsoft.Identity.Client;
 
 namespace FoundryCopilotA2A.Adapter;
-
-public interface IAgentInvoker
-{
-    IAsyncEnumerable<CopilotInvocationUpdate> StreamAsync(
-        string prompt,
-        A2ARequestMetadata metadata,
-        CancellationToken cancellationToken);
-}
-
-public sealed class RoutingAgentInvoker(
-    AgentCatalog catalog,
-    ICopilotStudioInvoker copilotStudioInvoker,
-    FoundryA2AInvoker foundryInvoker) : IAgentInvoker
-{
-    public IAsyncEnumerable<CopilotInvocationUpdate> StreamAsync(
-        string prompt,
-        A2ARequestMetadata metadata,
-        CancellationToken cancellationToken) =>
-        catalog.ResolveAgent(metadata.AgentId).ProviderKind switch
-        {
-            AgentProvider.CopilotStudio => copilotStudioInvoker.StreamAsync(
-                prompt, metadata, cancellationToken),
-            AgentProvider.Foundry => foundryInvoker.StreamAsync(
-                prompt, metadata, cancellationToken),
-            _ => throw new AdapterRequestException(
-                $"Agent '{metadata.AgentId}' has an unsupported provider.")
-        };
-}
 
 public sealed class FoundryA2AInvoker(
     AgentCatalog catalog,
     TokenCredential credential,
-    IHttpClientFactory httpClientFactory) : IAgentInvoker
+    IHttpClientFactory httpClientFactory,
+    IOboTokenBroker tokenBroker,
+    IOptions<AuthenticationOptions> authenticationOptions) : IAgentInvoker
 {
     private static readonly TokenRequestContext TokenRequest =
         new(["https://ai.azure.com/.default"]);
@@ -51,44 +27,15 @@ public sealed class FoundryA2AInvoker(
         activity?.SetTag("foundry.agent.id", metadata.AgentId);
         activity?.SetTag("a2a.history.turns", metadata.History.Count);
         var agent = catalog.ResolveFoundryAgent(metadata.AgentId);
-        var effectivePrompt = prompt;
-        AgentDescriptor? chainTarget = null;
-        if (metadata.ChainTargetAgentId is not null)
-        {
-            var target = catalog.ResolveChainTarget(
-                metadata.AgentId,
-                metadata.ChainTargetAgentId);
-            chainTarget = target;
-            activity?.SetTag("a2a.chain.enabled", true);
-            activity?.SetTag("a2a.chain.target_agent", target.Id);
-            effectivePrompt =
-                $"Delegate the request below to the configured A2A tool named " +
-                $"\"{target.DisplayName}\". You must call that A2A tool before answering, " +
-                $"then return its result clearly.\n\nUser request:\n{prompt}";
-        }
-
         // The Foundry A2A endpoint is invoked one turn at a time, so the caller's prior turns have
         // to travel with the prompt for the agent to keep context.
-        effectivePrompt = ConversationTranscript.Prepend(effectivePrompt, metadata.History);
+        var effectivePrompt = ConversationTranscript.Prepend(prompt, metadata.History);
 
-        // A chained request is a two-agent workflow, so wrap the remote call in a workflow span
-        // and nest the delegated tool underneath it. Direct calls emit only the agent span.
-        using var workflowActivity = chainTarget is null
-            ? null
-            : GenAiTelemetry.StartChainWorkflow(agent.Id, chainTarget.Id);
         using var genAiActivity = GenAiTelemetry.StartInvokeAgent(
             GenAiTelemetry.Providers.AzureAiInference,
             agent.DisplayName,
             agent.Id,
             metadata.ContextId);
-        using var toolActivity = chainTarget is null
-            ? null
-            : GenAiTelemetry.StartExecuteTool(
-                chainTarget.DisplayName,
-                "agent",
-                metadata.ContextId,
-                $"Copilot Studio specialist reached through the A2A adapter.");
-
         CopilotInvocationResult result;
         try
         {
@@ -101,9 +48,7 @@ public sealed class FoundryA2AInvoker(
         }
         catch (Exception exception)
         {
-            GenAiTelemetry.RecordFailure(toolActivity, exception);
             GenAiTelemetry.RecordFailure(genAiActivity, exception);
-            GenAiTelemetry.RecordFailure(workflowActivity, exception);
             throw;
         }
 
@@ -120,7 +65,7 @@ public sealed class FoundryA2AInvoker(
         System.Diagnostics.Activity? activity,
         CancellationToken cancellationToken)
     {
-        var token = await credential.GetTokenAsync(TokenRequest, cancellationToken);
+        var token = await AcquireTokenAsync(metadata, cancellationToken);
         var requestId = Guid.NewGuid().ToString("N");
         var body = JsonSerializer.Serialize(new
         {
@@ -140,7 +85,7 @@ public sealed class FoundryA2AInvoker(
         });
 
         using var request = new HttpRequestMessage(HttpMethod.Post, agent.Endpoint);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         request.Headers.Add("A2A-Version", "1.0");
         request.Content = new StringContent(body, Encoding.UTF8, "application/json");
         using var response = await httpClientFactory
@@ -174,6 +119,38 @@ public sealed class FoundryA2AInvoker(
             text,
             metadata.ContextId,
             requestId);
+    }
+
+    private async Task<string> AcquireTokenAsync(
+        A2ARequestMetadata metadata,
+        CancellationToken cancellationToken)
+    {
+        if (!authenticationOptions.Value.Enabled)
+        {
+            return (await credential.GetTokenAsync(TokenRequest, cancellationToken)).Token;
+        }
+
+        if (string.IsNullOrWhiteSpace(metadata.BearerToken) ||
+            TokenInspector.IsAppOnly(metadata.BearerToken))
+        {
+            throw new UnauthorizedAccessException(
+                "Foundry requires the caller's delegated user token. A shared developer or " +
+                "managed identity cannot preserve per-user native A2A consent.");
+        }
+
+        try
+        {
+            return await tokenBroker.AcquireAsync(
+                "https://ai.azure.com/.default", metadata, cancellationToken);
+        }
+        catch (MsalUiRequiredException exception)
+        {
+            throw new AdapterRequestException(
+                "Delegated Foundry authorization requires consent or additional user interaction. " +
+                "Configure delegated Foundry access on the existing backend registration and " +
+                "grant the caller Foundry Agent Consumer access. No shared identity fallback was used.",
+                exception);
+        }
     }
 
     private static string ExtractText(JsonElement root)

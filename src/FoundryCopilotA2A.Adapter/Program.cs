@@ -37,6 +37,10 @@ builder.Services.AddOpenTelemetry()
         .AddProcessor(new SanitizedTraceProcessor(traceStore)));
 builder.Services.AddCors(options =>
 {
+    options.AddPolicy("agent-card", policy => policy
+        .AllowAnyOrigin()
+        .WithMethods(HttpMethods.Get)
+        .WithHeaders("Content-Type", "A2A-Version"));
     options.AddPolicy("spa", policy =>
     {
         policy
@@ -71,6 +75,8 @@ builder.Services.AddSingleton<AgentCatalog>();
 builder.Services.AddSingleton<CopilotConversationStore>();
 builder.Services.AddSingleton<IdempotencyStore>();
 builder.Services.AddSingleton<OboTokenBroker>();
+builder.Services.AddSingleton<IOboTokenBroker>(
+    services => services.GetRequiredService<OboTokenBroker>());
 
 if (adapterOptions.UseMockBackend)
 {
@@ -104,6 +110,15 @@ var foundryHttpClient = builder.Services.AddHttpClient("foundry-a2a", client =>
     client.Timeout = TimeSpan.FromSeconds(adapterOptions.FoundryRequestTimeoutSeconds);
 });
 foundryHttpClient.RemoveAllResilienceHandlers();
+// A native Copilot Studio orchestrator can also invoke tools before an HTTP error is observed.
+// Retrying its turn or restarting its conversation could execute the specialist twice.
+var copilotOrchestratorClient = builder.Services
+    .AddHttpClient("copilot-studio-orchestrator", client =>
+    {
+        client.Timeout = TimeSpan.FromSeconds(adapterOptions.RequestTimeoutSeconds);
+    })
+    .AddHttpMessageHandler<CopilotStudioTraceHandler>();
+copilotOrchestratorClient.RemoveAllResilienceHandlers();
 #pragma warning restore EXTEXP0001
 var managedIdentityClientId = builder.Configuration["AZURE_CLIENT_ID"];
 TokenCredential foundryCredential = builder.Environment.IsDevelopment()
@@ -183,7 +198,22 @@ app.Use(async (context, next) =>
         var metadata = context.RequestServices
             .GetRequiredService<A2ARequestMetadataAccessor>()
             .Current;
-        traceStore.Register(activity.TraceId, metadata.UserId, metadata.AgentId);
+        if (!traceStore.Register(activity, metadata.UserId, metadata.AgentId))
+        {
+            app.Logger.LogWarning("Refused a trace context with a different owner or exhausted request capacity.");
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await context.Response.WriteAsJsonAsync(new
+            {
+                jsonrpc = "2.0",
+                id = (string?)null,
+                error = new
+                {
+                    code = -32600,
+                    message = "The supplied trace context cannot be reused. Start a new trace for this request."
+                }
+            });
+            return;
+        }
         context.Response.Headers[AdapterConstants.TraceHeaderName] = activity.TraceId.ToHexString();
     }
 
@@ -311,9 +341,7 @@ IResult BuildChainAgentCard(string agentId, AgentCatalog catalog)
         description = "Copilot Studio specialist exposed through the local A2A adapter.",
         url = chainRuntimeUrl,
         version = "0.1.0",
-        // Mirror the shape the A2A library emits for the root card. The card format version stays
-        // 0.3.0 while supportedInterfaces advertises the 1.0 binding; setting this to 1.0 does not
-        // upgrade the card and drops it out of the shape remote callers expect.
+        // Copilot Studio rejects a card containing v1 supportedInterfaces, even with this version.
         protocolVersion = "0.3.0",
         capabilities = new
         {
@@ -339,29 +367,23 @@ IResult BuildChainAgentCard(string agentId, AgentCatalog catalog)
         },
         supportsAuthenticatedExtendedCard = false,
         additionalInterfaces = Array.Empty<object>(),
-        preferredTransport = "JSONRPC",
-        supportedInterfaces = new[]
-        {
-            new
-            {
-                url = chainRuntimeUrl,
-                protocolBinding = "JSONRPC",
-                protocolVersion = "1.0"
-            }
-        }
+        preferredTransport = "JSONRPC"
     });
 }
 
-// Serve the chain card at both conventional discovery locations. Remote callers resolve either
-// the sibling path or "<target>/.well-known/agent-card.json"; serving only the sibling made the
-// target-relative probe 404 and fall back to the root card, which points at the generic router
-// instead of the chain-bound runtime.
-app.MapGet(
-    $"{AdapterConstants.ChainAgentsPath}/{{agentId}}/.well-known/agent-card.json",
-    (string agentId, AgentCatalog catalog) => BuildChainAgentCard(agentId, catalog));
-app.MapGet(
-    $"{AdapterConstants.ChainAgentsPath}/{{agentId}}/a2a/.well-known/agent-card.json",
-    (string agentId, AgentCatalog catalog) => BuildChainAgentCard(agentId, catalog));
+// Foundry and Copilot Studio use different discovery conventions. Every alias must remain
+// specialist-bound instead of falling back to the generic router card.
+// Authoring portals fetch these public bootstrap documents from the browser before OAuth.
+var agentCardEndpoints = app.MapGroup("").RequireCors("agent-card");
+foreach (var cardFile in new[] { "agent-card.json", "agent.json" })
+{
+    agentCardEndpoints.MapGet(
+        $"{AdapterConstants.ChainAgentsPath}/{{agentId}}/.well-known/{cardFile}",
+        (string agentId, AgentCatalog catalog) => BuildChainAgentCard(agentId, catalog));
+    agentCardEndpoints.MapGet(
+        $"{AdapterConstants.ChainAgentsPath}/{{agentId}}/a2a/.well-known/{cardFile}",
+        (string agentId, AgentCatalog catalog) => BuildChainAgentCard(agentId, catalog));
+}
 
 var runtimeUrl = $"{publicBaseUrl}{AdapterConstants.RuntimePath}";
 var agentCard = new AgentCard
@@ -397,7 +419,7 @@ var agentCard = new AgentCard
         }
     ]
 };
-app.MapAgentCardGetWithV03Compat(() => Task.FromResult(agentCard));
+agentCardEndpoints.MapAgentCardGetWithV03Compat(() => Task.FromResult(agentCard));
 
 app.Run();
 

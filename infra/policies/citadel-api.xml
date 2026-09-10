@@ -1,0 +1,49 @@
+<policies>
+  <inbound>
+    <cors allow-credentials="false" terminate-unmatched-request="true">
+      <allowed-origins>
+        __ALLOWED_ORIGINS__
+      </allowed-origins>
+      <allowed-methods preflight-result-max-age="300">
+        <method>GET</method>
+        <method>POST</method>
+      </allowed-methods>
+      <allowed-headers>
+        <header>Authorization</header>
+        <header>Content-Type</header>
+        <header>A2A-Version</header>
+        <header>X-Copilot-Agent</header>
+        <header>X-A2A-Chain-Target</header>
+        <header>X-Correlation-ID</header>
+        <header>traceparent</header>
+        <header>tracestate</header>
+      </allowed-headers>
+      <expose-headers>
+        <header>X-Trace-Id</header>
+        <header>X-Correlation-ID</header>
+        <header>WWW-Authenticate</header>
+        <header>Retry-After</header>
+      </expose-headers>
+    </cors>
+    <base />
+    __BACKEND_HEADERS__
+    <set-header name="X-Correlation-ID" exists-action="skip">
+      <value>@(context.RequestId.ToString())</value>
+    </set-header>
+  </inbound>
+  <backend>
+    <forward-request timeout="120" buffer-response="false" />
+  </backend>
+  <outbound>
+    <base />
+    <set-header name="X-Correlation-ID" exists-action="override">
+      <value>@(context.Request.Headers.GetValueOrDefault("X-Correlation-ID", context.RequestId.ToString()))</value>
+    </set-header>
+  </outbound>
+  <on-error>
+    <base />
+    <set-header name="X-Correlation-ID" exists-action="override">
+      <value>@(context.Request.Headers.GetValueOrDefault("X-Correlation-ID", context.RequestId.ToString()))</value>
+    </set-header>
+  </on-error>
+</policies>

@@ -24,10 +24,24 @@ auto-instrumentation extension.
 
 ## Identity flow
 
-The Foundry A2A connection sends a delegated adapter token through APIM. APIM
+The frontend SPA or Foundry A2A connection sends a delegated adapter token through APIM. APIM
 validates the tenant, both accepted adapter audience forms, and
 `access_as_user`, then forwards the `Authorization` header unchanged. The
 adapter validates the token again and performs OAuth OBO for Copilot Studio.
+
+The frontend and backend retain their two existing app registrations. APIM is not a
+new OAuth resource audience and does not need a third registration or a browser-held
+subscription key. It exposes the public card/catalog, authenticated A2A runtime and
+caller-scoped traces, exact-origin frontend CORS, and unbuffered SSE. Public agent cards
+allow credential-free cross-origin GETs for authoring-portal discovery; that exception
+does not apply to runtime, catalog, or trace operations. Runtime and trace polling
+use separate rate-limit counters. `specialistAgentIds` optionally publishes each approved
+specialist with separate discovery and runtime routes.
+
+For an existing APIM instance forwarding to a **local Dev Tunnel**, use
+`configure-citadel` from the project CLI instead of deploying this full environment.
+The [local Citadel guide](../docs/citadel-local.md) keeps the hosted API untouched and
+uses the same XML policies as this Bicep module.
 
 Managed identity is enabled on APIM, the Foundry account, the Foundry project,
 and the adapter Web App. The Web App uses its user-assigned identity to resolve

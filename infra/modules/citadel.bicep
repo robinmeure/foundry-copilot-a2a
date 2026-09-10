@@ -19,6 +19,9 @@ param tenantId string
 param adapterBackendUrl string
 param adapterApiAudience string
 param adapterDelegatedScope string
+@minLength(1)
+param allowedOrigins array
+param specialistAgentIds array = []
 param appInsightsName string
 param logAnalyticsWorkspaceId string
 param accessPrincipalId string
@@ -32,61 +35,28 @@ var adapterBareAudience = replace(adapterApiAudience, 'api://', '')
 var apiPath = 'copilot-studio'
 var agentCardPath = '.well-known/agent-card.json'
 var runtimePath = 'a2a/copilot-studio'
-var runtimePolicyTemplate = '''
-  <policies>
-    <inbound>
-      <base />
-      <validate-jwt header-name="Authorization"
-                    require-scheme="Bearer"
-                    failed-validation-httpcode="401"
-                    failed-validation-error-message="Unauthorized. The delegated access token is missing or invalid."
-                    output-token-variable-name="validatedJwt"
-                    clock-skew="60">
-        <openid-config url="__ENTRA_LOGIN_ENDPOINT__{{entra-tenant-id}}/v2.0/.well-known/openid-configuration" />
-        <audiences>
-          <audience>{{adapter-api-audience}}</audience>
-          <audience>{{adapter-api-bare-audience}}</audience>
-        </audiences>
-        <issuers>
-          <issuer>__ENTRA_LOGIN_ENDPOINT__{{entra-tenant-id}}/v2.0</issuer>
-          <issuer>https://sts.windows.net/{{entra-tenant-id}}/</issuer>
-        </issuers>
-        <required-claims>
-          <claim name="scp" match="any" separator=" ">
-            <value>{{adapter-delegated-scope}}</value>
-          </claim>
-        </required-claims>
-      </validate-jwt>
-      <validate-content unspecified-content-type-action="prevent"
-                        max-size="1048576"
-                        size-exceeded-action="prevent"
-                        errors-variable-name="requestBodyValidation">
-        <content type="application/json" validate-as="json" action="prevent" />
-      </validate-content>
-      <rate-limit-by-key calls="60"
-                         renewal-period="60"
-                         counter-key='@(((Jwt)context.Variables["validatedJwt"]).Claims.GetValueOrDefault("tid", "unknown") + ":" + ((Jwt)context.Variables["validatedJwt"]).Claims.GetValueOrDefault("oid", "unknown"))' />
-      <set-header name="X-Correlation-ID" exists-action="skip">
-        <value>@(context.RequestId.ToString())</value>
-      </set-header>
-    </inbound>
-    <backend>
-      <forward-request timeout="120" />
-    </backend>
-    <outbound>
-      <set-header name="X-Correlation-ID" exists-action="override">
-        <value>@(context.Request.Headers.GetValueOrDefault("X-Correlation-ID", context.RequestId.ToString()))</value>
-      </set-header>
-    </outbound>
-    <on-error>
-      <base />
-      <set-header name="X-Correlation-ID" exists-action="override">
-        <value>@(context.Request.Headers.GetValueOrDefault("X-Correlation-ID", context.RequestId.ToString()))</value>
-      </set-header>
-    </on-error>
-  </policies>
-'''
-var runtimePolicyValue = replace(runtimePolicyTemplate, '__ENTRA_LOGIN_ENDPOINT__', entraLoginEndpoint)
+var originElements = map(allowedOrigins, origin => '<origin>${replace(replace(replace(origin, '&', '&amp;'), '<', '&lt;'), '>', '&gt;')}</origin>')
+var apiPolicyValue = replace(
+  replace(loadTextContent('../policies/citadel-api.xml'), '__ALLOWED_ORIGINS__', join(originElements, '')),
+  '__BACKEND_HEADERS__',
+  ''
+)
+var delegatedPolicyTemplate = replace(
+  loadTextContent('../policies/citadel-delegated-operation.xml'),
+  '__ENTRA_LOGIN_ENDPOINT__',
+  entraLoginEndpoint
+)
+var discoveryPolicyValue = loadTextContent('../policies/citadel-discovery-operation.xml')
+var runtimePolicyValue = replace(
+  replace(delegatedPolicyTemplate, '__RATE_LIMIT_CALLS__', '60'),
+  '__REQUEST_VALIDATION__',
+  loadTextContent('../policies/citadel-validate-json.xml')
+)
+var tracePolicyValue = replace(
+  replace(delegatedPolicyTemplate, '__RATE_LIMIT_CALLS__', '600'),
+  '__REQUEST_VALIDATION__',
+  ''
+)
 
 resource appInsights 'Microsoft.Insights/components@2020-02-02' existing = {
   name: appInsightsName
@@ -176,6 +146,15 @@ resource api 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
   }
 }
 
+resource apiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = {
+  parent: api
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: apiPolicyValue
+  }
+}
+
 resource agentCardOperation 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = {
   parent: api
   name: 'get-agent-card'
@@ -190,6 +169,78 @@ resource agentCardOperation 'Microsoft.ApiManagement/service/apis/operations@202
     ]
     templateParameters: []
     urlTemplate: '/${agentCardPath}'
+  }
+}
+
+resource agentCardPolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2024-05-01' = {
+  parent: agentCardOperation
+  name: 'policy'
+  dependsOn: [
+    apiPolicy
+  ]
+  properties: {
+    format: 'rawxml'
+    value: discoveryPolicyValue
+  }
+}
+
+resource agentCatalogOperation 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = {
+  parent: api
+  name: 'get-agent-catalog'
+  properties: {
+    displayName: 'Get agent catalog'
+    method: 'GET'
+    urlTemplate: '/api/agents'
+    templateParameters: []
+    responses: [
+      {
+        statusCode: 200
+      }
+    ]
+  }
+}
+
+resource traceOperation 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = {
+  parent: api
+  name: 'get-caller-trace'
+  properties: {
+    displayName: 'Get caller-scoped trace'
+    method: 'GET'
+    urlTemplate: '/api/traces/{traceId}'
+    templateParameters: [
+      {
+        name: 'traceId'
+        type: 'string'
+        required: true
+      }
+    ]
+    responses: [
+      {
+        statusCode: 200
+      }
+      {
+        statusCode: 401
+      }
+      {
+        statusCode: 404
+      }
+    ]
+  }
+}
+
+resource tracePolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2024-05-01' = {
+  parent: traceOperation
+  name: 'policy'
+  dependsOn: [
+    tenantNamedValue
+    audienceNamedValue
+    bareAudienceNamedValue
+    delegatedScopeNamedValue
+    apiPolicy
+  ]
+  properties: {
+    format: 'rawxml'
+    value: tracePolicyValue
   }
 }
 
@@ -246,12 +297,168 @@ resource runtimePolicy 'Microsoft.ApiManagement/service/apis/operations/policies
     audienceNamedValue
     bareAudienceNamedValue
     delegatedScopeNamedValue
+    apiPolicy
   ]
   properties: {
     format: 'rawxml'
     value: runtimePolicyValue
   }
 }
+
+resource specialistApis 'Microsoft.ApiManagement/service/apis@2024-05-01' = [for agentId in specialistAgentIds: {
+  parent: apim
+  name: 'copilot-studio-a2a-${agentId}'
+  properties: {
+    displayName: 'Copilot Studio A2A - ${agentId}'
+    path: '${apiPath}/a2a-agents/${agentId}'
+    protocols: [
+      'https'
+    ]
+    serviceUrl: '${adapterBackendUrl}/a2a-agents/${agentId}'
+    subscriptionRequired: false
+    type: 'http'
+  }
+}]
+
+resource specialistApiPolicies 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = [for (agentId, index) in specialistAgentIds: {
+  parent: specialistApis[index]
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: apiPolicyValue
+  }
+}]
+
+resource specialistCards 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = [for (agentId, index) in specialistAgentIds: {
+  parent: specialistApis[index]
+  name: 'get-agent-card'
+  properties: {
+    displayName: 'Get specialist agent card'
+    method: 'GET'
+    urlTemplate: '/.well-known/agent-card.json'
+    templateParameters: []
+    responses: []
+  }
+}]
+
+resource specialistCardPolicies 'Microsoft.ApiManagement/service/apis/operations/policies@2024-05-01' = [for (agentId, index) in specialistAgentIds: {
+  parent: specialistCards[index]
+  name: 'policy'
+  dependsOn: [
+    specialistApiPolicies
+  ]
+  properties: {
+    format: 'rawxml'
+    value: discoveryPolicyValue
+  }
+}]
+
+resource specialistRuntimeCards 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = [for (agentId, index) in specialistAgentIds: {
+  parent: specialistApis[index]
+  name: 'get-runtime-agent-card'
+  properties: {
+    displayName: 'Get runtime-relative specialist agent card'
+    method: 'GET'
+    urlTemplate: '/a2a/.well-known/agent-card.json'
+    templateParameters: []
+    responses: []
+  }
+}]
+
+resource specialistRuntimeCardPolicies 'Microsoft.ApiManagement/service/apis/operations/policies@2024-05-01' = [for (agentId, index) in specialistAgentIds: {
+  parent: specialistRuntimeCards[index]
+  name: 'policy'
+  dependsOn: [
+    specialistApiPolicies
+  ]
+  properties: {
+    format: 'rawxml'
+    value: discoveryPolicyValue
+  }
+}]
+
+resource specialistLegacyCards 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = [for (agentId, index) in specialistAgentIds: {
+  parent: specialistApis[index]
+  name: 'get-legacy-agent-card'
+  properties: {
+    displayName: 'Get legacy specialist agent card'
+    method: 'GET'
+    urlTemplate: '/.well-known/agent.json'
+    templateParameters: []
+    responses: []
+  }
+}]
+
+resource specialistLegacyCardPolicies 'Microsoft.ApiManagement/service/apis/operations/policies@2024-05-01' = [for (agentId, index) in specialistAgentIds: {
+  parent: specialistLegacyCards[index]
+  name: 'policy'
+  dependsOn: [
+    specialistApiPolicies
+  ]
+  properties: {
+    format: 'rawxml'
+    value: discoveryPolicyValue
+  }
+}]
+
+resource specialistRuntimeLegacyCards 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = [for (agentId, index) in specialistAgentIds: {
+  parent: specialistApis[index]
+  name: 'get-runtime-legacy-agent-card'
+  properties: {
+    displayName: 'Get legacy runtime-relative specialist agent card'
+    method: 'GET'
+    urlTemplate: '/a2a/.well-known/agent.json'
+    templateParameters: []
+    responses: []
+  }
+}]
+
+resource specialistRuntimeLegacyCardPolicies 'Microsoft.ApiManagement/service/apis/operations/policies@2024-05-01' = [for (agentId, index) in specialistAgentIds: {
+  parent: specialistRuntimeLegacyCards[index]
+  name: 'policy'
+  dependsOn: [
+    specialistApiPolicies
+  ]
+  properties: {
+    format: 'rawxml'
+    value: discoveryPolicyValue
+  }
+}]
+
+resource specialistRuntimes 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = [for (agentId, index) in specialistAgentIds: {
+  parent: specialistApis[index]
+  name: 'invoke-a2a-runtime'
+  properties: {
+    displayName: 'Invoke specialist A2A runtime'
+    method: 'POST'
+    urlTemplate: '/a2a'
+    request: {
+      representations: [
+        {
+          contentType: 'application/json'
+        }
+      ]
+    }
+    templateParameters: []
+    responses: []
+  }
+}]
+
+resource specialistRuntimePolicies 'Microsoft.ApiManagement/service/apis/operations/policies@2024-05-01' = [for (agentId, index) in specialistAgentIds: {
+  parent: specialistRuntimes[index]
+  name: 'policy'
+  dependsOn: [
+    tenantNamedValue
+    audienceNamedValue
+    bareAudienceNamedValue
+    delegatedScopeNamedValue
+    specialistApiPolicies
+  ]
+  properties: {
+    format: 'rawxml'
+    value: runtimePolicyValue
+  }
+}]
 
 resource appInsightsLogger 'Microsoft.ApiManagement/service/loggers@2024-05-01' = {
   parent: apim

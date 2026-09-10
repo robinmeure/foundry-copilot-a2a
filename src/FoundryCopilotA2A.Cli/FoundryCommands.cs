@@ -132,6 +132,8 @@ internal static class FoundryCommands
             "oauth-client-id",
             "oauth-client-secret-env",
             "reuse-connection",
+            "prepare-connection",
+            "replace-connection-name",
             "smoke-prompt",
             "help");
 
@@ -157,7 +159,24 @@ internal static class FoundryCommands
             "connection-name",
             BuildDefaultConnectionName(targetAgentId))!;
         ValidateConnectionName(connectionName);
+        var replacedConnectionName = arguments.Optional("replace-connection-name");
+        if (replacedConnectionName is not null)
+        {
+            ValidateConnectionName(replacedConnectionName);
+            if (string.Equals(connectionName, replacedConnectionName, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new CliException("--replace-connection-name must name a different connection.");
+            }
+        }
         var reuseConnection = arguments.Flag("reuse-connection");
+        var prepareConnection = arguments.Flag("prepare-connection");
+        if (prepareConnection &&
+            (reuseConnection || replacedConnectionName is not null || arguments.Has("smoke-prompt")))
+        {
+            throw new CliException(
+                "--prepare-connection creates a new connection without changing an agent. " +
+                "Do not combine it with --reuse-connection, --replace-connection-name, or --smoke-prompt.");
+        }
         var authMode = ParseAuthenticationMode(arguments.Optional("auth-mode", "oauth")!);
         var oauthClientId = arguments.Optional("oauth-client-id");
         var oauthClientSecret = default(string);
@@ -207,8 +226,11 @@ internal static class FoundryCommands
 
         if (!reuseConnection)
         {
+            var operation = authMode == ChainAuthenticationMode.OAuth
+                ? "Creating"
+                : "Creating or updating";
             context.Out.WriteLine(
-                $"Creating or updating authenticated Foundry connection '{connectionName}'...");
+                $"{operation} authenticated Foundry connection '{connectionName}'...");
             if (authMode == ChainAuthenticationMode.UserEntraToken)
             {
                 await ValidateUserTokenAcquisitionAsync(
@@ -247,7 +269,7 @@ internal static class FoundryCommands
                     $"/subscriptions/{subscriptionId}/resourceGroups/{resourceGroup}/providers/" +
                     $"Microsoft.CognitiveServices/accounts/{accountName}/projects/{projectName}/" +
                     $"connections/{connectionName}";
-                if (!await IsPortalProvisionedOAuthConnectionAsync(
+                if (!await HasNativeOAuthConnectionMetadataAsync(
                         context.HttpClient,
                         armToken,
                         provisionedConnectionId,
@@ -267,6 +289,31 @@ internal static class FoundryCommands
             $"/subscriptions/{subscriptionId}/resourceGroups/{resourceGroup}/providers/" +
             $"Microsoft.CognitiveServices/accounts/{accountName}/projects/{projectName}/" +
             $"connections/{connectionName}";
+        await ValidateReusableConnectionAsync(
+            context.HttpClient,
+            armToken,
+            connectionId,
+            chainTargetUrl,
+            audience,
+            authMode,
+            cancellationToken);
+        if (prepareConnection)
+        {
+            context.Out.WriteLine($"Prepared Foundry connection '{connectionName}' for {chainTargetUrl}.");
+            context.Out.WriteLine(
+                "No agent definition was changed. Register the returned OAuth callback on the existing " +
+                "backend before attaching with --reuse-connection. Native user consent and an observed " +
+                "specialist callback are still required.");
+            return 0;
+        }
+        var replacedConnectionId = replacedConnectionName is null
+            ? null
+            : $"{connectionId[..(connectionId.LastIndexOf('/') + 1)]}{replacedConnectionName}";
+        if (replacedConnectionId is not null)
+        {
+            await ValidateReplacementTargetAsync(
+                context.HttpClient, armToken, replacedConnectionId, targetAgentId, cancellationToken);
+        }
         var agentUrl =
             $"{address.ProjectEndpoint}/agents/{Uri.EscapeDataString(address.AgentName)}" +
             "?api-version=v1";
@@ -290,7 +337,9 @@ internal static class FoundryCommands
             connectionId,
             targetAgentId,
             targetAgentName,
-            existingConnectionIds);
+            existingConnectionIds,
+            targetUrl: chainTargetUrl,
+            replacedConnectionId: replacedConnectionId);
         var body = new JsonObject
         {
             ["description"] = latest.TryGetProperty("description", out var description)
@@ -329,8 +378,124 @@ internal static class FoundryCommands
         context.Out.WriteLine(
             $"Configured '{address.AgentName}' version {version} to call '{targetAgentName}' via A2A.");
         context.Out.WriteLine($"Remote A2A target: {chainTargetUrl}");
+        if (replacedConnectionName is not null)
+        {
+            context.Out.WriteLine(
+                $"Replaced this agent's '{replacedConnectionName}' tool reference; " +
+                "the shared project connection was not deleted.");
+        }
         return 0;
     }
+
+    internal static async Task ValidateReusableConnectionAsync(
+        HttpClient client,
+        string accessToken,
+        string connectionId,
+        string expectedTarget,
+        string audience,
+        ChainAuthenticationMode authenticationMode,
+        CancellationToken cancellationToken)
+    {
+        using var connection = await GetConnectionAsync(client, accessToken, connectionId, cancellationToken);
+        var properties = connection.RootElement.GetProperty("properties");
+        if (!properties.TryGetProperty("target", out var target) ||
+            !SameEndpoint(target.GetString(), expectedTarget))
+        {
+            throw new CliException(
+                $"Connection '{connectionId}' does not target '{expectedTarget}'. " +
+                "Create a new connection against the gateway specialist runtime; " +
+                "reusing a connection does not retarget it. OAuth connections must not be " +
+                "retargeted in place.");
+        }
+
+        var expectedAuthType = authenticationMode switch
+        {
+            ChainAuthenticationMode.OAuth => "OAuth2",
+            ChainAuthenticationMode.UserEntraToken => "UserEntraToken",
+            ChainAuthenticationMode.ProjectManagedIdentity => "ProjectManagedIdentity",
+            _ => throw new CliException("Unsupported Foundry connection authentication mode.")
+        };
+        if (!properties.TryGetProperty("category", out var category) ||
+            category.GetString() != "RemoteA2A" ||
+            !properties.TryGetProperty("authType", out var authType) ||
+            authType.GetString() != expectedAuthType)
+        {
+            throw new CliException(
+                $"Connection '{connectionId}' must be a RemoteA2A connection using {expectedAuthType}.");
+        }
+
+        if (authenticationMode == ChainAuthenticationMode.OAuth)
+        {
+            if (!HasNativeOAuthConnectionMetadata(connection.RootElement.GetRawText()))
+            {
+                throw new CliException(ConnectorGatewayMissingMessage);
+            }
+
+            var scope = $"{audience.TrimEnd('/')}/access_as_user";
+            if (!properties.TryGetProperty("scopes", out var scopes) ||
+                scopes.ValueKind != JsonValueKind.Array ||
+                !scopes.EnumerateArray().Any(item => item.GetString() == scope))
+            {
+                throw new CliException(
+                    $"Connection '{connectionId}' does not request the delegated scope '{scope}'.");
+            }
+        }
+        else if (!properties.TryGetProperty("audience", out var actualAudience) ||
+                 !string.Equals(actualAudience.GetString(), audience, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new CliException($"Connection '{connectionId}' uses a different Entra audience.");
+        }
+    }
+
+    private static async Task ValidateReplacementTargetAsync(
+        HttpClient client,
+        string accessToken,
+        string connectionId,
+        string targetAgentId,
+        CancellationToken cancellationToken)
+    {
+        using var connection = await GetConnectionAsync(client, accessToken, connectionId, cancellationToken);
+        var properties = connection.RootElement.GetProperty("properties");
+        if (!properties.TryGetProperty("target", out var target) ||
+            !Uri.TryCreate(target.GetString(), UriKind.Absolute, out var endpoint) ||
+            !endpoint.AbsolutePath.TrimEnd('/').EndsWith(
+                $"/a2a-agents/{Uri.EscapeDataString(targetAgentId)}/a2a", StringComparison.Ordinal))
+        {
+            throw new CliException(
+                $"Connection '{connectionId}' is not bound to specialist '{targetAgentId}'; " +
+                "refusing to remove an unrelated tool.");
+        }
+    }
+
+    private static async Task<JsonDocument> GetConnectionAsync(
+        HttpClient client,
+        string accessToken,
+        string connectionId,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get, $"https://management.azure.com{connectionId}?api-version=2025-06-01");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var response = await client.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new CliException(
+                $"Could not read Foundry connection '{connectionId}': HTTP {(int)response.StatusCode}. " +
+                "No agent definition was changed.");
+        }
+        return JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+    }
+
+    private static bool SameEndpoint(string? actual, string expected) =>
+        Uri.TryCreate(actual, UriKind.Absolute, out var actualUri) &&
+        Uri.TryCreate(expected, UriKind.Absolute, out var expectedUri) &&
+        string.IsNullOrEmpty(actualUri.UserInfo) &&
+        string.IsNullOrEmpty(actualUri.Query) &&
+        string.IsNullOrEmpty(actualUri.Fragment) &&
+        Uri.Compare(actualUri, expectedUri, UriComponents.SchemeAndServer,
+            UriFormat.UriEscaped, StringComparison.OrdinalIgnoreCase) == 0 &&
+        string.Equals(actualUri.AbsolutePath.TrimEnd('/'), expectedUri.AbsolutePath.TrimEnd('/'),
+            StringComparison.Ordinal);
 
     internal static string BuildChainBaseUrl(string adapterUrl, string targetAgentId) =>
         $"{adapterUrl.TrimEnd('/')}/a2a-agents/{Uri.EscapeDataString(targetAgentId)}/";
@@ -382,6 +547,24 @@ internal static class FoundryCommands
             $"resourceGroups/{Segment(resourceGroup)}/providers/Microsoft.CognitiveServices/" +
             $"accounts/{Segment(accountName)}/projects/{Segment(projectName)}/connections/" +
             $"{Segment(connectionName)}?api-version={apiVersion}";
+        if (authenticationMode == ChainAuthenticationMode.OAuth)
+        {
+            using var lookup = new HttpRequestMessage(HttpMethod.Get, url);
+            lookup.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+            using var existing = await httpClient.SendAsync(lookup, cancellationToken);
+            if (existing.IsSuccessStatusCode)
+            {
+                throw new CliException(
+                    $"Foundry connection '{connectionName}' already exists. OAuth updates are not " +
+                    "supported; use --reuse-connection or a new name. No connection was overwritten.");
+            }
+            if (existing.StatusCode != System.Net.HttpStatusCode.NotFound)
+            {
+                throw new CliException(
+                    $"Could not check whether Foundry connection '{connectionName}' exists: " +
+                    $"HTTP {(int)existing.StatusCode}. No connection was written.");
+            }
+        }
         object properties = authenticationMode switch
         {
             ChainAuthenticationMode.UserEntraToken => new
@@ -394,8 +577,11 @@ internal static class FoundryCommands
             ChainAuthenticationMode.OAuth => new
             {
                 authType = "OAuth2",
+                group = "ServicesAndApps",
                 category = "RemoteA2A",
                 target,
+                isSharedToAll = true,
+                sharedUserList = Array.Empty<string>(),
                 authorizationUrl =
                     $"https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/authorize",
                 tokenUrl = $"https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/token",
@@ -409,7 +595,8 @@ internal static class FoundryCommands
                 {
                     clientId = oauthClientId,
                     clientSecret = oauthClientSecret
-                }
+                },
+                metadata = new { ApiType = "Azure" }
             },
             ChainAuthenticationMode.ProjectManagedIdentity => new
             {
@@ -455,50 +642,40 @@ internal static class FoundryCommands
     }
 
     /// <summary>
-    /// An ARM PUT creates the connection record and stores the client credentials, but the
-    /// resulting OAuth connection never works: the agent fails with an opaque
-    /// "Received 400 from a service request" before it ever calls the target.
-    /// A portal-created connection carries metadata (type "custom_A2A" and an OAuth provider)
-    /// that an ARM PUT does not, so check that instead of calling listConsentLinks, which
-    /// reports ConnectorNamespaceConnectionNotFound for every OAuth connection in the project
-    /// including working ones.
+    /// Accept documented API metadata as well as the portal's native A2A marker. Neither
+    /// is proof of a working connector or user consent.
     /// </summary>
-    internal static async Task<bool> IsPortalProvisionedOAuthConnectionAsync(
+    internal static async Task<bool> HasNativeOAuthConnectionMetadataAsync(
         HttpClient httpClient,
         string accessToken,
         string connectionId,
         CancellationToken cancellationToken)
     {
-        var url = $"https://management.azure.com{connectionId}?api-version=2025-06-01";
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-        using var response = await httpClient.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            return false;
-        }
-
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        return HasPortalConnectionMetadata(body);
+        using var connection = await GetConnectionAsync(
+            httpClient, accessToken, connectionId, cancellationToken);
+        return HasNativeOAuthConnectionMetadata(connection.RootElement.GetRawText());
     }
 
-    internal static bool HasPortalConnectionMetadata(string connectionBody)
+    internal static bool HasNativeOAuthConnectionMetadata(string connectionBody)
     {
         using var document = JsonDocument.Parse(connectionBody);
         return document.RootElement.TryGetProperty("properties", out var properties) &&
                properties.TryGetProperty("metadata", out var metadata) &&
                metadata.ValueKind == JsonValueKind.Object &&
-               metadata.TryGetProperty("type", out var type) &&
-               string.Equals(type.GetString(), "custom_A2A", StringComparison.OrdinalIgnoreCase);
+               ((metadata.TryGetProperty("type", out var type) &&
+                 string.Equals(type.GetString(), "custom_A2A", StringComparison.OrdinalIgnoreCase)) ||
+                (metadata.TryGetProperty("ApiType", out var apiType) &&
+                 string.Equals(apiType.GetString(), "Azure", StringComparison.OrdinalIgnoreCase)));
     }
 
     internal const string ConnectorGatewayMissingMessage =
-        "This OAuth connection was created through ARM and will not work: the A2A tool fails " +
-        "with \"Received 400 from a service request\" before Foundry calls the target. OAuth " +
-        "connections must be created in the Foundry portal (Build > Tools > Connect a tool > " +
-        "Agent2agent (A2A), 'Connect via endpoint', OAuth Identity Passthrough) against the same " +
-        "target. Add the redirect URL it generates as an additional Web redirect URI on the app " +
-        "registration, then re-run this command with '--reuse-connection'.";
+        "This OAuth connection lacks the documented Azure or native custom_A2A metadata. " +
+        "A connection record alone does not prove connector readiness. Create a new native " +
+        "connection in the Foundry portal (Build > Tools > Connect a tool > Agent2agent (A2A), " +
+        "'Connect via endpoint', OAuth Identity Passthrough) against the same target. " +
+        "Add its actual generated redirect URL as an additional Web redirect URI on the existing " +
+        "backend registration, then re-run with '--reuse-connection'. Preserve shared old " +
+        "connections. Successful user authorization and a real callback are still required.";
 
     internal static string? ParseConnectionRedirectUrl(string successBody)
     {
@@ -560,34 +737,57 @@ internal static class FoundryCommands
         CancellationToken cancellationToken)
     {
         static string Segment(string value) => Uri.EscapeDataString(value);
-        var url =
+        string? url =
             $"https://management.azure.com/subscriptions/{Segment(subscriptionId)}/" +
             $"resourceGroups/{Segment(resourceGroup)}/providers/Microsoft.CognitiveServices/" +
             $"accounts/{Segment(accountName)}/projects/{Segment(projectName)}/connections" +
             "?api-version=2025-06-01";
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-        using var response = await httpClient.SendAsync(request, cancellationToken);
         var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (!response.IsSuccessStatusCode)
+        var collectionUri = new Uri(url);
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        while (url is not null)
         {
-            return ids;
-        }
-
-        using var document = JsonDocument.Parse(
-            await response.Content.ReadAsStringAsync(cancellationToken));
-        if (!document.RootElement.TryGetProperty("value", out var value) ||
-            value.ValueKind != JsonValueKind.Array)
-        {
-            return ids;
-        }
-
-        foreach (var connection in value.EnumerateArray())
-        {
-            if (connection.TryGetProperty("id", out var id) && id.GetString() is { } text)
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var pageUri) ||
+                !SameEndpoint(pageUri.GetLeftPart(UriPartial.Path), collectionUri.GetLeftPart(UriPartial.Path)) ||
+                !string.IsNullOrEmpty(pageUri.UserInfo) ||
+                !string.IsNullOrEmpty(pageUri.Fragment) ||
+                !visited.Add(url))
             {
-                ids.Add(text);
+                throw new CliException("Foundry returned an invalid connection-list continuation URL.");
             }
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, pageUri);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+            using var response = await httpClient.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new CliException(
+                    $"Could not list Foundry connections: HTTP {(int)response.StatusCode}. " +
+                    "Refusing to prune tools without a complete connection inventory.");
+            }
+
+            using var document = JsonDocument.Parse(
+                await response.Content.ReadAsStringAsync(cancellationToken));
+            if (!document.RootElement.TryGetProperty("value", out var value) ||
+                value.ValueKind != JsonValueKind.Array)
+            {
+                throw new CliException("Foundry returned an invalid connection inventory; no tools were pruned.");
+            }
+
+            foreach (var connection in value.EnumerateArray())
+            {
+                if (!connection.TryGetProperty("id", out var id) ||
+                    id.ValueKind != JsonValueKind.String ||
+                    string.IsNullOrWhiteSpace(id.GetString()))
+                {
+                    throw new CliException("Foundry returned a connection without an ID; no tools were pruned.");
+                }
+                ids.Add(id.GetString()!);
+            }
+
+            url = document.RootElement.TryGetProperty("nextLink", out var nextLink)
+                ? nextLink.GetString()
+                : null;
         }
 
         return ids;
@@ -598,7 +798,9 @@ internal static class FoundryCommands
         string connectionId,
         string targetAgentId,
         string targetAgentName,
-        IReadOnlySet<string>? existingConnectionIds = null)
+        IReadOnlySet<string>? existingConnectionIds = null,
+        string? targetUrl = null,
+        string? replacedConnectionId = null)
     {
         var definition = JsonNode.Parse(existingDefinition.GetRawText()) as JsonObject
             ?? throw new CliException("The latest Foundry agent version has no prompt definition.");
@@ -643,7 +845,23 @@ internal static class FoundryCommands
             .OfType<JsonObject>()
             .Any(tool =>
                 tool["type"]?.GetValue<string>() == "a2a_preview" &&
-                tool["project_connection_id"]?.GetValue<string>() == connectionId);
+                string.Equals(tool["project_connection_id"]?.GetValue<string>(),
+                    connectionId, StringComparison.OrdinalIgnoreCase));
+        if (replacedConnectionId is not null)
+        {
+            var replacedTools = tools.OfType<JsonObject>().Where(tool =>
+                tool["type"]?.GetValue<string>() == "a2a_preview" &&
+                string.Equals(tool["project_connection_id"]?.GetValue<string>(),
+                    replacedConnectionId, StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (replacedTools.Length == 0 && !hasConnection)
+            {
+                throw new CliException("The agent does not reference the connection selected for replacement.");
+            }
+            foreach (var replacedTool in replacedTools)
+            {
+                tools.Remove(replacedTool);
+            }
+        }
         if (!hasConnection)
         {
             tools.Add(new JsonObject
@@ -651,6 +869,16 @@ internal static class FoundryCommands
                 ["type"] = "a2a_preview",
                 ["project_connection_id"] = connectionId
             });
+        }
+        if (targetUrl is not null)
+        {
+            foreach (var tool in tools.OfType<JsonObject>().Where(tool =>
+                tool["type"]?.GetValue<string>() == "a2a_preview" &&
+                string.Equals(tool["project_connection_id"]?.GetValue<string>(),
+                    connectionId, StringComparison.OrdinalIgnoreCase)))
+            {
+                tool["base_url"] = targetUrl;
+            }
         }
 
         var instructions = definition["instructions"]?.GetValue<string>() ?? string.Empty;
@@ -733,6 +961,14 @@ internal static class FoundryCommands
         {
             throw new CliException(
                 $"The chain agent card at '{chainBaseUrl}' did not describe '{expectedName}'.");
+        }
+        var runtimeUrl = $"{chainBaseUrl}a2a";
+        if (!AgentCardContract.AdvertisesRuntime(
+                card.RootElement, url => SameEndpoint(url, runtimeUrl)))
+        {
+            throw new CliException(
+                "The specialist card advertises a different runtime. Set Adapter:PublicBaseUrl " +
+                "to the same public gateway base before configuring a native connection.");
         }
     }
 

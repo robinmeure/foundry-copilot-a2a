@@ -9,6 +9,7 @@
   min-height: 0;
   overflow: hidden;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto 1fr;
 }
 
@@ -58,106 +59,62 @@
   min-height: 0;
   overflow-y: auto;
   display: grid;
-  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr) minmax(360px, 460px);
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 460px);
+  grid-template-rows: auto minmax(420px, 1fr);
   gap: 20px;
   padding: 20px;
 }
 
-.sidebar,
 .chat-panel,
 .network-panel {
+  min-width: 0;
   border: 1px solid #d9e1ec;
   border-radius: 18px;
   background: white;
   box-shadow: 0 12px 40px rgba(28, 48, 79, 0.08);
 }
 
-.sidebar {
-  padding: clamp(26px, 4vw, 40px);
+.active-flow {
+  grid-column: 1 / -1;
   display: flex;
-  flex-direction: column;
-}
-
-.sidebar h1 {
-  margin: 10px 0 18px;
-  color: #10284e;
-  font-size: clamp(1.75rem, 3vw, 2.5rem);
-  line-height: 1.08;
-  letter-spacing: -0.04em;
-}
-
-.sidebar > p:not(.eyebrow) {
-  margin: 0;
-  color: #60708a;
-  line-height: 1.6;
-}
-
-.sidebar code {
-  color: #244f92;
-}
-
-.agent-picker {
-  margin-top: 26px;
-  display: grid;
-  gap: 8px;
-}
-
-.mode-picker {
-  margin-top: 26px;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  padding: 4px;
-  border: 1px solid #cbd5e1;
-  border-radius: 12px;
-  background: #f1f5f9;
-}
-
-.mode-picker button {
-  padding: 9px 12px;
-  border: 0;
-  border-radius: 8px;
-  color: #64748b;
-  font-weight: 750;
-  background: transparent;
-  cursor: pointer;
-}
-
-.mode-picker button.active {
-  color: #17498f;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 14px 20px;
+  border: 1px solid #d9e1ec;
+  border-radius: 14px;
   background: white;
-  box-shadow: 0 2px 8px rgba(28, 48, 79, 0.12);
 }
 
-.mode-picker button:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
+.active-flow > div {
+  min-width: 0;
 }
 
-.mode-picker + .agent-picker,
-.chain-pickers .agent-picker {
-  margin-top: 14px;
+.active-flow strong,
+.active-flow span {
+  display: block;
+  overflow-wrap: anywhere;
 }
 
-.chain-picker-arrow {
-  margin: 8px 0 -5px 12px;
-  color: #64748b;
-  font-size: 0.72rem;
-  font-weight: 800;
+.active-flow strong {
+  margin: 5px 0 3px;
+  color: #18365f;
+  font-size: 0.95rem;
 }
 
-.agent-picker label {
-  color: #53647e;
-  font-size: 0.78rem;
-  font-weight: 700;
+.active-flow span {
+  color: #697c97;
+  font-size: 0.76rem;
 }
 
-.agent-picker select {
-  width: 100%;
-  padding: 11px 38px 11px 13px;
-  border: 1px solid #cbd5e1;
-  border-radius: 10px;
-  color: #172a48;
-  background: white;
+.active-flow > button {
+  flex-shrink: 0;
+}
+
+.active-flow .active-flow-warning {
+  margin: 6px 0 0;
+  color: #9a4f25;
+  font-size: 0.76rem;
 }
 
 .eyebrow {
@@ -196,11 +153,43 @@ dd {
 }
 
 .chat-panel {
-  min-height: 620px;
+  min-height: 0;
   position: relative;
   overflow: hidden;
   display: grid;
-  grid-template-rows: 1fr auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.chat-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 24px;
+  border-bottom: 1px solid #e6ecf5;
+}
+
+.chat-heading h2 {
+  margin: 5px 0;
+  color: #19365f;
+  font-size: 1.1rem;
+}
+
+.chat-heading span {
+  color: #7487a2;
+  font-size: 0.72rem;
+}
+
+.chat-heading .button {
+  padding: 9px 12px;
+  font-size: 0.75rem;
+}
+
+.composer .route-change-note {
+  margin: 0 0 10px;
+  color: #8d661c;
+  font-size: 0.75rem;
+  line-height: 1.5;
 }
 
 .empty-state,
@@ -1125,37 +1114,43 @@ textarea {
   overflow-wrap: anywhere;
 }
 
-@media (max-width: 1400px) {
-  .workspace {
-    grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
-  }
-  /* Too narrow for three columns: the trace moves under the conversation. */
-  .network-panel {
-    grid-column: 1 / -1;
-    min-height: 420px;
-  }
-}
-
 @media (max-width: 800px) {
   .topbar {
     align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 12px 20px;
   }
 
   .account {
     align-items: flex-end;
     flex-direction: column;
+    max-width: 100%;
+    margin-left: auto;
     text-align: right;
   }
 
+  .account span {
+    overflow-wrap: anywhere;
+  }
+
   .workspace {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(480px, 72vh) minmax(420px, 60vh);
+    gap: 14px;
+    padding: 14px;
   }
 
-  .sidebar {
-    min-height: 360px;
+  .network-panel {
+    min-height: 420px;
   }
 
-  .chat-panel {
-    min-height: 640px;
+  .active-flow {
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 14px 16px;
+  }
+
+  .active-flow > button {
+    margin-left: auto;
   }
 }

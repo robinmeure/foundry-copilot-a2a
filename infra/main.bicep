@@ -57,6 +57,9 @@ param adapterAllowedOrigins array = [
   'http://localhost:5173'
 ]
 
+@description('Approved Copilot Studio agent IDs to publish as separate APIM A2A specialist APIs.')
+param specialistAgentIds array = []
+
 @description('App Service Plan SKU for the adapter Web App.')
 param appServicePlanSku string = 'B1'
 
@@ -214,6 +217,8 @@ module citadel 'modules/citadel.bicep' = {
     adapterBackendUrl: adapter.outputs.adapterBackendUrl
     adapterApiAudience: adapterApiAudience
     adapterDelegatedScope: adapterDelegatedScope
+    allowedOrigins: adapterAllowedOrigins
+    specialistAgentIds: specialistAgentIds
     appInsightsName: monitoring.outputs.appInsightsName
     logAnalyticsWorkspaceId: monitoring.outputs.workspaceId
     accessPrincipalId: accessPrincipalId
@@ -224,6 +229,7 @@ module citadel 'modules/citadel.bicep' = {
 output resourceGroupName string = resourceGroup.name
 output adapterResourceGroupName string = adapterResourceGroup.name
 output apimGatewayUrl string = citadel.outputs.gatewayUrl
+output apimApiBaseUrl string = citadel.outputs.apiBaseUrl
 output agentCardUrl string = citadel.outputs.agentCardUrl
 output a2aRuntimeUrl string = citadel.outputs.a2aRuntimeUrl
 output foundryAccountEndpoint string = foundry.outputs.accountEndpoint

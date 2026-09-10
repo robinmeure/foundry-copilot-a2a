@@ -169,6 +169,10 @@ public class CliApplicationTests
        HttpRequestMessage? capturedRequest = null;
        var handler = new StubHttpMessageHandler(request =>
        {
+           if (request.Method == HttpMethod.Get)
+           {
+               return new HttpResponseMessage(HttpStatusCode.NotFound);
+           }
            capturedRequest = Clone(request);
            return Json(
                """{"properties":{"provisioningState":"Succeeded","redirectUrl":"https://consent.example/redirect"}}""");
@@ -196,6 +200,11 @@ public class CliApplicationTests
            await capturedRequest!.Content!.ReadAsStringAsync());
        var properties = body.RootElement.GetProperty("properties");
        Assert.Equal("OAuth2", properties.GetProperty("authType").GetString());
+       Assert.Equal("RemoteA2A", properties.GetProperty("category").GetString());
+       Assert.Equal("ServicesAndApps", properties.GetProperty("group").GetString());
+       Assert.True(properties.GetProperty("isSharedToAll").GetBoolean());
+       Assert.Empty(properties.GetProperty("sharedUserList").EnumerateArray());
+       Assert.Equal("Azure", properties.GetProperty("metadata").GetProperty("ApiType").GetString());
        Assert.Equal(
            "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/authorize",
            properties.GetProperty("authorizationUrl").GetString());
@@ -211,42 +220,61 @@ public class CliApplicationTests
     }
 
     [Fact]
-    public async Task ArmCreatedOAuthConnectionIsRejected()
+    public async Task MetadataLessOAuthConnectionIsRejected()
     {
-        // An ARM PUT leaves metadata empty; only a portal-created connection carries
-        // type "custom_A2A". listConsentLinks cannot be used here because it reports
-        // ConnectorNamespaceConnectionNotFound for working connections too.
         var handler = new StubHttpMessageHandler(_ => Json(
             """{"properties":{"authType":"OAuth2","metadata":{}}}"""));
         using var httpClient = new HttpClient(handler);
 
-        var provisioned = await FoundryCommands.IsPortalProvisionedOAuthConnectionAsync(
+        var hasMetadata = await FoundryCommands.HasNativeOAuthConnectionMetadataAsync(
             httpClient,
             "arm-token",
             "/subscriptions/s/resourceGroups/r/providers/Microsoft.CognitiveServices/" +
             "accounts/a/projects/p/connections/a2a-reverser",
             CancellationToken.None);
 
-        Assert.False(provisioned);
+        Assert.False(hasMetadata);
         Assert.Contains("Foundry portal", FoundryCommands.ConnectorGatewayMissingMessage);
         Assert.Contains("--reuse-connection", FoundryCommands.ConnectorGatewayMissingMessage);
     }
 
-    [Fact]
-    public async Task PortalCreatedOAuthConnectionIsAccepted()
+    [Theory]
+    [InlineData("""{"type":"custom_A2A","oAuthProvider":"custom"}""")]
+    [InlineData("""{"ApiType":"Azure"}""")]
+    public async Task NativeOAuthConnectionMetadataIsRecognized(string metadata)
     {
-        var handler = new StubHttpMessageHandler(_ => Json(
-            """{"properties":{"authType":"OAuth2","metadata":{"type":"custom_A2A","oAuthProvider":"custom"}}}"""));
+        var handler = new StubHttpMessageHandler(_ => Json(JsonSerializer.Serialize(new
+        {
+            properties = new { authType = "OAuth2", metadata = JsonSerializer.Deserialize<JsonElement>(metadata) }
+        })));
         using var httpClient = new HttpClient(handler);
 
-        var provisioned = await FoundryCommands.IsPortalProvisionedOAuthConnectionAsync(
+        var hasMetadata = await FoundryCommands.HasNativeOAuthConnectionMetadataAsync(
             httpClient,
             "arm-token",
             "/subscriptions/s/resourceGroups/r/providers/Microsoft.CognitiveServices/" +
             "accounts/a/projects/p/connections/a2a-reverser",
             CancellationToken.None);
 
-        Assert.True(provisioned);
+        Assert.True(hasMetadata);
+    }
+
+    [Fact]
+    public async Task ConnectionReadFailureIsNotMisreportedAsMissingMetadata()
+    {
+        var handler = new StubHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.Forbidden));
+        using var httpClient = new HttpClient(handler);
+
+        var exception = await Assert.ThrowsAsync<CliException>(() =>
+            FoundryCommands.HasNativeOAuthConnectionMetadataAsync(
+                httpClient,
+                "arm-token",
+                "/subscriptions/s/resourceGroups/r/providers/Microsoft.CognitiveServices/" +
+                "accounts/a/projects/p/connections/a2a-reverser",
+                CancellationToken.None));
+
+        Assert.Contains("HTTP 403", exception.Message);
+        Assert.Contains("No agent definition was changed", exception.Message);
     }
 
     [Theory]
