@@ -74,6 +74,13 @@ a valid bearer token. For Dev Tunnel hosts, the gateway adds the noninteractive
 anti-phishing bypass header so browser-originated requests receive API responses,
 not the tunnel's warning page.
 
+While the app is running, open **Connectivity** in the web console and select **Refresh
+status** to see adapter configuration and browser reachability. Paste the printed connection
+URL into **Check a Dev Tunnel** to test its `/health` endpoint without credentials. When the
+adapter advertises APIM, the tunnel behind it is not automatically discoverable. These
+checks do not inspect tunnel port mappings or APIM backend policies; browser CORS or the
+tunnel warning page can leave reachability **Not verified** even when the tunnel is running.
+
 ## 3. Configure the separate Citadel API
 
 ```powershell
@@ -120,8 +127,8 @@ unowned APIs even with `--replace`, leaves unrelated APIs and shared named value
 untouched, and closes its API during configuration so a failed update does not leave
 an unprotected runtime.
 
-Optional `--agent-ids reverser-classic,tweede-kamer-classic` publishes each approved
-specialist as a separate API beneath
+Optional `--agent-ids reverser-classic,tweede-kamer-classic` publishes each approved,
+adapter-configured Copilot Studio or Foundry agent as a separate API beneath
 `<api-base>/a2a-agents/<agent-id>`, with an authenticated `/a2a` runtime. Both
 `agent-card.json` and legacy `agent.json` discovery names are public at
 `/.well-known/<filename>` and `/a2a/.well-known/<filename>` beneath that specialist base.
@@ -133,6 +140,67 @@ the console. Existing provider connections are **not** automatically retargeted;
 the direct browser -> APIM -> adapter -> Copilot Studio flow needs no Foundry hop.
 Repeat the same `--agent-ids` list when retargeting those APIs to a new tunnel;
 omitted specialist APIs are not changed or deleted.
+
+### Publish an existing agent as a separate APIM A2A API
+
+This project uses the adapter as the stable authentication and protocol boundary. First add
+the existing agent to the adapter:
+
+- **Copilot Studio:** configure `CopilotStudio:Agents:<id>` with a display name and either its
+  standard-harness direct-connect URL or environment/schema coordinates.
+- **Foundry:** configure `Foundry:Agents:<id>` with a display name and its HTTPS
+  `.../endpoint/protocols/a2a` endpoint.
+
+Confirm that `GET <adapter-base>/api/agents` returns the chosen ID before publishing it.
+The APIM command does not accept a raw provider URL and does not copy provider credentials into
+APIM; it publishes a governed route to the already-configured adapter agent.
+
+For an existing APIM service, use this copy/paste CLI template:
+
+```powershell
+$agentIds = @(
+  'reverser-classic' # Existing Copilot Studio agent ID in the adapter catalog
+  'web-research'     # Existing Foundry agent ID in the adapter catalog
+)
+
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- configure-citadel `
+  --subscription-id <subscription-id> `
+  --resource-group <apim-resource-group> `
+  --service-name <existing-apim-name> `
+  --api-id copilot-studio-local `
+  --api-path copilot-studio-local `
+  --backend-url "https://<adapter-or-dev-tunnel-host>" `
+  --tenant-id <tenant-id> `
+  --api-client-id <adapter-api-client-id> `
+  --allowed-origin http://localhost:5173 `
+  --agent-ids ($agentIds -join ',') `
+  --replace
+```
+
+Always pass the complete approved agent list when rerunning the command. `--replace` updates
+only APIs carrying this CLI's ownership marker; it does not take over unrelated APIs. Each ID
+produces:
+
+```text
+GET  https://<apim-host>/<api-path>/a2a-agents/<agent-id>/.well-known/agent-card.json
+POST https://<apim-host>/<api-path>/a2a-agents/<agent-id>/a2a
+```
+
+For the full Bicep deployment, add the same adapter catalog IDs to the
+`specialistAgentIds` parameter:
+
+```bicep
+param specialistAgentIds = [
+  'reverser-classic' // Copilot Studio
+  'web-research'     // Foundry
+]
+```
+
+The reusable resource loop is in `infra/modules/citadel.bicep`; `infra/main.bicep` passes this
+parameter to it. After deployment, verify the public card first, then invoke `/a2a` with a
+delegated token for the adapter API. APIM discovery in the console requires
+`subscriptionRequired: false`, an HTTPS card/runtime URL on the same gateway host and API path,
+and the adapter identity to have APIM Reader access.
 
 ## 4. Run the frontend and sign in
 

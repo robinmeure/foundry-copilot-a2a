@@ -36,6 +36,29 @@ var adapter = builder
         "Adapter__RequestTimeoutSeconds", requestTimeoutSeconds.ToString(CultureInfo.InvariantCulture))
     .WithEnvironment("Adapter__AllowedOrigins__0", frontendOrigin);
 
+if (builder.Configuration.GetValue("ApiManagementDiscovery:Enabled", false))
+{
+    adapter
+        .WithEnvironment("ApiManagementDiscovery__Enabled", "true")
+        .WithEnvironment(
+            "ApiManagementDiscovery__SubscriptionId",
+            builder.Configuration["ApiManagementDiscovery:SubscriptionId"])
+        .WithEnvironment(
+            "ApiManagementDiscovery__ResourceGroup",
+            builder.Configuration["ApiManagementDiscovery:ResourceGroup"])
+        .WithEnvironment(
+            "ApiManagementDiscovery__ServiceName",
+            builder.Configuration["ApiManagementDiscovery:ServiceName"]);
+
+    var apiIds = builder.Configuration
+        .GetSection("ApiManagementDiscovery:ApiIds")
+        .Get<string[]>() ?? [];
+    for (var index = 0; index < apiIds.Length; index++)
+    {
+        adapter.WithEnvironment($"ApiManagementDiscovery__ApiIds__{index}", apiIds[index]);
+    }
+}
+
 var adapterPublicBaseUrl = string.IsNullOrEmpty(gatewayBaseUrl)
     ? builder.Configuration["AdapterPublicBaseUrl"]
     : gatewayBaseUrl;

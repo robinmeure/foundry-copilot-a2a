@@ -23,8 +23,12 @@ var adapterOptions = builder.Configuration
 var authenticationOptions = builder.Configuration
     .GetSection(AuthenticationOptions.SectionName)
     .Get<AuthenticationOptions>() ?? new AuthenticationOptions();
+var apiManagementDiscoveryOptions = builder.Configuration
+    .GetSection(ApiManagementDiscoveryOptions.SectionName)
+    .Get<ApiManagementDiscoveryOptions>() ?? new ApiManagementDiscoveryOptions();
 
 ValidateAdapterConfiguration(adapterOptions, authenticationOptions);
+apiManagementDiscoveryOptions.Validate();
 
 builder.Services.AddHttpContextAccessor();
 var traceStore = new SanitizedTraceStore(
@@ -69,9 +73,13 @@ builder.Services.Configure<CopilotStudioOptions>(
     builder.Configuration.GetSection(CopilotStudioOptions.SectionName));
 builder.Services.Configure<FoundryOptions>(
     builder.Configuration.GetSection(FoundryOptions.SectionName));
+builder.Services.Configure<ApiManagementDiscoveryOptions>(
+    builder.Configuration.GetSection(ApiManagementDiscoveryOptions.SectionName));
+builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<A2ARequestMetadataAccessor>();
 builder.Services.AddSingleton<AgentIsolationKeyContext>();
 builder.Services.AddSingleton<AgentCatalog>();
+builder.Services.AddSingleton<ApiManagementAgentRegistry>();
 builder.Services.AddSingleton<CopilotConversationStore>();
 builder.Services.AddSingleton<IdempotencyStore>();
 builder.Services.AddSingleton<OboTokenBroker>();
@@ -110,6 +118,19 @@ var foundryHttpClient = builder.Services.AddHttpClient("foundry-a2a", client =>
     client.Timeout = TimeSpan.FromSeconds(adapterOptions.FoundryRequestTimeoutSeconds);
 });
 foundryHttpClient.RemoveAllResilienceHandlers();
+builder.Services.AddHttpClient("apim-management", client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(apiManagementDiscoveryOptions.RequestTimeoutSeconds);
+});
+builder.Services.AddHttpClient("apim-discovery", client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(apiManagementDiscoveryOptions.RequestTimeoutSeconds);
+});
+var apiManagementA2AClient = builder.Services.AddHttpClient("apim-a2a", client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(adapterOptions.FoundryRequestTimeoutSeconds);
+});
+apiManagementA2AClient.RemoveAllResilienceHandlers();
 // A native Copilot Studio orchestrator can also invoke tools before an HTTP error is observed.
 // Retrying its turn or restarting its conversation could execute the specialist twice.
 var copilotOrchestratorClient = builder.Services
@@ -129,6 +150,7 @@ TokenCredential foundryCredential = builder.Environment.IsDevelopment()
             : ManagedIdentityId.FromUserAssignedClientId(managedIdentityClientId));
 builder.Services.AddSingleton(foundryCredential);
 builder.Services.AddSingleton<FoundryA2AInvoker>();
+builder.Services.AddSingleton<ApiManagementA2AInvoker>();
 builder.Services.AddSingleton<IAgentInvoker, RoutingAgentInvoker>();
 builder.Services.AddSingleton<CopilotStudioAdapterChatClient>();
 
@@ -221,13 +243,39 @@ app.Use(async (context, next) =>
 });
 
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
+var connectivityEndpoint = app.MapGet("/api/connectivity", (HttpContext context) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    return Results.Ok(ConnectivityDiagnostics.Create(adapterOptions, authenticationOptions));
+});
+if (authenticationOptions.Enabled)
+{
+    connectivityEndpoint.RequireAuthorization();
+}
 app.MapGet(
     AdapterConstants.AgentsPath,
-    (AgentCatalog catalog) => Results.Ok(new
+    async (
+        AgentCatalog catalog,
+        ApiManagementAgentRegistry apiManagementAgents,
+        CancellationToken cancellationToken) =>
     {
-        defaultAgentId = catalog.DefaultAgentId,
-        agents = catalog.Agents
-    }));
+        var discovered = await apiManagementAgents.GetAgentsAsync(cancellationToken);
+        var agents = catalog.Agents.Concat(discovered).ToArray();
+        var duplicate = agents
+            .GroupBy(agent => agent.Id, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicate is not null)
+        {
+            throw new InvalidOperationException(
+                $"Agent ID '{duplicate.Key}' is configured locally and discovered from APIM.");
+        }
+
+        return Results.Ok(new
+        {
+            defaultAgentId = catalog.DefaultAgentId,
+            agents
+        });
+    });
 var traceEndpoint = app.MapGet(
     $"{AdapterConstants.TracesPath}/{{traceId}}",
     (
@@ -260,7 +308,8 @@ if (authenticationOptions.Enabled)
 var publicBaseUrl = adapterOptions.PublicBaseUrl.TrimEnd('/');
 var chainAgents = app.Services.GetRequiredService<AgentCatalog>().Agents
     .Where(agent =>
-        agent.ProviderKind == FoundryCopilotA2A.Adapter.AgentProvider.CopilotStudio &&
+        agent.ProviderKind is FoundryCopilotA2A.Adapter.AgentProvider.CopilotStudio or
+            FoundryCopilotA2A.Adapter.AgentProvider.Foundry &&
         agent.Supported)
     .ToArray();
 foreach (var chainAgent in chainAgents)
@@ -285,7 +334,9 @@ IResult BuildChainAgentCard(string agentId, AgentCatalog catalog)
         return Results.NotFound();
     }
 
-    if (agent.ProviderKind != FoundryCopilotA2A.Adapter.AgentProvider.CopilotStudio)
+    if (agent.ProviderKind is not (
+        FoundryCopilotA2A.Adapter.AgentProvider.CopilotStudio or
+        FoundryCopilotA2A.Adapter.AgentProvider.Foundry))
     {
         return Results.NotFound();
     }
@@ -338,7 +389,7 @@ IResult BuildChainAgentCard(string agentId, AgentCatalog catalog)
     return Results.Ok(new
     {
         name = agent.DisplayName,
-        description = "Copilot Studio specialist exposed through the local A2A adapter.",
+        description = $"{agent.DisplayName} exposed through the A2A adapter.",
         url = chainRuntimeUrl,
         version = "0.1.0",
         // Copilot Studio rejects a card containing v1 supportedInterfaces, even with this version.
@@ -358,10 +409,10 @@ IResult BuildChainAgentCard(string agentId, AgentCatalog catalog)
         {
             new
             {
-                id = $"copilot-studio-{agent.Id}",
+                id = $"{agent.Provider}-{agent.Id}",
                 name = agent.DisplayName,
                 description = $"Delegate a request to {agent.DisplayName}.",
-                tags = new[] { "copilot-studio", "specialist" },
+                tags = new[] { agent.Provider, "specialist" },
                 examples = new[] { $"Ask {agent.DisplayName} to handle this request." }
             }
         },

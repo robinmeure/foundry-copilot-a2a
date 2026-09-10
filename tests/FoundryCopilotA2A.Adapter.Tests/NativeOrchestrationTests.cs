@@ -12,6 +12,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace FoundryCopilotA2A.Adapter.Tests;
@@ -179,6 +180,37 @@ public sealed class NativeOrchestrationTests
         Assert.Equal("Current request", invoker.Prompt);
     }
 
+    [Fact]
+    public async Task FoundryAgentHasProviderSpecificCardAndRoute()
+    {
+        using var factory = CreateCopilotFactory(new CapturingCopilotInvoker()).WithWebHostBuilder(
+            builder =>
+            {
+                builder.UseSetting("Foundry:Agents:foundry:DisplayName", "Foundry");
+                builder.UseSetting(
+                    "Foundry:Agents:foundry:Endpoint",
+                    "https://foundry.example/agents/agent/endpoint/protocols/a2a");
+            });
+        using var client = factory.CreateClient();
+
+        using var response = await client.GetAsync(
+            $"{AdapterConstants.ChainAgentBasePath("foundry")}/.well-known/agent-card.json");
+        using var card = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("Foundry", card.RootElement.GetProperty("name").GetString());
+        Assert.Equal(
+            "foundry-foundry",
+            card.RootElement.GetProperty("skills")[0].GetProperty("id").GetString());
+        Assert.Equal(
+            "foundry",
+            card.RootElement.GetProperty("skills")[0].GetProperty("tags")[0].GetString());
+        Assert.EndsWith(
+            "/a2a-agents/foundry/a2a",
+            card.RootElement.GetProperty("url").GetString(),
+            StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -231,10 +263,27 @@ public sealed class NativeOrchestrationTests
         }));
 
     private static RoutingAgentInvoker CreateRouter(
-        AgentCatalog catalog, ICopilotStudioInvoker copilot, HttpClient client) =>
-        new(catalog, copilot, new FoundryA2AInvoker(
-            catalog, new StubCredential(), new ClientFactory(client),
-            new DelegatedTokenBroker(), Options.Create(new AuthenticationOptions { Enabled = true })));
+        AgentCatalog catalog, ICopilotStudioInvoker copilot, HttpClient client)
+    {
+        var clientFactory = new ClientFactory(client);
+        var apiManagementAgents = new ApiManagementAgentRegistry(
+            new StubCredential(),
+            clientFactory,
+            Options.Create(new ApiManagementDiscoveryOptions()),
+            TimeProvider.System,
+            NullLogger<ApiManagementAgentRegistry>.Instance);
+        return new RoutingAgentInvoker(
+            catalog,
+            apiManagementAgents,
+            copilot,
+            new FoundryA2AInvoker(
+                catalog,
+                new StubCredential(),
+                clientFactory,
+                new DelegatedTokenBroker(),
+                Options.Create(new AuthenticationOptions { Enabled = true })),
+            new ApiManagementA2AInvoker(apiManagementAgents, clientFactory));
+    }
 
     private static A2ARequestMetadata Metadata(string agentId) => new()
     {

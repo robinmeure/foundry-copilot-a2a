@@ -77,6 +77,65 @@
   font-size: 0.72rem;
 }
 
+.designer-gateway-config {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid #d7e0ee;
+  border-radius: 9px;
+  background: white;
+  color: #284367;
+}
+
+.designer-gateway-config label {
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.designer-gateway-config input {
+  min-width: 0;
+  padding: 7px;
+  border: 1px solid #cbd8e9;
+  border-radius: 6px;
+  color: #284467;
+  font-size: 0.65rem;
+}
+
+.designer-gateway-config input[aria-invalid="true"] {
+  border-color: #b74f4f;
+}
+
+.designer-gateway-config > div {
+  display: flex;
+  gap: 6px;
+}
+
+.designer-gateway-config button {
+  padding: 5px 7px;
+  border: 1px solid #cad7e9;
+  border-radius: 5px;
+  background: white;
+  color: #3565a1;
+  cursor: pointer;
+  font-size: 0.62rem;
+}
+
+.designer-gateway-config p,
+.designer-gateway-config small {
+  margin: 0;
+  font-size: 0.6rem;
+  line-height: 1.35;
+}
+
+.designer-gateway-config p {
+  color: #a33d3d;
+}
+
+.designer-gateway-config small {
+  color: #718299;
+}
+
 .designer-resource {
   display: flex;
   align-items: center;
@@ -358,7 +417,8 @@
   }
 
   .designer-palette > strong,
-  .designer-palette > p {
+  .designer-palette > p,
+  .designer-gateway-config {
     grid-column: 1 / -1;
   }
 

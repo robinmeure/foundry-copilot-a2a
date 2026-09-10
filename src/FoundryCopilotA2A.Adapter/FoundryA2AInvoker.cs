@@ -108,7 +108,7 @@ public sealed class FoundryA2AInvoker(
                 $"Foundry A2A failed: {message ?? "unknown JSON-RPC error"}.");
         }
 
-        var text = ExtractText(document.RootElement);
+        var text = A2AResponseText.Extract(document.RootElement);
         if (string.IsNullOrWhiteSpace(text))
         {
             throw new AdapterRequestException("Foundry A2A returned no text response.");
@@ -153,58 +153,4 @@ public sealed class FoundryA2AInvoker(
         }
     }
 
-    private static string ExtractText(JsonElement root)
-    {
-        if (!root.TryGetProperty("result", out var result))
-        {
-            return string.Empty;
-        }
-
-        if (result.TryGetProperty("message", out var message) &&
-            message.TryGetProperty("parts", out var messageParts))
-        {
-            return JoinPartText(messageParts);
-        }
-
-        if (result.TryGetProperty("parts", out var resultParts))
-        {
-            return JoinPartText(resultParts);
-        }
-
-        if (!result.TryGetProperty("task", out var task))
-        {
-            return string.Empty;
-        }
-
-        if (task.TryGetProperty("artifacts", out var artifacts) &&
-            artifacts.ValueKind == JsonValueKind.Array)
-        {
-            var artifactText = string.Join(
-                Environment.NewLine,
-                artifacts.EnumerateArray()
-                    .Where(artifact => artifact.TryGetProperty("parts", out _))
-                    .Select(artifact => JoinPartText(artifact.GetProperty("parts")))
-                    .Where(text => !string.IsNullOrWhiteSpace(text)));
-            if (!string.IsNullOrWhiteSpace(artifactText))
-            {
-                return artifactText;
-            }
-        }
-
-        return task.TryGetProperty("status", out var status) &&
-               status.TryGetProperty("message", out var statusMessage) &&
-               statusMessage.TryGetProperty("parts", out var statusParts)
-            ? JoinPartText(statusParts)
-            : string.Empty;
-    }
-
-    private static string JoinPartText(JsonElement parts) =>
-        parts.ValueKind == JsonValueKind.Array
-            ? string.Join(
-                Environment.NewLine,
-                parts.EnumerateArray()
-                    .Where(part => part.TryGetProperty("text", out _))
-                    .Select(part => part.GetProperty("text").GetString())
-                    .Where(text => !string.IsNullOrWhiteSpace(text)))
-            : string.Empty;
 }

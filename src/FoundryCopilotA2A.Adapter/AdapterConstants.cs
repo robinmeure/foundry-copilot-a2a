@@ -14,6 +14,7 @@ public static class AdapterConstants
     public const string TraceHeaderName = "X-Trace-Id";
     public const string AgentHeaderName = "X-Copilot-Agent";
     public const string ChainTargetHeaderName = "X-A2A-Chain-Target";
+    public const string SelectedAgentItem = "a2a.selected-agent";
     public const string RouteAgentItem = "a2a.route-agent";
     public const string ChainTargetItem = "a2a.chain-target";
     public const string ContextIdItem = "a2a.context-id";

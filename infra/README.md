@@ -35,13 +35,16 @@ subscription key. It exposes the public card/catalog, authenticated A2A runtime 
 caller-scoped traces, exact-origin frontend CORS, and unbuffered SSE. Public agent cards
 allow credential-free cross-origin GETs for authoring-portal discovery; that exception
 does not apply to runtime, catalog, or trace operations. Runtime and trace polling
-use separate rate-limit counters. `specialistAgentIds` optionally publishes each approved
-specialist with separate discovery and runtime routes.
+use separate rate-limit counters. `specialistAgentIds` optionally publishes each approved,
+adapter-configured Copilot Studio or Foundry agent with separate discovery and runtime routes.
 
 For an existing APIM instance forwarding to a **local Dev Tunnel**, use
 `configure-citadel` from the project CLI instead of deploying this full environment.
 The [local Citadel guide](../docs/citadel-local.md) keeps the hosted API untouched and
 uses the same XML policies as this Bicep module.
+
+See [Publish an existing agent as a separate APIM A2A API](../docs/citadel-local.md#publish-an-existing-agent-as-a-separate-apim-a2a-api)
+for copy/paste CLI and Bicep parameter templates.
 
 Managed identity is enabled on APIM, the Foundry account, the Foundry project,
 and the adapter Web App. The Web App uses its user-assigned identity to resolve

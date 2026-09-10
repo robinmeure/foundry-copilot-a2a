@@ -21,9 +21,15 @@ import {
   listAgents,
   sendMessage,
 } from './a2aClient'
-import { createLoginRequest, type RuntimeConfig } from './authConfig'
+import {
+  createLoginRequest,
+  normalizeGatewayBaseUrl,
+  withGatewayBaseUrl,
+  type RuntimeConfig,
+} from './authConfig'
 import { FlowDesigner } from './FlowDesigner'
 import { FlowDrawer } from './FlowDrawer'
+import { ConnectivityPanel } from './ConnectivityPanel'
 import {
   applyFlowConfiguration,
   cancelFlowConfiguration,
@@ -87,12 +93,20 @@ function App({ config }: AppProps) {
   const { accounts, instance } = useMsal()
   const isAuthenticated = useIsAuthenticated()
   const loginRequest = useMemo(() => createLoginRequest(config), [config])
+  const storageKey = `a2a-flow-v1:${config.tenantId}:${config.adapterApiClientId}:${config.spaClientId}`
+  const gatewayStorageKey = `${storageKey}:gateway`
+  const [restoredGateway] = useState(() => loadGatewayOverride(gatewayStorageKey))
+  const [gatewayOverride, setGatewayOverride] = useState(restoredGateway.value)
+  const [gatewayStorageError, setGatewayStorageError] = useState(restoredGateway.error)
+  const effectiveConfig = useMemo(
+    () => gatewayOverride ? withGatewayBaseUrl(config, gatewayOverride) : config,
+    [config, gatewayOverride],
+  )
   const [contextId, setContextId] = useState(() => crypto.randomUUID())
   const [draft, setDraft] = useState('')
   const [turns, setTurns] = useState<TurnRecord[]>([])
   const [agents, setAgents] = useState<CopilotAgent[]>([])
   const [agentCatalogs, setAgentCatalogs] = useState(() => new Map<string, CopilotAgentCatalog>())
-  const storageKey = `a2a-flow-v1:${config.tenantId}:${config.adapterApiClientId}:${config.spaClientId}`
   const appliedStorageKey = `${storageKey}:applied`
   const [restoredFlow] = useState(() => loadFlowDraft(storageKey))
   const [restoredAppliedFlow] = useState(() => loadFlowDraft(appliedStorageKey))
@@ -113,21 +127,24 @@ function App({ config }: AppProps) {
   const [isSending, setIsSending] = useState(false)
   const [error, setError] = useState<string>()
   const [selectedEntryId, setSelectedEntryId] = useState<string>()
+  const [connectivityOpen, setConnectivityOpen] = useState(false)
   const messagesRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const configureButtonRef = useRef<HTMLButtonElement>(null)
   const signInButtonRef = useRef<HTMLButtonElement>(null)
   const account = instance.getActiveAccount() ?? accounts[0]
   const validation = useMemo(
-    () => graph ? validateFlow(graph, config, agents) : undefined,
-    [graph, config, agents],
+    () => graph ? validateFlow(graph, effectiveConfig, agents) : undefined,
+    [graph, effectiveConfig, agents],
   )
   const draftPlan = validation?.plan
-  const appliedEndpoint = flow.applied && getFlowEntryBaseUrl(flow.applied, config)
+  const appliedEndpoint = flow.applied && getFlowEntryBaseUrl(flow.applied, effectiveConfig)
   const appliedCatalog = appliedEndpoint ? agentCatalogs.get(appliedEndpoint) : undefined
   const appliedValidation = useMemo(
-    () => flow.applied && appliedCatalog ? validateFlow(flow.applied, config, appliedCatalog.agents) : undefined,
-    [flow.applied, config, appliedCatalog],
+    () => flow.applied && appliedCatalog
+      ? validateFlow(flow.applied, effectiveConfig, appliedCatalog.agents)
+      : undefined,
+    [flow.applied, effectiveConfig, appliedCatalog],
   )
   const plan = appliedValidation?.plan
   const entryAgent = appliedCatalog?.agents.find((agent) => agent.id === plan?.entryAgentId)
@@ -135,7 +152,8 @@ function App({ config }: AppProps) {
   const needsNewConversation = Boolean(
     conversationSignature && plan && conversationSignature !== plan.signature,
   )
-  const discoveryUrl = (graph && getFlowEntryBaseUrl(graph, config)) ?? config.adapterBaseUrl
+  const discoveryUrl =
+    (graph && getFlowEntryBaseUrl(graph, effectiveConfig)) ?? effectiveConfig.adapterBaseUrl
   const catalogLoading = catalogResult?.url !== discoveryUrl || catalogResult?.revision !== catalogRevision
   const catalogError = catalogLoading ? undefined : catalogResult?.error
   const appliedFlowStatus = !flow.applied ? 'Configure a flow to start'
@@ -169,7 +187,11 @@ function App({ config }: AppProps) {
         setAgents(catalog.agents)
         setAgentCatalogs((current) => new Map(current).set(discoveryUrl, catalog))
         setCatalogResult({ url: discoveryUrl, revision: catalogRevision })
-        const defaultGraph = createFlowPreset(config.gatewayBaseUrl ? 'apim' : 'direct', config, catalog.agents)
+        const defaultGraph = createFlowPreset(
+          effectiveConfig.gatewayBaseUrl ? 'apim' : 'direct',
+          effectiveConfig,
+          catalog.agents,
+        )
         setFlow((current) => current.draft ? current : { ...current, draft: defaultGraph })
       })
       .catch((reason: unknown) => {
@@ -179,7 +201,7 @@ function App({ config }: AppProps) {
       })
 
     return () => controller.abort()
-  }, [discoveryUrl, config, catalogRevision])
+  }, [discoveryUrl, effectiveConfig, catalogRevision])
 
   const writeFlowDraft = useCallback((value: string) => {
     try {
@@ -200,6 +222,33 @@ function App({ config }: AppProps) {
       writeFlowDraft(savedGraph.value)
     }
   }, [savedGraph.value, writeFlowDraft])
+
+  const applyGatewayBaseUrl = useCallback((value: string) => {
+    const gatewayBaseUrl = normalizeGatewayBaseUrl(value)
+    setGatewayOverride(gatewayBaseUrl)
+    try {
+      sessionStorage.setItem(gatewayStorageKey, gatewayBaseUrl)
+      setGatewayStorageError(undefined)
+    } catch (reason) {
+      if (!(reason instanceof DOMException)) throw reason
+      setGatewayStorageError(
+        'The APIM URL is active for this page, but browser session storage could not save it.',
+      )
+    }
+  }, [gatewayStorageKey])
+
+  const resetGatewayBaseUrl = useCallback(() => {
+    setGatewayOverride(undefined)
+    try {
+      sessionStorage.removeItem(gatewayStorageKey)
+      setGatewayStorageError(undefined)
+    } catch (reason) {
+      if (!(reason instanceof DOMException)) throw reason
+      setGatewayStorageError(
+        'The APIM URL reverted for this page, but browser session storage could not remove the override.',
+      )
+    }
+  }, [gatewayStorageKey])
 
   useEffect(() => {
     // Coalesce canvas updates; redirect handlers flush before leaving the page.
@@ -252,7 +301,7 @@ function App({ config }: AppProps) {
 
   function finishFlow() {
     if (!canFinishFlow) return
-    const next = applyFlowConfiguration(flow, config, agents)
+    const next = applyFlowConfiguration(flow, effectiveConfig, agents)
     const snapshot = serializeFlowGraph(next.applied)
     writeFlowDraft(snapshot)
     try {
@@ -424,6 +473,8 @@ function App({ config }: AppProps) {
             <span>Delegated agent console</span>
           </div>
         </div>
+        <button type="button" className="button secondary" aria-haspopup="dialog"
+          onClick={() => setConnectivityOpen(true)}>Connectivity</button>
         {isAuthenticated ? (
           <div className="account">
             <div>
@@ -548,22 +599,37 @@ function App({ config }: AppProps) {
           onSelect={setSelectedEntryId}
         />
       </section>
+      {connectivityOpen ? (
+        <ConnectivityPanel config={effectiveConfig} onDismiss={() => setConnectivityOpen(false)}
+          getAccessToken={async () => {
+            if (!account) return undefined
+            try {
+              return (await instance.acquireTokenSilent({ ...loginRequest, account })).accessToken
+            } catch (reason) {
+              if (!(reason instanceof InteractionRequiredAuthError)) throw reason
+              throw new Error('Adapter configuration needs renewed sign-in consent. Sign in again, then refresh status.')
+            }
+          }} />
+      ) : null}
       {flow.isOpen ? (
         <FlowDrawer canFinish={canFinishFlow} loading={catalogLoading}
           onFinish={finishFlow} onDismiss={dismissFlow}>
           <FlowDesigner
-            config={config}
+            config={effectiveConfig}
             agents={agents}
             graph={graph}
             validation={validation}
             disabled={isSending}
             catalogLoading={catalogLoading}
             catalogError={catalogError}
-            storageError={savedGraph.error ?? appliedStorageError ?? storageError ??
+            storageError={savedGraph.error ?? appliedStorageError ?? gatewayStorageError ?? storageError ??
               (!flow.applied ? restoredAppliedFlow.error : undefined) ??
               (!validation?.valid ? restoredFlow.error : undefined)}
             onChange={changeFlow}
             onRetryCatalog={() => setCatalogRevision((current) => current + 1)}
+            gatewayBaseUrlOverridden={gatewayOverride !== undefined}
+            onGatewayBaseUrlChange={applyGatewayBaseUrl}
+            onResetGatewayBaseUrl={resetGatewayBaseUrl}
           />
         </FlowDrawer>
       ) : null}
@@ -594,6 +660,22 @@ function loadFlowDraft(storageKey: string): { graph?: FlowGraph; error?: string 
       graph: { nodes: [createFlowNode('browser', 'browser', { x: 0, y: 100 })], edges: [] },
       error: 'The saved flow is invalid and was not restored. Choose a preset or build a new route.',
     }
+  }
+}
+
+function loadGatewayOverride(storageKey: string): { value?: string; error?: string } {
+  let saved: string | null
+  try {
+    saved = sessionStorage.getItem(storageKey)
+  } catch (reason) {
+    if (!(reason instanceof DOMException)) throw reason
+    return { error: 'Browser session storage is unavailable. The APIM URL override could not be restored.' }
+  }
+  if (!saved) return {}
+  try {
+    return { value: normalizeGatewayBaseUrl(saved) }
+  } catch (reason) {
+    return { error: `The saved APIM URL was ignored: ${toErrorMessage(reason)}` }
   }
 }
 

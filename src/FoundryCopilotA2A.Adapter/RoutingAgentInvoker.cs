@@ -13,15 +13,28 @@ public interface IAgentInvoker
 
 public sealed class RoutingAgentInvoker(
     AgentCatalog catalog,
+    ApiManagementAgentRegistry apiManagementAgents,
     ICopilotStudioInvoker copilotStudioInvoker,
-    FoundryA2AInvoker foundryInvoker) : IAgentInvoker
+    FoundryA2AInvoker foundryInvoker,
+    ApiManagementA2AInvoker apiManagementInvoker) : IAgentInvoker
 {
     public async IAsyncEnumerable<CopilotInvocationUpdate> StreamAsync(
         string prompt,
         A2ARequestMetadata metadata,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var agent = catalog.ResolveAgent(metadata.AgentId);
+        var agent = catalog.TryResolveAgent(metadata.AgentId, out var configuredAgent)
+            ? configuredAgent!
+            : (await apiManagementAgents.TryResolveAsync(metadata.AgentId, cancellationToken) is { } apiAgent
+                ? new AgentDescriptor(
+                    apiAgent.Id,
+                    apiAgent.DisplayName,
+                    AgentProvider.ApiManagement,
+                    true,
+                    null,
+                    [])
+                : throw new AdapterRequestException(
+                    $"Agent '{metadata.AgentId}' is not configured."));
         var target = metadata.ChainTargetAgentId is null
             ? null
             : catalog.ResolveChainTarget(agent.Id, metadata.ChainTargetAgentId);
@@ -51,6 +64,8 @@ public sealed class RoutingAgentInvoker(
             AgentProvider.CopilotStudio => copilotStudioInvoker.StreamAsync(
                 effectivePrompt, metadata, cancellationToken),
             AgentProvider.Foundry => foundryInvoker.StreamAsync(
+                effectivePrompt, metadata, cancellationToken),
+            AgentProvider.ApiManagement => apiManagementInvoker.StreamAsync(
                 effectivePrompt, metadata, cancellationToken),
             _ => throw new AdapterRequestException(
                 $"Agent '{agent.Id}' has an unsupported provider.")

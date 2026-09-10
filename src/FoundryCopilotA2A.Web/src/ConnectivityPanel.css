@@ -1,0 +1,25 @@
+.connectivity-panel {
+  width: min(720px, calc(100vw - 40px));
+  max-height: calc(100dvh - 40px);
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 24px;
+  border: 1px solid #d9e1ec;
+  border-radius: 18px;
+  color: #284367;
+  background: white;
+}
+
+.connectivity-panel::backdrop { background: #10284e88; }
+.connectivity-panel header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.connectivity-panel h2 { margin: 0; }
+.connectivity-panel p { font-size: 0.85rem; line-height: 1.5; }
+.connectivity-panel dt { font-weight: 700; margin-top: 12px; }
+.connectivity-panel dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+.connectivity-panel section { margin-top: 20px; }
+.connectivity-panel label { display: block; margin-bottom: 8px; }
+.connectivity-panel input { box-sizing: border-box; width: 100%; padding: 10px; border: 1px solid #b6c8e3; border-radius: 7px; }
+.connectivity-panel [role="alert"] { color: #a33d3d; }
+.connectivity-check { margin-top: 12px; padding: 12px; border: 1px solid #e6d5ac; border-radius: 8px; background: #fffcf5; }
+.connectivity-check.reachable { border-color: #bdd8d0; background: #f5faf8; }
+.connectivity-check code { display: block; overflow-wrap: anywhere; margin-top: 6px; }

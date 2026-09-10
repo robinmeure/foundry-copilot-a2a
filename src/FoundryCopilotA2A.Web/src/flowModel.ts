@@ -296,7 +296,7 @@ export function validateFlow(
     }
     const agent = matches[0]
     if (!isSupportedAgent(agent)) {
-      issues.push(`Agent "${id}" is not supported; choose a supported Copilot Studio or Foundry agent from the current catalog.`)
+      issues.push(`Agent "${id}" is not supported; choose a supported Copilot Studio, Foundry, or APIM A2A agent from the current catalog.`)
       return undefined
     }
     return agent
@@ -361,7 +361,9 @@ export function validateFlow(
 
 function isSupportedAgent(agent: CopilotAgent): boolean {
   return isIdentifier(agent.id) && agent.supported === true &&
-    (agent.provider === 'copilotStudio' || agent.provider === 'foundry')
+    (agent.provider === 'copilotStudio' ||
+      agent.provider === 'foundry' ||
+      agent.provider === 'apiManagement')
 }
 
 function normalizeEndpoint(value: unknown, requireHttps = false): string | undefined {

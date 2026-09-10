@@ -15,9 +15,18 @@ import {
   type NodeChange,
   type NodeProps,
 } from '@xyflow/react'
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type DragEvent } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type DragEvent,
+  type FormEvent,
+} from 'react'
 import type { CopilotAgent } from './a2aClient'
-import type { RuntimeConfig } from './authConfig'
+import { normalizeGatewayBaseUrl, type RuntimeConfig } from './authConfig'
 import {
   createFlowNode,
   createFlowPreset,
@@ -43,8 +52,11 @@ interface FlowDesignerProps {
   catalogLoading: boolean
   catalogError?: string
   storageError?: string
+  gatewayBaseUrlOverridden: boolean
   onChange: (update: (graph: FlowGraph) => FlowGraph) => void
   onRetryCatalog: () => void
+  onGatewayBaseUrlChange: (value: string) => void
+  onResetGatewayBaseUrl: () => void
 }
 
 interface FlowResource {
@@ -77,16 +89,44 @@ export function FlowDesigner(props: FlowDesignerProps) {
 
 function FlowDesignerCanvas({
   config, agents, graph = emptyGraph, validation, disabled,
-  catalogLoading, catalogError, storageError, onChange, onRetryCatalog,
+  catalogLoading, catalogError, storageError, gatewayBaseUrlOverridden,
+  onChange, onRetryCatalog, onGatewayBaseUrlChange, onResetGatewayBaseUrl,
 }: FlowDesignerProps) {
   const { fitView, screenToFlowPosition } = useReactFlow<FlowNode, FlowEdge>()
   const nodesInitialized = useNodesInitialized()
   const [fromNode, setFromNode] = useState('')
   const [toNode, setToNode] = useState('')
   const [interactionError, setInteractionError] = useState<string>()
+  const [gatewayInput, setGatewayInput] = useState({
+    baseUrl: config.gatewayBaseUrl,
+    value: config.gatewayBaseUrl ?? '',
+  })
+  const [gatewayError, setGatewayError] = useState<string>()
   const [layoutRevision, setLayoutRevision] = useState(0)
   const plan = validation?.plan
   const nodeIds = graph.nodes.map((node) => node.id).join('|')
+  const gatewayDraft = gatewayInput.baseUrl === config.gatewayBaseUrl
+    ? gatewayInput.value
+    : config.gatewayBaseUrl ?? ''
+
+  function saveGateway(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    try {
+      const gatewayBaseUrl = normalizeGatewayBaseUrl(gatewayDraft)
+      onGatewayBaseUrlChange(gatewayBaseUrl)
+      setGatewayInput({ baseUrl: gatewayBaseUrl, value: gatewayBaseUrl })
+      setGatewayError(undefined)
+    } catch (reason) {
+      if (!(reason instanceof Error)) throw reason
+      setGatewayError(reason.message)
+    }
+  }
+
+  function resetGateway() {
+    onResetGatewayBaseUrl()
+    setGatewayError(undefined)
+  }
+
   const resources = useMemo<FlowResource[]>(() => [
     {
       key: 'browser:browser', kind: 'browser', resourceId: 'browser',
@@ -106,7 +146,11 @@ function FlowDesignerCanvas({
       label: agent.displayName, badge: agent.canOrchestrate ? 'ORCH' : 'AGENT',
       detail: !agent.supported
         ? (agent.statusMessage ?? 'Requires a supported harness')
-        : `${agent.provider === 'foundry' ? 'Foundry' : 'Copilot Studio'} / ${agent.canOrchestrate ? 'Orchestrator' : 'Specialist'}`,
+        : `${agent.provider === 'foundry'
+          ? 'Foundry'
+          : agent.provider === 'apiManagement'
+            ? 'APIM A2A'
+            : 'Copilot Studio'} / ${agent.canOrchestrate ? 'Orchestrator' : 'Specialist'}`,
       available: agent.supported,
     })),
   ], [agents, config.gatewayBaseUrl])
@@ -285,6 +329,27 @@ function FlowDesignerCanvas({
         <aside className="designer-palette" aria-label="Configured flow resources">
           <strong>Configured resources</strong>
           <p>Drag or click to add. Reuse APIM and adapter blocks for the second hop.</p>
+          <form className="designer-gateway-config" onSubmit={saveGateway}>
+            <label htmlFor="gateway-base-url">APIM base URL</label>
+            <input id="gateway-base-url" type="url" inputMode="url"
+              placeholder="https://apim.example.com/api-path"
+              value={gatewayDraft}
+              disabled={disabled}
+              aria-invalid={gatewayError ? 'true' : undefined}
+              aria-describedby={gatewayError ? 'gateway-base-url-error' : undefined}
+              onChange={(event) => {
+                setGatewayInput({ baseUrl: config.gatewayBaseUrl, value: event.target.value })
+                setGatewayError(undefined)
+              }} />
+            <div>
+              <button type="submit" disabled={disabled || !gatewayDraft.trim()}>Apply</button>
+              {gatewayBaseUrlOverridden ? (
+                <button type="button" onClick={resetGateway} disabled={disabled}>Use app default</button>
+              ) : null}
+            </div>
+            {gatewayError ? <p id="gateway-base-url-error" role="alert">{gatewayError}</p> : null}
+            <small>HTTPS only. Saved for this browser session.</small>
+          </form>
           {resources.filter((resource) => resource.kind !== 'browser').map((resource) => (
             <button key={resource.key} type="button"
               className={`designer-resource ${resource.kind}`}

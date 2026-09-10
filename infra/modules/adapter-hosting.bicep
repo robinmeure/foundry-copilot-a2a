@@ -16,6 +16,9 @@ param copilotStudioClientId string
 param foundryProjectEndpoint string
 param foundryAgentName string
 param adapterAllowedOrigins array
+param apimSubscriptionId string
+param apimResourceGroupName string
+param apimServiceName string
 
 @description('App Service Plan SKU. Basic B1 is the intended single-instance dev tier.')
 param appServicePlanSku string = 'B1'
@@ -59,6 +62,10 @@ var baseAppSettings = {
   // Adapter application settings
   Adapter__Backend: 'CopilotStudio'
   Adapter__PublicBaseUrl: adapterPublicBaseUrl
+  ApiManagementDiscovery__Enabled: 'true'
+  ApiManagementDiscovery__SubscriptionId: apimSubscriptionId
+  ApiManagementDiscovery__ResourceGroup: apimResourceGroupName
+  ApiManagementDiscovery__ServiceName: apimServiceName
 
   Authentication__Enabled: 'true'
   Authentication__Authority: '${environment().authentication.loginEndpoint}${tenantId}/v2.0'

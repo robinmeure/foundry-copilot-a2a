@@ -241,8 +241,8 @@ internal sealed class CliApplication(CliContext context)
                 Defaults to a separate copilot-studio-local API and http://localhost:5173.
                 Creates no APIM service or app registrations. Only APIs owned by this command
                 may be updated, and only with --replace. Existing hosted APIs are untouched.
-                Optional specialists each receive a separate card/runtime API beneath
-                <api-path>/a2a-agents/<id>. Set Adapter:PublicBaseUrl and the frontend's
+                Optional configured Copilot Studio or Foundry agents each receive a separate
+                card/runtime API beneath <api-path>/a2a-agents/<id>. Set Adapter:PublicBaseUrl and the frontend's
                 VITE_GATEWAY_BASE_URL to the printed gateway API base URL, including its path.
                 Uses the current Azure CLI login for management operations. No client secret
                 or delegated user token is stored in APIM; Authorization is forwarded unchanged.

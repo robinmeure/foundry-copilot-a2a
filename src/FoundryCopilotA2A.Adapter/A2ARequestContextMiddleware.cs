@@ -14,7 +14,8 @@ public sealed class A2ARequestContextMiddleware(
         IdempotencyStore idempotencyStore,
         A2ARequestMetadataAccessor metadataAccessor,
         AgentIsolationKeyContext isolationKeyContext,
-        AgentCatalog agentCatalog)
+        AgentCatalog agentCatalog,
+        ApiManagementAgentRegistry apiManagementAgents)
     {
         string? routeAgentId = null;
         var isRuntimeRequest =
@@ -97,7 +98,11 @@ public sealed class A2ARequestContextMiddleware(
 
             try
             {
-                var requestedAgentId = ResolveRequestedAgentId(context, agentCatalog);
+                var requestedAgentId = await ResolveRequestedAgentIdAsync(
+                    context,
+                    agentCatalog,
+                    apiManagementAgents);
+                context.Items[AdapterConstants.SelectedAgentItem] = requestedAgentId;
                 var requestedChainTarget = context.Request.Headers[
                     AdapterConstants.ChainTargetHeaderName].ToString();
                 if (!string.IsNullOrWhiteSpace(requestedChainTarget))
@@ -287,12 +292,34 @@ public sealed class A2ARequestContextMiddleware(
         return true;
     }
 
-    private static string ResolveRequestedAgentId(
+    private static async Task<string> ResolveRequestedAgentIdAsync(
         HttpContext context,
-        AgentCatalog agentCatalog) =>
-        context.Items[AdapterConstants.RouteAgentItem] as string ??
-        agentCatalog.ResolveAgentId(
-            context.Request.Headers[AdapterConstants.AgentHeaderName].ToString());
+        AgentCatalog agentCatalog,
+        ApiManagementAgentRegistry apiManagementAgents)
+    {
+        if (context.Items[AdapterConstants.RouteAgentItem] is string routeAgentId)
+        {
+            return routeAgentId;
+        }
+
+        var requestedAgentId =
+            context.Request.Headers[AdapterConstants.AgentHeaderName].ToString();
+        if (agentCatalog.TryResolveAgent(requestedAgentId, out var configuredAgent))
+        {
+            if (!configuredAgent!.Supported)
+            {
+                throw new AdapterRequestException(configuredAgent.StatusMessage!);
+            }
+            return configuredAgent.Id;
+        }
+
+        var apiManagementAgent = await apiManagementAgents.TryResolveAsync(
+            requestedAgentId,
+            context.RequestAborted);
+        return apiManagementAgent?.Id ??
+               throw new AdapterRequestException(
+                   $"Agent '{requestedAgentId.Trim()}' is not configured.");
+    }
 
     private static bool TryGetObject(JsonElement source, string name, out JsonElement value)
     {
@@ -458,7 +485,8 @@ public sealed class A2ARequestMetadataAccessor(
             {
                 ContextId = context.Items[AdapterConstants.ContextIdItem] as string,
                 MessageId = context.Items[AdapterConstants.MessageIdItem] as string,
-                AgentId = context.Items[AdapterConstants.RouteAgentItem] as string ??
+                AgentId = context.Items[AdapterConstants.SelectedAgentItem] as string ??
+                          context.Items[AdapterConstants.RouteAgentItem] as string ??
                           agentCatalog.ResolveAgentId(
                               context.Request.Headers[AdapterConstants.AgentHeaderName].ToString()),
                 UserId = ResolveUserId(context),

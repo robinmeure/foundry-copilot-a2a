@@ -436,6 +436,15 @@ describe('resource and native capability validation', () => {
     invalid(linear(directKinds, 'foreign'), /not supported/, config(), [agent('foreign', 'arbitrary-provider')])
   })
 
+  it('accepts an APIM-discovered A2A API as an entry agent', () => {
+    const result = valid(
+      linear(directKinds, 'apim-weather'),
+      config(),
+      [agent('apim-weather', 'apiManagement')],
+    )
+    assert.equal(result.entryAgentId, 'apim-weather')
+  })
+
   it('rejects ambiguous catalog identities', () => {
     invalid(linear(), /ambiguous.*catalog/, config(), [...catalog(), agent('cps-entry', 'foundry')])
   })

@@ -6,7 +6,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.46.1.21595",
-      "templateHash": "18348254799201860418"
+      "templateHash": "3271537371506090431"
     },
     "name": "Foundry Copilot A2A Citadel infrastructure",
     "description": "Deploys the A2A adapter, APIM governance gateway, Microsoft Foundry project, and shared monitoring."
@@ -116,7 +116,7 @@
       "type": "array",
       "defaultValue": [],
       "metadata": {
-        "description": "Approved Copilot Studio agent IDs to publish as separate APIM A2A specialist APIs."
+        "description": "Approved configured Copilot Studio or Foundry agent IDs to publish as separate APIM A2A specialist APIs."
       }
     },
     "appServicePlanSku": {
@@ -841,6 +841,15 @@
           "adapterAllowedOrigins": {
             "value": "[parameters('adapterAllowedOrigins')]"
           },
+          "apimSubscriptionId": {
+            "value": "[subscription().subscriptionId]"
+          },
+          "apimResourceGroupName": {
+            "value": "[parameters('resourceGroupName')]"
+          },
+          "apimServiceName": {
+            "value": "[variables('apimName')]"
+          },
           "appServicePlanSku": {
             "value": "[parameters('appServicePlanSku')]"
           },
@@ -861,7 +870,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.46.1.21595",
-              "templateHash": "15206250113940982842"
+              "templateHash": "18135073092364442270"
             },
             "name": "A2A adapter hosting",
             "description": "Deploys the Linux App Service Plan and Linux Web App for the adapter."
@@ -912,6 +921,15 @@
             "adapterAllowedOrigins": {
               "type": "array"
             },
+            "apimSubscriptionId": {
+              "type": "string"
+            },
+            "apimResourceGroupName": {
+              "type": "string"
+            },
+            "apimServiceName": {
+              "type": "string"
+            },
             "appServicePlanSku": {
               "type": "string",
               "defaultValue": "B1",
@@ -946,6 +964,10 @@
               "AZURE_CLIENT_ID": "[parameters('identityClientId')]",
               "Adapter__Backend": "CopilotStudio",
               "Adapter__PublicBaseUrl": "[parameters('adapterPublicBaseUrl')]",
+              "ApiManagementDiscovery__Enabled": "true",
+              "ApiManagementDiscovery__SubscriptionId": "[parameters('apimSubscriptionId')]",
+              "ApiManagementDiscovery__ResourceGroup": "[parameters('apimResourceGroupName')]",
+              "ApiManagementDiscovery__ServiceName": "[parameters('apimServiceName')]",
               "Authentication__Enabled": "true",
               "Authentication__Authority": "[format('{0}{1}/v2.0', environment().authentication.loginEndpoint, parameters('tenantId'))]",
               "Authentication__Audience": "[parameters('adapterApiAudience')]",
@@ -1128,6 +1150,9 @@
           "accessPrincipalId": {
             "value": "[parameters('accessPrincipalId')]"
           },
+          "adapterPrincipalId": {
+            "value": "[reference('adapterFoundation').outputs.identityPrincipalId.value]"
+          },
           "tags": {
             "value": "[variables('commonTags')]"
           }
@@ -1139,7 +1164,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.46.1.21595",
-              "templateHash": "5581227945516912742"
+              "templateHash": "7616013045258466155"
             },
             "name": "Citadel A2A gateway",
             "description": "Deploys API Management as a governed delegated-OAuth entry point for the A2A adapter."
@@ -1200,6 +1225,9 @@
             "accessPrincipalId": {
               "type": "string"
             },
+            "adapterPrincipalId": {
+              "type": "string"
+            },
             "tags": {
               "type": "object"
             }
@@ -1209,6 +1237,7 @@
             "$fxv#1": "<policies>\r\n  <inbound>\r\n    <base />\r\n    <validate-jwt header-name=\"Authorization\"\r\n                  require-scheme=\"Bearer\"\r\n                  failed-validation-httpcode=\"401\"\r\n                  failed-validation-error-message=\"Unauthorized. A delegated adapter API token is required.\"\r\n                  output-token-variable-name=\"validatedJwt\"\r\n                  clock-skew=\"60\">\r\n      <openid-config url=\"__ENTRA_LOGIN_ENDPOINT__{{entra-tenant-id}}/v2.0/.well-known/openid-configuration\" />\r\n      <audiences>\r\n        <audience>{{adapter-api-audience}}</audience>\r\n        <audience>{{adapter-api-bare-audience}}</audience>\r\n      </audiences>\r\n      <issuers>\r\n        <issuer>__ENTRA_LOGIN_ENDPOINT__{{entra-tenant-id}}/v2.0</issuer>\r\n        <issuer>https://sts.windows.net/{{entra-tenant-id}}/</issuer>\r\n      </issuers>\r\n      <required-claims>\r\n        <claim name=\"scp\" match=\"any\" separator=\" \">\r\n          <value>{{adapter-delegated-scope}}</value>\r\n        </claim>\r\n        <claim name=\"tid\" match=\"all\">\r\n          <value>{{entra-tenant-id}}</value>\r\n        </claim>\r\n      </required-claims>\r\n    </validate-jwt>\r\n    <rate-limit-by-key calls=\"__RATE_LIMIT_CALLS__\"\r\n                       renewal-period=\"60\"\r\n                       counter-key='@(context.Api.Id + \":\" + context.Operation.Id + \":\" + ((Jwt)context.Variables[\"validatedJwt\"]).Claims.GetValueOrDefault(\"tid\", \"unknown\") + \":\" + ((Jwt)context.Variables[\"validatedJwt\"]).Claims.GetValueOrDefault(\"oid\", \"unknown\"))' />\r\n    __REQUEST_VALIDATION__\r\n  </inbound>\r\n  <backend>\r\n    <base />\r\n  </backend>\r\n  <outbound>\r\n    <base />\r\n  </outbound>\r\n  <on-error>\r\n    <base />\r\n  </on-error>\r\n</policies>\r\n",
             "$fxv#2": "<validate-content unspecified-content-type-action=\"prevent\"\r\n                  max-size=\"1048576\"\r\n                  size-exceeded-action=\"prevent\"\r\n                  errors-variable-name=\"requestBodyValidation\">\r\n  <content type=\"application/json\" validate-as=\"json\" action=\"prevent\" />\r\n</validate-content>\r\n",
             "apiManagementServiceContributorRoleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '312a565d-c81f-4fd8-895a-4e21e48d571c')]",
+            "readerRoleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'acdd72a7-3385-48ef-bd42-f606fba81ae7')]",
             "adapterBareAudience": "[replace(parameters('adapterApiAudience'), 'api://', '')]",
             "apiPath": "copilot-studio",
             "agentCardPath": ".well-known/agent-card.json",
@@ -1507,7 +1536,7 @@
               "apiVersion": "2024-05-01",
               "name": "[format('{0}/{1}', parameters('apimName'), format('copilot-studio-a2a-{0}', parameters('specialistAgentIds')[copyIndex()]))]",
               "properties": {
-                "displayName": "[format('Copilot Studio A2A - {0}', parameters('specialistAgentIds')[copyIndex()])]",
+                "displayName": "[format('A2A specialist - {0}', parameters('specialistAgentIds')[copyIndex()])]",
                 "path": "[format('{0}/a2a-agents/{1}', variables('apiPath'), parameters('specialistAgentIds')[copyIndex()])]",
                 "protocols": [
                   "https"
@@ -1848,6 +1877,20 @@
               "dependsOn": [
                 "[resourceId('Microsoft.ApiManagement/service', parameters('apimName'))]"
               ]
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.ApiManagement/service', parameters('apimName'))]",
+              "name": "[guid(resourceId('Microsoft.ApiManagement/service', parameters('apimName')), parameters('adapterPrincipalId'), variables('readerRoleDefinitionId'))]",
+              "properties": {
+                "principalId": "[parameters('adapterPrincipalId')]",
+                "principalType": "ServicePrincipal",
+                "roleDefinitionId": "[variables('readerRoleDefinitionId')]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service', parameters('apimName'))]"
+              ]
             }
           ],
           "outputs": {
@@ -1880,6 +1923,7 @@
       },
       "dependsOn": [
         "adapter",
+        "adapterFoundation",
         "monitoring",
         "resourceGroup"
       ]

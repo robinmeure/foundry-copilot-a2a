@@ -637,6 +637,13 @@ The adapter exposes a server-side catalog containing Copilot Studio and Foundry 
 browser receives only each agent's stable ID, display name, provider, support status, and allowed
 chain targets from `GET /api/agents`; endpoints and credentials never leave the adapter.
 
+Optional `ApiManagementDiscovery` also adds current, subscription-key-free APIs that expose a
+valid public A2A agent card. The adapter reads APIM through ARM, keeps discovered runtime URLs
+server-side, and forwards the caller's delegated token when invoking a selected APIM agent.
+The deployed infrastructure enables discovery for its APIM instance and grants the adapter
+identity Reader access; local AppHost configuration remains opt-in and mock mode remains
+Azure-independent.
+
 Keep these rules consistent for both providers:
 
 - Use a stable ID containing only ASCII letters, digits, `-`, or `_`.
@@ -1333,5 +1340,30 @@ agent makes that decision from its instructions and the tools attached to it. Co
 console's flow builder and `X-A2A-Chain-Target` steering are not prerequisites for APIM.
 Publishing only one generic APIM agent API would change that design by requiring a downstream
 router, so preserve the one-card-and-runtime-per-specialist model.
+
+For an existing APIM instance, the project CLI can publish any supported Copilot Studio or
+Foundry agent already present in the adapter catalog:
+
+```powershell
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- configure-citadel `
+  --resource-group <apim-resource-group> --service-name <existing-apim-name> `
+  --backend-url "https://<adapter-or-dev-tunnel-host>" `
+  --tenant-id <tenant-id> --api-client-id <adapter-api-client-id> `
+  --agent-ids "reverser-classic,web-research" --replace
+```
+
+The full deployment uses the equivalent Bicep parameter:
+
+```bicep
+param specialistAgentIds = [
+  'reverser-classic'
+  'web-research'
+]
+```
+
+Use adapter catalog IDs, not raw provider URLs, and retain the complete approved list on each
+CLI update. See the
+[step-by-step CLI and Bicep template](docs/citadel-local.md#publish-an-existing-agent-as-a-separate-apim-a2a-api)
+for prerequisites, generated routes, and verification.
 
 Reference: [Import an A2A agent API into Azure API Management](https://learn.microsoft.com/azure/api-management/agent-to-agent-api).

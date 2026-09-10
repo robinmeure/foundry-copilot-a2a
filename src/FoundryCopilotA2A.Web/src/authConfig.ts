@@ -43,6 +43,23 @@ export function readRuntimeConfig(
   }
 }
 
+export function normalizeGatewayBaseUrl(value: string): string {
+  const endpoint = readEndpoint(value, 'APIM gateway URL', true)
+  if (!endpoint) {
+    throw new Error('APIM gateway URL is required.')
+  }
+  return endpoint
+}
+
+export function withGatewayBaseUrl(config: RuntimeConfig, gatewayBaseUrl: string): RuntimeConfig {
+  const normalizedGatewayBaseUrl = normalizeGatewayBaseUrl(gatewayBaseUrl)
+  return {
+    ...config,
+    adapterBaseUrl: normalizedGatewayBaseUrl,
+    gatewayBaseUrl: normalizedGatewayBaseUrl,
+  }
+}
+
 function readEndpoint(value: string | undefined, name: string, requireHttps = false) {
   if (!value?.trim()) {
     return undefined

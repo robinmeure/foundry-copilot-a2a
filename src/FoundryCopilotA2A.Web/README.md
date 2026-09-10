@@ -35,6 +35,43 @@ adapter to also enable direct ingress. Gateway-only and direct-only configuratio
 are supported; identical normalized URLs do not enable a pretend direct bypass.
 Both configured URLs are validated, and APIM requires HTTPS.
 
+### Discover native APIM A2A APIs
+
+The APIM block above is the browser's ingress route to this adapter. It is not the inventory of
+native **A2A Agent** APIs imported in APIM. To make those separate agent runtimes available in
+the flow builder, enable optional server-side discovery in the AppHost configuration:
+
+```json
+{
+  "ApiManagementDiscovery": {
+    "Enabled": true,
+    "SubscriptionId": "<subscription-id>",
+    "ResourceGroup": "<apim-resource-group>",
+    "ServiceName": "<apim-service-name>",
+    "ApiIds": [
+      "<optional-apim-api-id>"
+    ]
+  }
+}
+```
+
+The adapter uses `AzureCliCredential` in Development and its managed identity outside
+Development to read APIM management metadata. Grant that identity read access to the APIM
+service. The browser never receives an ARM token, subscription key, or runtime endpoint.
+Discovery lists current APIs, checks their public
+`/.well-known/agent-card.json`, accepts only cards whose HTTPS runtime remains under the same
+APIM API path, and merges valid entries into `/api/agents` with an `APIM A2A` label.
+
+`ApiIds` is optional. Set it in production to restrict discovery to approved APIs and to make a
+missing or invalid card fail explicitly. Without it, the adapter probes up to `MaxApis` current
+APIs and ignores APIs that do not expose a public A2A card. The result is cached for
+`RefreshSeconds` (five minutes by default).
+
+Discovered runtimes must use delegated Entra authentication compatible with the browser token.
+The adapter forwards that caller token and never stores an APIM subscription key. APIs marked
+`subscriptionRequired` are therefore excluded, or rejected when explicitly listed. Keep
+`Enabled` false to retain the current static/mock catalog with no Azure dependency.
+
 The drawer loads its catalog through the draft route; messages and traces use only the
 flow accepted with **Done**, without changing the backend OAuth audience. An incomplete
 graph uses the initial endpoint for palette discovery only. A failed request never falls
@@ -66,6 +103,30 @@ variables override `.env.local`, so restart with both URLs set correctly.
 
 ## Build and execute a flow
 
+### Inspect live connectivity
+
+Open **Connectivity** in the top bar, then **Refresh status**. The read-only panel shows
+the browser's direct adapter and APIM URLs, the adapter's advertised public base URL,
+backend mode, and whether authentication is required. Configuration comes from
+`GET /api/connectivity`, which requires authentication when the adapter does and works
+without Azure in explicit anonymous mock mode. Restart an older adapter to expose the endpoint.
+Gateway-only installations must explicitly expose that endpoint through APIM; this change does
+not publish new APIM operations. A missing route is reported rather than silently bypassed.
+
+Health and catalog checks are credential-free browser GETs with a five-second timeout and
+redirects disabled. **Check tunnel** tests `/health` on the advertised Dev Tunnel or an HTTPS
+`*.devtunnels.ms` URL copied from the CLI terminal. This optional input is not saved or applied
+to routing. A tunnel behind an advertised APIM URL cannot be discovered automatically.
+Results distinguish **Reachable** from **Not verified**; CORS, tunnel warning pages, and network
+failures are not proof that a tunnel host has stopped.
+
+No server-side URL proxy, tunnel process management, management-plane access, or agent invocation
+is used. The panel does not verify actual tunnel port mappings, ownership, expiry, APIM backend
+targets, Foundry connection targets, or native delegation. Use the operational CLI for those
+workflows; a successful APIM catalog response does not identify the underlying tunnel.
+
+### Configure a route
+
 The flow builder opens in a configuration drawer before the first conversation. Drag
 configured APIM, adapter, and agent blocks onto the canvas and connect their ports.
 Clicking a palette block and using the **From / To / Connect** controls is the keyboard
@@ -84,8 +145,11 @@ Presets create these supported paths:
 
 APIM is optional independently on each leg: remove either APIM block and reconnect its
 neighbors, keeping both adapter blocks for server-side OBO. Repeated APIM/adapter blocks refer
-to the same configured resources, not newly provisioned instances. Arbitrary endpoints,
-credentials, and additional infrastructure cannot be entered in the canvas.
+to the same configured resources, not newly provisioned instances. The **APIM base URL**
+field accepts an absolute HTTPS API base URL, applies it immediately to catalog and runtime
+requests, and saves the override in browser session storage. **Use app default** removes the
+override and returns to `VITE_GATEWAY_BASE_URL` (or the AppHost `GatewayBaseUrl`). Credentials
+and additional infrastructure cannot be entered in the canvas.
 
 Choose **Done** to apply a valid flow, close the drawer, and focus the conversation composer
 (or sign-in button). Done never sends a message. The main view shows a compact active-flow

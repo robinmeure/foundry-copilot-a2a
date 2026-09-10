@@ -25,11 +25,16 @@ param specialistAgentIds array = []
 param appInsightsName string
 param logAnalyticsWorkspaceId string
 param accessPrincipalId string
+param adapterPrincipalId string
 param tags object
 
 var apiManagementServiceContributorRoleDefinitionId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
   '312a565d-c81f-4fd8-895a-4e21e48d571c'
+)
+var readerRoleDefinitionId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  'acdd72a7-3385-48ef-bd42-f606fba81ae7'
 )
 var adapterBareAudience = replace(adapterApiAudience, 'api://', '')
 var apiPath = 'copilot-studio'
@@ -309,7 +314,7 @@ resource specialistApis 'Microsoft.ApiManagement/service/apis@2024-05-01' = [for
   parent: apim
   name: 'copilot-studio-a2a-${agentId}'
   properties: {
-    displayName: 'Copilot Studio A2A - ${agentId}'
+    displayName: 'A2A specialist - ${agentId}'
     path: '${apiPath}/a2a-agents/${agentId}'
     protocols: [
       'https'
@@ -564,6 +569,16 @@ resource apimAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     principalId: accessPrincipalId
     principalType: 'User'
     roleDefinitionId: apiManagementServiceContributorRoleDefinitionId
+  }
+}
+
+resource adapterApimReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(apim.id, adapterPrincipalId, readerRoleDefinitionId)
+  scope: apim
+  properties: {
+    principalId: adapterPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: readerRoleDefinitionId
   }
 }
 

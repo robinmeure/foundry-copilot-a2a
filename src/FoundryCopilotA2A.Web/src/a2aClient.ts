@@ -63,7 +63,7 @@ export interface AdapterTraceSpan {
 export interface CopilotAgent {
   id: string
   displayName: string
-  provider: 'copilotStudio' | 'foundry'
+  provider: 'copilotStudio' | 'foundry' | 'apiManagement'
   supported: boolean
   statusMessage?: string | null
   chainTargets: string[]
@@ -113,7 +113,9 @@ function isCopilotAgent(value: unknown): value is CopilotAgent {
   return isRecord(value) &&
     typeof value.id === 'string' && value.id.trim().length > 0 &&
     typeof value.displayName === 'string' &&
-    (value.provider === 'copilotStudio' || value.provider === 'foundry') &&
+    (value.provider === 'copilotStudio' ||
+      value.provider === 'foundry' ||
+      value.provider === 'apiManagement') &&
     typeof value.supported === 'boolean' &&
     typeof value.canOrchestrate === 'boolean' &&
     Array.isArray(value.chainTargets) &&

@@ -100,6 +100,63 @@ public sealed class FoundryAgentOptions
     public string[] ChainTargets { get; set; } = [];
 }
 
+public sealed class ApiManagementDiscoveryOptions
+{
+    public const string SectionName = "ApiManagementDiscovery";
+
+    public bool Enabled { get; set; }
+
+    public string SubscriptionId { get; set; } = string.Empty;
+
+    public string ResourceGroup { get; set; } = string.Empty;
+
+    public string ServiceName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Optional APIM API IDs to discover. When empty, all current APIs are checked for a public
+    /// A2A agent card.
+    /// </summary>
+    public string[] ApiIds { get; set; } = [];
+
+    public int RefreshSeconds { get; set; } = 300;
+
+    public int RequestTimeoutSeconds { get; set; } = 10;
+
+    public int MaxApis { get; set; } = 100;
+
+    public void Validate()
+    {
+        if (!Enabled)
+        {
+            return;
+        }
+
+        if (!Guid.TryParse(SubscriptionId, out _))
+        {
+            throw new InvalidOperationException(
+                "ApiManagementDiscovery:SubscriptionId must be an Azure subscription GUID.");
+        }
+
+        if (string.IsNullOrWhiteSpace(ResourceGroup) || string.IsNullOrWhiteSpace(ServiceName))
+        {
+            throw new InvalidOperationException(
+                "ApiManagementDiscovery:ResourceGroup and ServiceName are required when discovery is enabled.");
+        }
+
+        if (RefreshSeconds <= 0 || RequestTimeoutSeconds <= 0 || MaxApis <= 0)
+        {
+            throw new InvalidOperationException(
+                "ApiManagementDiscovery refresh, request timeout, and API limit must be positive.");
+        }
+
+        if (ApiIds.Any(id => string.IsNullOrWhiteSpace(id)))
+        {
+            throw new InvalidOperationException(
+                "ApiManagementDiscovery:ApiIds cannot contain empty values.");
+        }
+    }
+}
+
 public sealed record ResolvedFoundryAgent(
     string Id,
     string DisplayName,
@@ -374,7 +431,8 @@ public sealed record ResolvedCopilotStudioAgent(
 public enum AgentProvider
 {
     CopilotStudio,
-    Foundry
+    Foundry,
+    ApiManagement
 }
 
 public sealed record AgentDescriptor(
@@ -391,6 +449,7 @@ public sealed record AgentDescriptor(
     {
         AgentProvider.CopilotStudio => "copilotStudio",
         AgentProvider.Foundry => "foundry",
+        AgentProvider.ApiManagement => "apiManagement",
         _ => throw new InvalidOperationException($"Unsupported agent provider '{ProviderKind}'.")
     };
 }
@@ -539,6 +598,16 @@ public sealed class AgentCatalog
         }
 
         return configuredAgent;
+    }
+
+    public bool TryResolveAgent(string? requestedAgentId, out AgentDescriptor? agent)
+    {
+        var agentId = string.IsNullOrWhiteSpace(requestedAgentId)
+            ? DefaultAgentId
+            : requestedAgentId.Trim();
+        agent = _agents.FirstOrDefault(candidate =>
+            string.Equals(candidate.Id, agentId, StringComparison.OrdinalIgnoreCase));
+        return agent is not null;
     }
 
     public string ResolveAgentId(string? requestedAgentId) =>

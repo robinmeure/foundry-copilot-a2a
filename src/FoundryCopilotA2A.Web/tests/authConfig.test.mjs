@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { createLoginRequest, readRuntimeConfig } from '../src/authConfig.ts'
+import {
+  createLoginRequest,
+  normalizeGatewayBaseUrl,
+  readRuntimeConfig,
+  withGatewayBaseUrl,
+} from '../src/authConfig.ts'
 
 const identities = {
   VITE_ADAPTER_API_CLIENT_ID: 'backend',
@@ -70,4 +75,31 @@ test('requires HTTPS for APIM and never falls back after invalid gateway configu
     VITE_ADAPTER_BASE_URL: 'http://localhost:5099',
     VITE_GATEWAY_BASE_URL: 'http://citadel.example.test',
   }), /VITE_GATEWAY_BASE_URL must/)
+})
+
+test('applies a normalized UI gateway override without losing direct ingress', () => {
+  const config = readRuntimeConfig({
+    ...identities,
+    VITE_ADAPTER_BASE_URL: 'http://localhost:5099',
+  })
+  const updated = withGatewayBaseUrl(config, ' https://APIM.example.test:443/copilot/// ')
+  assert.equal(updated.adapterBaseUrl, 'https://apim.example.test/copilot')
+  assert.equal(updated.gatewayBaseUrl, 'https://apim.example.test/copilot')
+  assert.equal(updated.directAdapterBaseUrl, 'http://localhost:5099')
+})
+
+test('validates UI gateway overrides as absolute HTTPS API base URLs', () => {
+  assert.equal(
+    normalizeGatewayBaseUrl('https://apim.example.test/path/'),
+    'https://apim.example.test/path',
+  )
+  assert.throws(() => normalizeGatewayBaseUrl(''), /required/)
+  assert.throws(
+    () => normalizeGatewayBaseUrl('http://apim.example.test/path'),
+    /must be an absolute HTTPS/,
+  )
+  assert.throws(
+    () => normalizeGatewayBaseUrl('https://apim.example.test/path?key=value'),
+    /must be an absolute HTTPS/,
+  )
 })
