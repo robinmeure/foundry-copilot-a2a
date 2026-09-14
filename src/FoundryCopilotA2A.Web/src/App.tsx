@@ -16,11 +16,12 @@ import {
   type A2AHttpResponse,
   type AdapterTrace,
   type AdapterTraceSpan,
-  type ConversationTurn,
+  type CitationBundle,
   type CopilotAgent,
   type CopilotAgentCatalog,
   listAgents,
   sendMessage,
+  taskStatusLabel,
 } from './a2aClient'
 import {
   createLoginRequest,
@@ -47,6 +48,9 @@ import {
   type FlowGraph,
 } from './flowModel'
 import './App.css'
+import '../../FoundryCopilotA2A.BrowserShared/citations.css'
+import Sources from './Sources.ts'
+import { toConversationHistory } from './conversationHistory.ts'
 
 interface AppProps {
   config: RuntimeConfig
@@ -63,6 +67,7 @@ interface TurnRecord {
   index: number
   prompt: string
   answer?: string
+  citations?: CitationBundle
   progress?: string
   error?: string
   agentName: string
@@ -387,8 +392,9 @@ function App({ config }: AppProps) {
         history,
         chainTargetAgentId: plan.targetAgentId,
         onRequest: (request) => updateTurn(turnId, { request, status: 'sending' }),
-        onUpdate: (answer) => updateTurn(turnId, { answer }),
+        onUpdate: (answer, citations) => updateTurn(turnId, { answer, citations, progress: undefined }),
         onProgress: (progress) => updateTurn(turnId, { progress }),
+        onTaskStatus: ({ state, message }) => updateTurn(turnId, { progress: message ?? taskStatusLabel(state) }),
         onResponse: (response, durationMs) => {
           receivedResponse = true
           updateTurn(turnId, { response, durationMs })
@@ -403,6 +409,7 @@ function App({ config }: AppProps) {
       })
       updateTurn(turnId, {
         answer: exchange.answer,
+        citations: exchange.citations,
         progress: undefined,
         status: 'succeeded',
       })
@@ -448,6 +455,8 @@ function App({ config }: AppProps) {
           ? {
               ...turn,
               error,
+              citations: undefined,
+              progress: undefined,
               status: 'failed',
               durationMs:
                 turn.durationMs ?? Math.max(1, Date.now() - turn.startedAt),
@@ -706,6 +715,8 @@ function TurnBlock({
         <article className="message assistant">
           <span>Specialist · {turn.agentName}</span>
           <AssistantMessage answer={turn.answer} />
+          {turn.status === 'succeeded' && <Sources citations={turn.citations} />}
+          {turn.error && <p role="alert" className="failure-message">{turn.error}</p>}
           <button
             type="button"
             className="wire-chip in succeeded"
@@ -1565,17 +1576,6 @@ function computeSpanDepths(spans: AdapterTraceSpan[]) {
 function spanKindTone(kind: string): TimelineTone {
   const normalized = kind.toLowerCase()
   return normalized === 'server' || normalized === 'client' ? normalized : 'internal'
-}
-
-function toConversationHistory(turns: TurnRecord[]): ConversationTurn[] {
-  return turns.flatMap<ConversationTurn>((turn) =>
-    turn.answer === undefined || parseConsentRequest(turn.answer)
-      ? []
-      : [
-          { role: 'user', text: turn.prompt },
-          { role: 'assistant', text: turn.answer },
-        ],
-  )
 }
 
 function requestPath(turn: TurnRecord) {

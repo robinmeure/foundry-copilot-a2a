@@ -16,6 +16,7 @@ public sealed record CopilotInvocationResult(
     string? ResponseId)
 {
     public AgentResponder? Responder { get; init; }
+    public CitationBundle? Citations { get; init; }
 }
 
 public sealed record CopilotInvocationUpdate(
@@ -25,6 +26,7 @@ public sealed record CopilotInvocationUpdate(
     bool IsInformative = false)
 {
     public AgentResponder? Responder { get; init; }
+    public CitationBundle? Citations { get; init; }
 }
 
 public sealed record AgentResponder(string Id, string Name);
@@ -44,6 +46,7 @@ public sealed class MockCopilotStudioInvoker : ICopilotStudioInvoker
 
     /// <summary>Prompt that makes the mock reproduce a streamed Copilot Studio answer.</summary>
     public const string StreamProgressPrompt = "stream progress response";
+    public const string CitationPrompt = "show citation example";
 
     /// <summary>The answer the mock streams token by token for <see cref="StreamProgressPrompt"/>.</summary>
     public static readonly string[] StreamedAnswerDeltas =
@@ -82,6 +85,22 @@ public sealed class MockCopilotStudioInvoker : ICopilotStudioInvoker
             : $" | context: {metadata.History.Count} earlier turns";
 
         await Task.Yield();
+        if (string.Equals(prompt, CitationPrompt, StringComparison.OrdinalIgnoreCase))
+        {
+            yield return new CopilotInvocationUpdate(
+                "This is a mock answer with a source [1].", conversationId, "mock-citation-answer");
+            yield return new CopilotInvocationUpdate(
+                string.Empty, conversationId, "mock-citation-sources")
+            {
+                Citations = AgentCitations.FromProviderSource(
+                    new AgentResponder("mock", "Mock Copilot Studio"),
+                    "mock-citation-answer",
+                    "Example source (mock)",
+                    "https://example.org/",
+                    "[1]")
+            };
+            yield break;
+        }
         if (string.Equals(prompt, StreamProgressPrompt, StringComparison.Ordinal))
         {
             yield return new CopilotInvocationUpdate(
@@ -331,6 +350,7 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
                                                   cachedConversationId is not null &&
                                                   !agent.IsOrchestrator &&
                                                   !restarted &&
+                                                  exception is not CitationFormatException &&
                                                   exception is not OperationCanceledException)
                 {
                     traceActivity?.AddEvent(new System.Diagnostics.ActivityEvent(
@@ -406,6 +426,7 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
         var answer = ReadAnswerStreamAsync(
             client.AskQuestionAsync(prompt, conversationId, cancellationToken),
             conversationId,
+            new AgentResponder(metadata.AgentId, _agents[metadata.AgentId].DisplayName),
             activitySummary,
             allowOAuthChallenge: true,
             cancellationToken);
@@ -437,6 +458,7 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
                     CreateMessageActivity(prompt),
                     cancellationToken),
                 conversationId,
+                new AgentResponder(metadata.AgentId, _agents[metadata.AgentId].DisplayName),
                 activitySummary,
                 allowOAuthChallenge: false,
                 cancellationToken))
@@ -482,6 +504,7 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
     private static async IAsyncEnumerable<AnswerStreamItem> ReadAnswerStreamAsync(
         IAsyncEnumerable<IActivity> activities,
         string conversationId,
+        AgentResponder responder,
         CopilotStudioActivitySummary turnSummary,
         bool allowOAuthChallenge,
         [EnumeratorCancellation] CancellationToken cancellationToken)
@@ -520,18 +543,12 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
                 yield return new AnswerStreamItem(null, card);
             }
 
-            if (answerStream.Next(activity, messageText) is not { } chunk)
+            if (answerStream.NextUpdate(activity, messageText, conversationId, responder) is not { } update)
             {
                 continue;
             }
 
-            yield return new AnswerStreamItem(
-                new CopilotInvocationUpdate(
-                    chunk.Text,
-                    conversationId,
-                    activity.Id,
-                    chunk.IsInformative),
-                null);
+            yield return new AnswerStreamItem(update, null);
         }
 
         traceActivity?.SetTag("copilot_studio.stream.delta.count", answerStream.DeltaCount);
@@ -917,6 +934,22 @@ internal sealed class CopilotStudioAnswerStream
     public int DeltaCount { get; private set; }
 
     public int SuppressedFinalCount { get; private set; }
+
+    public CopilotInvocationUpdate? NextUpdate(
+        IActivity activity, string? messageText, string conversationId, AgentResponder responder)
+    {
+        var citations = CopilotStudioCitations.Read(activity, responder);
+        var chunk = Next(activity, messageText);
+        // The final activity may repeat streamed text but carry the only citation entities.
+        return chunk is null && citations is null
+            ? null
+            : new CopilotInvocationUpdate(
+                chunk?.Text ?? string.Empty, conversationId, activity.Id,
+                chunk?.IsInformative ?? false)
+            {
+                Citations = citations
+            };
+    }
 
     /// <param name="messageText">
     /// The resolved text of a message activity, which may come from an adaptive card rather than

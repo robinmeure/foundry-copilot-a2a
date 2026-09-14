@@ -7,6 +7,40 @@ Copilot Studio produces it, and progress such as "Generating plan..." is shown w
 runs without becoming part of the answer. The adapter remains responsible for token validation
 and the Copilot Studio OBO exchange.
 
+Task snapshots/status updates also drive progress labels. Failed, canceled, rejected and
+required-input/authentication tasks are errors even if partial text was received, with no
+automatic retry. Completed tasks drain remaining stream data before success, preserving late
+citations. Legacy streams may still complete at EOF; final-only replies are not artificially
+animated. See the [shared lifecycle contract](../FoundryCopilotA2A.BrowserShared/README.md#task-lifecycle).
+
+## Structured Sources
+
+Successful responses show an accessible **Sources** list when the final adapter response
+includes the optional `urn:foundry-copilot-a2a:citations:v1` A2A data part, with
+`schemaVersion: "1"`. External titles, literal markers/locators/quotes, and the source's
+original agent label are shown separately from the response author. Source values render
+as escaped text, not HTML. HTTP(S) links open with `noopener noreferrer`; sources are never
+automatically fetched. Sources without URLs or markers remain visible, and legacy responses
+are unchanged. The browser does not infer citations from answer text.
+Excerpts are provider-reported, not independently verified quotations; native Copilot Studio
+citation abstracts can supply the wire `quote` field.
+
+Streaming citation deltas merge by source ID and reference tuple, including data-only late
+final events without resetting text. Actual replacement text resets the current citations.
+Malformed payloads, unsupported versions, conflicting source IDs, unknown source references,
+and unsafe URLs fail explicitly. The bounds are 100 sources, 200 references, 256 characters
+per ID, and 8192 per other field; optional fields are omitted rather than null.
+See the [shared contract and streaming rules](../FoundryCopilotA2A.BrowserShared/README.md).
+Credential-bearing source query parameters (including signed URLs) are rejected, not stripped
+or exposed as links; unrelated query parameters/fragments remain intact.
+
+Citations remain attached to their successful response in memory. Failed turns do not supply
+future conversation history; history is still user/assistant text only, not browser-asserted
+trusted provenance. Managed orchestrators may summarize specialist output and discard
+structured A2A metadata. The UI cannot recover verified citations from prose if that metadata
+does not reach the final response; upstream runtime support must preserve it. This feature
+does not change agent prompts or cloud configuration.
+
 ## Configure
 
 Copy `.env.example` to `.env.local` and provide the dedicated SPA and backend API identities:

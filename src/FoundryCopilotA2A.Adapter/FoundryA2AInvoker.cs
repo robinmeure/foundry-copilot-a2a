@@ -55,7 +55,10 @@ public sealed class FoundryA2AInvoker(
         yield return new CopilotInvocationUpdate(
             result.Text,
             result.ConversationId,
-            result.ResponseId);
+            result.ResponseId)
+        {
+            Citations = result.Citations
+        };
     }
 
     private async Task<CopilotInvocationResult> InvokeCoreAsync(
@@ -108,17 +111,20 @@ public sealed class FoundryA2AInvoker(
                 $"Foundry A2A failed: {message ?? "unknown JSON-RPC error"}.");
         }
 
-        var text = A2AResponseText.Extract(document.RootElement);
-        if (string.IsNullOrWhiteSpace(text))
+        var answer = A2AResponseText.Read(document.RootElement);
+        if (string.IsNullOrWhiteSpace(answer.Text))
         {
             throw new AdapterRequestException("Foundry A2A returned no text response.");
         }
 
         activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
         return new CopilotInvocationResult(
-            text,
+            answer.Text,
             metadata.ContextId,
-            requestId);
+            requestId)
+        {
+            Citations = answer.Citations
+        };
     }
 
     private async Task<string> AcquireTokenAsync(

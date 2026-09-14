@@ -1,3 +1,8 @@
+import { readTaskStatus, taskStatusError, type A2ATaskStatus } from './taskStatus.ts'
+import { readResponseAgent, type A2AAgent } from './agentMetadata.ts'
+export { taskStatusLabel, type A2ATaskStatus } from './taskStatus.ts'
+export type { A2AAgent } from './agentMetadata.ts'
+
 export interface A2AMessage {
   id: string
   role: 'assistant' | 'user'
@@ -19,6 +24,7 @@ export interface A2AHttpResponse {
 
 export interface A2AExchange {
   answer: string
+  citations?: CitationBundle
   durationMs: number
   request: A2AHttpRequest
   response: A2AHttpResponse
@@ -126,7 +132,8 @@ function isCopilotAgent(value: unknown): value is CopilotAgent {
 /** A text fragment of an A2A response, plus how it joins the answer so far. */
 interface A2APart {
   text?: string
-  metadata?: { isInformative?: boolean }
+  data?: unknown
+  metadata?: Record<string, unknown>
 }
 
 export interface JsonRpcResponse {
@@ -145,13 +152,11 @@ export interface JsonRpcResponse {
     /** Whole answer, used when the response is a single message rather than a task. */
     message?: { parts?: A2APart[] }
     parts?: A2APart[]
+    /** A2A 0.3 artifact updates put the update directly in result. */
+    kind?: string
+    artifact?: { parts?: A2APart[] }
+    append?: boolean
   }
-}
-
-interface AnswerChunk {
-  text: string
-  isInformative: boolean
-  append: boolean
 }
 
 export interface SendMessageOptions {
@@ -167,8 +172,13 @@ export interface SendMessageOptions {
   /** The diagnostic console loads traces by default; chat-only clients can opt out. */
   includeTrace?: boolean
   onRequest?: (request: A2AHttpRequest) => void
-  onUpdate?: (answer: string) => void
+  /** Complete current answer and citation snapshot, including data-only updates. */
+  onUpdate?: (answer: string, citations?: CitationBundle) => void
   onProgress?: (message: string) => void
+  /** Task lifecycle is separate from answer text and informative progress. */
+  onTaskStatus?: (status: A2ATaskStatus) => void
+  /** Last reported responder identity; deduplicated across token chunks. */
+  onAgent?: (agent: A2AAgent) => void
   onResponse?: (response: A2AHttpResponse, durationMs: number) => void
   onTrace?: (trace?: AdapterTrace, error?: string) => void
 }
@@ -186,6 +196,8 @@ export async function sendMessage({
   onRequest,
   onUpdate,
   onProgress,
+  onTaskStatus,
+  onAgent,
   onResponse,
   onTrace,
 }: SendMessageOptions): Promise<A2AExchange> {
@@ -238,10 +250,12 @@ export async function sendMessage({
   })
 
   const contentType = response.headers.get('Content-Type') ?? ''
-  const { responseText, answer, rpcError } = await readStreamingResponse(
+  const { responseText, answer, citations, rpcError, taskError } = await readStreamingResponse(
     response,
     onUpdate,
     onProgress,
+    onTaskStatus,
+    onAgent,
   )
   const responseBody = parseResponseBody(responseText, contentType)
   const jsonRpcResponse = asJsonRpcResponse(responseBody)
@@ -267,7 +281,9 @@ export async function sendMessage({
         `A2A error ${effectiveRpcError.code ?? 'unknown'}.`,
     )
   }
-  if (!contentType.toLowerCase().includes('text/event-stream')) {
+  if (taskError) throw taskError
+  if (!contentType.toLowerCase().includes('text/event-stream') &&
+      !contentType.toLowerCase().includes('application/json')) {
     throw new Error(
       `Adapter returned unsupported content type '${contentType || 'unknown'}'.`,
     )
@@ -290,6 +306,7 @@ export async function sendMessage({
 
   return {
     answer,
+    citations,
     durationMs,
     request,
     response: exchangeResponse,
@@ -300,8 +317,10 @@ export async function sendMessage({
 
 async function readStreamingResponse(
   response: Response,
-  onUpdate?: (answer: string) => void,
+  onUpdate?: (answer: string, citations?: CitationBundle) => void,
   onProgress?: (message: string) => void,
+  onTaskStatus?: (status: A2ATaskStatus) => void,
+  onAgent?: (agent: A2AAgent) => void,
 ) {
   if (!response.body) {
     throw new Error('The adapter returned a streaming response without a body.')
@@ -312,21 +331,20 @@ async function readStreamingResponse(
   let pending = ''
   let responseText = ''
   let answer = ''
+  let citations: CitationBundle | undefined
+  // Keep definitions across replacements to detect an id being repurposed within this turn.
+  let sourceRegistry: CitationBundle | undefined
   let rpcError: JsonRpcResponse['error']
+  let taskError: Error | undefined
+  let currentAgent: A2AAgent | undefined
 
-  const processEvent = (event: string) => {
-    const data = event
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith('data:'))
-      .map((line) => line.slice('data:'.length).trimStart())
-      .join('\n')
-    if (!data || data === 'end') {
-      return
-    }
-
+  const processData = (data: string) => {
+    if (taskError) return
     let rpcResponse: JsonRpcResponse
     try {
-      rpcResponse = JSON.parse(data) as JsonRpcResponse
+      const parsed: unknown = JSON.parse(data)
+      if (!isRecord(parsed)) throw new Error('Expected a JSON-RPC object.')
+      rpcResponse = parsed
     } catch {
       throw new Error('The adapter returned an invalid JSON-RPC streaming event.')
     }
@@ -336,40 +354,82 @@ async function readStreamingResponse(
       return
     }
 
-    for (const chunk of answerChunks(rpcResponse)) {
-      if (chunk.isInformative) {
-        onProgress?.(chunk.text)
-        continue
+    const reportedAgent = readResponseAgent(rpcResponse.result)
+    if (reportedAgent) {
+      const agent = reportedAgent.id && reportedAgent.id === currentAgent?.id
+        ? { ...currentAgent, ...reportedAgent } : reportedAgent
+      if (agent.id !== currentAgent?.id || agent.name !== currentAgent?.name) {
+        currentAgent = agent
+        onAgent?.(agent)
+      }
+    }
+    const taskStatus = readTaskStatus(rpcResponse.result)
+    if (taskStatus) {
+      onTaskStatus?.(taskStatus)
+      taskError = taskStatusError(taskStatus)
+      if (taskError) return
+    }
+    const chunk = answerChunk(rpcResponse)
+    if (!chunk) return
+    for (const progress of chunk.progress) onProgress?.(progress)
+    if (chunk.text === undefined && !chunk.deltas.length) return
+    sourceRegistry = mergeCitationBundles(sourceRegistry, chunk.deltas.map((delta) => ({
+      ...delta, citations: [],
+    })))
+    const replacesAnswer = chunk.text !== undefined && !chunk.append
+    citations = mergeCitationBundles(replacesAnswer ? undefined : citations, chunk.deltas)
+    if (chunk.text !== undefined) {
+      answer = chunk.append ? answer + chunk.text : chunk.text
+    }
+    onUpdate?.(answer, citations)
+  }
+
+  const processEvent = (event: string) => {
+    const data = event
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice('data:'.length).trimStart())
+      .join('\n')
+    if (data && data !== 'end' && data !== '[DONE]') processData(data)
+  }
+
+  const isJson = response.headers.get('Content-Type')?.toLowerCase().includes('application/json')
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) {
+        break
       }
 
-      // A chunk that does not append restarts the artifact it belongs to.
-      answer = chunk.append ? answer + chunk.text : chunk.text
-      onUpdate?.(answer)
+      const chunk = decoder.decode(value, { stream: true })
+      responseText += chunk
+      pending += chunk
+      if (!isJson) {
+        const events = pending.split(/\r?\n\r?\n/)
+        pending = events.pop() ?? ''
+        events.forEach(processEvent)
+        if (taskError) {
+          await reader.cancel()
+          break
+        }
+      }
     }
-  }
 
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) {
-      break
+    const remainder = decoder.decode()
+    responseText += remainder
+    pending += remainder
+    if (pending.trim()) {
+      if (isJson) processData(pending)
+      else processEvent(pending)
     }
-
-    const chunk = decoder.decode(value, { stream: true })
-    responseText += chunk
-    pending += chunk
-    const events = pending.split(/\r?\n\r?\n/)
-    pending = events.pop() ?? ''
-    events.forEach(processEvent)
+  } catch (reason) {
+    await reader.cancel().catch(() => {})
+    throw reason
+  } finally {
+    reader.releaseLock()
   }
 
-  const remainder = decoder.decode()
-  responseText += remainder
-  pending += remainder
-  if (pending.trim()) {
-    processEvent(pending)
-  }
-
-  return { responseText, answer, rpcError }
+  return { responseText, answer, citations, rpcError, taskError }
 }
 
 function asJsonRpcResponse(value: unknown): JsonRpcResponse | undefined {
@@ -382,43 +442,46 @@ function asJsonRpcResponse(value: unknown): JsonRpcResponse | undefined {
  * Reads the answer fragments of one streamed event. Only artifact and message parts carry the
  * answer; task status updates carry generic lifecycle text that must not be shown as the answer.
  */
-function answerChunks(response: JsonRpcResponse): AnswerChunk[] {
+function answerChunk(response: JsonRpcResponse) {
   const result = response.result
   if (!result) {
-    return []
+    return undefined
   }
 
-  const artifactUpdate = result.artifactUpdate
+  const artifactUpdate = result.artifactUpdate ??
+    (result.kind === 'artifact-update' ? result : undefined)
   const parts = artifactUpdate
     ? artifactUpdate.artifact?.parts
     : (result.message?.parts ?? result.parts)
   if (!parts?.length) {
-    return []
+    return undefined
+  }
+  if (!Array.isArray(parts) || parts.some((part) => !isRecord(part))) {
+    throw new Error('The adapter returned invalid A2A answer parts.')
   }
 
-  const chunks: AnswerChunk[] = []
+  const progress: string[] = []
+  const deltas: CitationBundle[] = []
+  const text: string[] = []
   for (const part of parts) {
-    if (part.text && part.metadata?.isInformative === true) {
-      chunks.push({ text: part.text, isInformative: true, append: false })
+    const partDeltas = citationDeltasFromPart(part)
+    if (part.metadata?.isInformative === true) {
+      if (part.text) progress.push(part.text)
+      continue
     }
+    if (typeof part.text === 'string' && part.text.length > 0) text.push(part.text)
+    deltas.push(...partDeltas)
   }
 
   // The answer parts of one event belong to a single chunk, so they are joined before the
   // append flag is applied once. A2A appends only when the update says so; anything else
   // restarts the artifact.
-  const answer = parts
-    .filter((part) => part.text && part.metadata?.isInformative !== true)
-    .map((part) => part.text)
-    .join('')
-  if (answer) {
-    chunks.push({
-      text: answer,
-      isInformative: false,
-      append: artifactUpdate?.append === true,
-    })
+  return {
+    text: text.length ? text.join('') : undefined,
+    progress,
+    deltas: progress.length && !text.length ? [] : deltas,
+    append: artifactUpdate?.append === true,
   }
-
-  return chunks
 }
 
 async function resolveResponseTrace(
@@ -479,3 +542,9 @@ async function loadTrace(
 function delay(milliseconds: number) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 }
+import {
+  citationDeltasFromPart,
+  mergeCitationBundles,
+  type CitationBundle,
+} from './citations.ts'
+export * from './citations.ts'

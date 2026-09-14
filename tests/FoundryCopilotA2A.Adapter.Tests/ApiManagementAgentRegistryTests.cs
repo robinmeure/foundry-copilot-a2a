@@ -86,10 +86,12 @@ public sealed class ApiManagementAgentRegistryTests
         Assert.Contains("Will it rain?", handler.RuntimeBody);
     }
 
-    [Fact]
-    public async Task AdapterAttributesDiscoveredAgentRepliesToTheAgentCardName()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AdapterAttributesDiscoveredAgentRepliesToTheAgentCardName(bool withCitations)
     {
-        using var outboundClient = new HttpClient(new ApimHandler());
+        using var outboundClient = new HttpClient(new ApimHandler(withCitations: withCitations));
         var registry = CreateRegistry(outboundClient);
         using var factory = new A2AAdapterFactory().WithWebHostBuilder(builder =>
             builder.ConfigureTestServices(services =>
@@ -130,6 +132,15 @@ public sealed class ApiManagementAgentRegistryTests
         var metadata = part.GetProperty("metadata");
         Assert.Equal("apim-weather-api", metadata.GetProperty("agentId").GetString());
         Assert.Equal("Weather specialist", metadata.GetProperty("agentName").GetString());
+        var citations = A2AResponseText.Read(body.RootElement).Citations;
+        if (withCitations)
+        {
+            Assert.Equal(CitationTests.Sample().Sources[0], Assert.Single(citations!.Sources));
+        }
+        else
+        {
+            Assert.Null(citations);
+        }
     }
 
     private static ApiManagementAgentRegistry CreateRegistry(
@@ -167,7 +178,7 @@ public sealed class ApiManagementAgentRegistryTests
         public HttpClient CreateClient(string name) => client;
     }
 
-    private sealed class ApimHandler(bool subscriptionRequired = false) : HttpMessageHandler
+    private sealed class ApimHandler(bool subscriptionRequired = false, bool withCitations = false) : HttpMessageHandler
     {
         public int AgentCardRequests { get; private set; }
 
@@ -223,6 +234,10 @@ public sealed class ApiManagementAgentRegistryTests
 
             RuntimeAuthorization = request.Headers.Authorization?.ToString();
             RuntimeBody = await request.Content!.ReadAsStringAsync(cancellationToken);
+            if (withCitations)
+            {
+                return Json(CitationTests.UpstreamResponse("Sunny"));
+            }
             return Json(
                 """
                 {

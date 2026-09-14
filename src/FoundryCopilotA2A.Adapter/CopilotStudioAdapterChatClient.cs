@@ -97,12 +97,13 @@ public sealed class CopilotStudioAdapterChatClient(
 
             var update = enumerator.Current;
             var responder = RequireResponder(update.Responder);
-            var text = update.IsInformative || !answerStarted
+            var hasText = !string.IsNullOrEmpty(update.Text);
+            var text = hasText && (update.IsInformative || !answerStarted)
                 ? WithResponderHeader(update.Text, responder)
                 : update.Text;
             var responseUpdate = new ChatResponseUpdate(
                 ChatRole.Assistant,
-                [CreateResponseContent(text, responder, update.IsInformative)])
+                CreateResponseContents(text, responder, update.Citations, update.IsInformative))
             {
                 AuthorName = responder.Name,
                 ConversationId = metadata.ContextId ?? update.ConversationId,
@@ -110,7 +111,7 @@ public sealed class CopilotStudioAdapterChatClient(
                 MessageId = $"response-{metadata.MessageId}",
                 ModelId = metadata.AgentId
             };
-            if (!update.IsInformative)
+            if (!update.IsInformative && hasText)
             {
                 answerStarted = true;
             }
@@ -160,13 +161,17 @@ public sealed class CopilotStudioAdapterChatClient(
         await foreach (var update in invoker.StreamAsync(prompt, metadata, cancellationToken))
         {
             RequireResponder(update.Responder);
+            if (update.Citations is not null)
+            {
+                AgentCitations.Validate(update.Citations);
+            }
             if (CopilotStudioResponseClassifier.IsUnsupportedHarnessResponse(update.Text))
             {
                 activity?.SetTag("copilot_studio.client.compatible", false);
                 logger.LogWarning(
                     "Agent {AgentId} returned the retired enhanced task completion response.",
                     metadata.AgentId);
-                yield return update with { Text = CopilotStudioResponseClassifier.Guidance };
+                yield return update with { Text = CopilotStudioResponseClassifier.Guidance, Citations = null };
                 continue;
             }
 
@@ -181,7 +186,7 @@ public sealed class CopilotStudioAdapterChatClient(
         var responder = RequireResponder(result.Responder);
         return new(new ChatMessage(
             ChatRole.Assistant,
-            [CreateResponseContent(WithResponderHeader(result.Text, responder), responder)])
+            CreateResponseContents(WithResponderHeader(result.Text, responder), responder, result.Citations))
         {
             AuthorName = responder.Name
         })
@@ -213,6 +218,21 @@ public sealed class CopilotStudioAdapterChatClient(
         }
 
         return new TextContent(text) { AdditionalProperties = properties };
+    }
+
+    private static List<AIContent> CreateResponseContents(
+        string text, AgentResponder responder, CitationBundle? citations, bool isInformative = false)
+    {
+        List<AIContent> contents = [];
+        if (!string.IsNullOrEmpty(text))
+        {
+            contents.Add(CreateResponseContent(text, responder, isInformative));
+        }
+        if (!isInformative && citations is { Sources.Count: > 0 })
+        {
+            contents.Add(AgentCitations.ToContent(citations));
+        }
+        return contents;
     }
 }
 
@@ -500,13 +520,15 @@ public sealed class IdempotencyStore : IDisposable
             string? conversationId = null;
             string? responseId = null;
             AgentResponder? responder = null;
+            CitationBundle? citations = null;
 
             try
             {
                 await foreach (var update in _factory(timeoutSource.Token)
                     .WithCancellation(timeoutSource.Token))
                 {
-                    if (string.IsNullOrEmpty(update.Text))
+                    if (string.IsNullOrEmpty(update.Text) &&
+                        (update.IsInformative || update.Citations is not { Sources.Count: > 0 }))
                     {
                         continue;
                     }
@@ -515,6 +537,7 @@ public sealed class IdempotencyStore : IDisposable
                     {
                         text.Append(update.Text);
                         responder = update.Responder;
+                        citations = AgentCitations.Merge(citations, update.Citations);
                     }
                     conversationId = update.ConversationId ?? conversationId;
                     responseId = update.ResponseId ?? responseId;
@@ -529,7 +552,8 @@ public sealed class IdempotencyStore : IDisposable
 
                 Complete(new CopilotInvocationResult(text.ToString(), conversationId, responseId)
                 {
-                    Responder = responder
+                    Responder = responder,
+                    Citations = citations
                 });
             }
             catch (Exception exception)

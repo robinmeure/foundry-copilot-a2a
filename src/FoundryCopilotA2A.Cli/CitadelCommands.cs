@@ -15,7 +15,7 @@ internal sealed record CitadelConfiguration(
     string BackendUrl,
     string TenantId,
     string ApiClientId,
-    string AllowedOrigin,
+    IReadOnlyList<string> AllowedOrigins,
     IReadOnlyList<string> AgentIds,
     bool Replace);
 
@@ -56,7 +56,7 @@ internal static class CitadelCommands
     {
         arguments.EnsureOnly(
             "subscription-id", "resource-group", "service-name", "api-id", "api-path",
-            "backend-url", "tenant-id", "api-client-id", "allowed-origin",
+            "backend-url", "tenant-id", "api-client-id", "allowed-origin", "allowed-origins",
             "agent-ids", "replace", "help");
 
         var configuration = ParseConfiguration(arguments);
@@ -123,7 +123,7 @@ internal static class CitadelCommands
             throw new CliException("--backend-url must be HTTPS without credentials, a query, or a fragment.");
         }
 
-        var origin = ReadOrigin(arguments);
+        var origins = ReadAllowedOrigins(arguments);
         var tenantId = arguments.Require("tenant-id");
         var apiClientId = arguments.Require("api-client-id");
         if (!Guid.TryParse(tenantId, out _) || !Guid.TryParse(apiClientId, out _))
@@ -142,18 +142,53 @@ internal static class CitadelCommands
             arguments.Require("resource-group"),
             arguments.Require("service-name"),
             apiId, apiPath, backend.AbsoluteUri.TrimEnd('/'),
-            tenantId, apiClientId, origin, agents, arguments.Flag("replace"));
+            tenantId, apiClientId, origins, agents, arguments.Flag("replace"));
     }
 
     internal static string ReadOrigin(CommandArguments arguments)
     {
-        var origin = arguments.AbsoluteHttpUri("allowed-origin", "http://localhost:5173");
+        return ParseOrigin(
+            arguments.Optional("allowed-origin", "http://localhost:5173")!,
+            "allowed-origin");
+    }
+
+    internal static IReadOnlyList<string> ReadAllowedOrigins(CommandArguments arguments)
+    {
+        if (arguments.Has("allowed-origin") && arguments.Has("allowed-origins"))
+        {
+            throw new CliException("Choose either --allowed-origin or --allowed-origins.");
+        }
+
+        var optionName = arguments.Has("allowed-origins") ? "allowed-origins" : "allowed-origin";
+        var configured = arguments.Optional(optionName, "http://localhost:5173")!;
+        var origins = configured
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(value => ParseOrigin(value, optionName))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (origins.Length == 0)
+        {
+            throw new CliException($"--{optionName} must contain at least one origin.");
+        }
+
+        return origins;
+    }
+
+    private static string ParseOrigin(string value, string optionName)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var origin) ||
+            (origin.Scheme != Uri.UriSchemeHttp && origin.Scheme != Uri.UriSchemeHttps))
+        {
+            throw new CliException(
+                $"--{optionName} must contain exact HTTP or HTTPS origins without paths.");
+        }
         if (origin.AbsolutePath != "/" ||
             !string.IsNullOrEmpty(origin.UserInfo) ||
             !string.IsNullOrEmpty(origin.Query) ||
             !string.IsNullOrEmpty(origin.Fragment))
         {
-            throw new CliException("--allowed-origin must be an exact HTTP or HTTPS origin without a path.");
+            throw new CliException(
+                $"--{optionName} must contain exact HTTP or HTTPS origins without paths.");
         }
 
         return origin.GetLeftPart(UriPartial.Authority);
@@ -329,7 +364,12 @@ internal static class CitadelCommands
                 new XElement("value", "true")).ToString()
             : "";
         return ReadPolicy("citadel-api.xml")
-            .Replace("__ALLOWED_ORIGINS__", new XElement("origin", configuration.AllowedOrigin).ToString())
+            .Replace(
+                "__ALLOWED_ORIGINS__",
+                string.Join(
+                    Environment.NewLine,
+                    configuration.AllowedOrigins.Select(origin =>
+                        new XElement("origin", origin).ToString())))
             .Replace("__BACKEND_HEADERS__", tunnelHeader);
     }
 

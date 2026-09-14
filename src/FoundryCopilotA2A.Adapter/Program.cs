@@ -399,12 +399,15 @@ IResult BuildChainAgentCard(string agentId, AgentCatalog catalog)
             streaming = true,
             pushNotifications = false,
             stateTransitionHistory = false,
-            extensions = Array.Empty<object>()
+            extensions = new[]
+            {
+                new { uri = AgentCitations.ExtensionUri, description = AgentCitations.Description, required = false }
+            }
         },
         securitySchemes,
         security,
         defaultInputModes = new[] { "text/plain" },
-        defaultOutputModes = new[] { "text/plain" },
+        defaultOutputModes = new[] { "text/plain", "application/json" },
         skills = new[]
         {
             new
@@ -443,11 +446,20 @@ var agentCard = new AgentCard
     Description = "Delegates requests to the selected Copilot Studio or Foundry agent.",
     Version = "0.1.0",
     DefaultInputModes = ["text/plain"],
-    DefaultOutputModes = ["text/plain"],
+    DefaultOutputModes = ["text/plain", "application/json"],
     Capabilities = new AgentCapabilities
     {
         Streaming = true,
-        PushNotifications = false
+        PushNotifications = false,
+        Extensions =
+        [
+            new AgentExtension
+            {
+                Uri = AgentCitations.ExtensionUri,
+                Description = AgentCitations.Description,
+                Required = false
+            }
+        ]
     },
     SupportedInterfaces =
     [
@@ -470,7 +482,33 @@ var agentCard = new AgentCard
         }
     ]
 };
-agentCardEndpoints.MapAgentCardGetWithV03Compat(() => Task.FromResult(agentCard));
+var routerCardEndpoints = agentCardEndpoints.MapGroup("");
+routerCardEndpoints.AddEndpointFilter(async (context, next) =>
+{
+    var result = await next(context);
+    // The preview SDK's v0.3 card converter omits extensions in both strict and blended cards.
+    if (result is IValueHttpResult { Value: A2A.V0_3.AgentCard legacyCard })
+    {
+        legacyCard.Capabilities.Extensions =
+        [
+            new A2A.V0_3.AgentExtension
+            {
+                Uri = AgentCitations.ExtensionUri,
+                Description = AgentCitations.Description,
+                Required = false
+            }
+        ];
+    }
+    else if (result is IValueHttpResult { Value: System.Text.Json.Nodes.JsonObject blendedCard } &&
+             blendedCard["capabilities"] is System.Text.Json.Nodes.JsonObject capabilities)
+    {
+        capabilities["extensions"] = System.Text.Json.JsonSerializer.SerializeToNode(
+            agentCard.Capabilities.Extensions,
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+    }
+    return result;
+});
+routerCardEndpoints.MapAgentCardGetWithV03Compat(() => Task.FromResult(agentCard));
 
 app.Run();
 

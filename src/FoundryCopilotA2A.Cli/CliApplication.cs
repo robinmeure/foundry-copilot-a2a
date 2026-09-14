@@ -247,11 +247,15 @@ internal sealed class CliApplication(CliContext context)
                 configure-citadel --resource-group <name> --service-name <existing-apim>
                                   --backend-url <https-dev-tunnel-or-adapter-base-url>
                                   --tenant-id <tenant-id> --api-client-id <backend-client-id>
-                                  [--subscription-id <id>] [--allowed-origin <origin>]
+                                  [--subscription-id <id>]
+                                  [--allowed-origin <origin> |
+                                   --allowed-origins <comma-separated-origins>]
                                   [--api-id <id>] [--api-path <path>]
                                   [--agent-ids <comma-separated-specialist-ids>] [--replace]
 
-                Defaults to a separate copilot-studio-local API and http://localhost:5173.
+                Defaults to a separate copilot-studio-local API and browser origin
+                http://localhost:5173. Use --allowed-origins when both the console and chatbot
+                call the gateway.
                 Creates no APIM service or app registrations. Only APIs owned by this command
                 may be updated, and only with --replace. Existing hosted APIs are untouched.
                 Optional configured Copilot Studio or Foundry agents each receive a separate

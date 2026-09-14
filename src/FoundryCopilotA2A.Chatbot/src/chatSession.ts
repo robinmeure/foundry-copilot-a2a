@@ -1,13 +1,17 @@
-import { sendMessage, type ConversationTurn } from '../../FoundryCopilotA2A.BrowserShared/a2aClient.ts'
+import { sendMessage, type A2AAgent, type CitationBundle, type ConversationTurn } from '../../FoundryCopilotA2A.BrowserShared/a2aClient.ts'
 import type { ChatbotConfig } from './config.ts'
 
 export interface ChatTurn {
   id: string
   prompt: string
   answer: string
+  citations?: CitationBundle
   progress?: string
+  responder?: A2AAgent
   error?: string
   status: 'sending' | 'succeeded' | 'failed'
+  phase: 'sending' | 'waiting' | 'accepted' | 'working' | 'receiving' | 'finalizing'
+  startedAt: number
 }
 
 interface ChatSnapshot {
@@ -47,7 +51,7 @@ export class ChatSession {
       ...this.snapshot,
       isSending: false,
       turns: this.snapshot.turns.map((turn) => turn.status === 'sending'
-        ? { ...turn, status: 'failed', progress: undefined,
+        ? { ...turn, status: 'failed', progress: undefined, citations: undefined,
           error: 'Response stopped. The agent may still be working; this request will not be retried automatically.' }
         : turn),
     })
@@ -70,7 +74,7 @@ export class ChatSession {
     this.publish({
       contextId,
       isSending: true,
-      turns: [...turns, { id, prompt: text, answer: '', status: 'sending', progress: 'Connecting...' }],
+      turns: [...turns, { id, prompt: text, answer: '', status: 'sending', phase: 'sending', startedAt: Date.now() }],
     })
 
     const update = (change: Partial<ChatTurn>) => {
@@ -80,6 +84,8 @@ export class ChatSession {
         turns: this.snapshot.turns.map((turn) => turn.id === id ? { ...turn, ...change } : turn),
       })
     }
+    let phase: ChatTurn['phase'] = 'sending'
+    let previousAnswer = ''
     try {
       const accessToken = await getAccessToken()
       if (controller.signal.aborted) return
@@ -95,14 +101,32 @@ export class ChatSession {
         history,
         includeTrace: false,
         signal: controller.signal,
-        onUpdate: (answer) => update({ answer, progress: undefined }),
-        onProgress: (progress) => update({ progress }),
+        onAgent: (responder) => update({ responder }),
+        onUpdate: (answer, citations) => {
+          if (answer && phase !== 'finalizing') phase = 'receiving'
+          update({ answer, citations, phase, ...(answer !== previousAnswer ? { progress: undefined } : {}) })
+          previousAnswer = answer
+        },
+        onProgress: (progress) => {
+          if (phase === 'sending' || phase === 'waiting' || phase === 'accepted') phase = 'working'
+          update({ progress, phase })
+        },
+        onTaskStatus: ({ state, message }) => {
+          if (state === 'completed') phase = 'finalizing'
+          else if (phase !== 'receiving' && phase !== 'finalizing') {
+            if (state === 'working') phase = 'working'
+            else if (state === 'submitted' && (phase === 'sending' || phase === 'waiting')) phase = 'accepted'
+            else if (state === 'unknown') phase = 'waiting'
+          }
+          update({ phase, progress: message })
+        },
       })
-      update({ answer: exchange.answer, status: 'succeeded', progress: undefined })
+      update({ answer: exchange.answer, citations: exchange.citations, status: 'succeeded', progress: undefined })
     } catch (reason) {
       update({
         status: 'failed',
         progress: undefined,
+        citations: undefined,
         error: reason instanceof Error ? reason.message : 'Unable to send the message.',
       })
     } finally {

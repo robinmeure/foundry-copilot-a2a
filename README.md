@@ -42,10 +42,11 @@ Copilot Studio connections, authentication settings, and backend confidential cr
 Optional `ChatbotTenantId`, `ChatbotSpaClientId`, and `ChatbotApiClientId` override the chatbot's
 local identity configuration. Never configure a backend client secret in the frontend.
 
-The chatbot defaults to the direct adapter; it does not inherit the console's gateway override.
-Set `ChatbotGatewayBaseUrl` (or its own `VITE_GATEWAY_BASE_URL`) to use an APIM ingress instead
-and allow the chatbot origin in that gateway's CORS policy. Native specialist delegation still
-uses the Orchestrator's configured A2A connections.
+When `GatewayBaseUrl` is configured, the Aspire-hosted chatbot inherits it and sends every
+message through APIM. `ChatbotGatewayBaseUrl` can override that route independently; set it to
+an empty value to retain direct local adapter ingress. Allow the chatbot origin in the gateway's
+CORS policy. Native specialist delegation still uses the Orchestrator's configured A2A
+connections; agents never invoke the chatbot itself.
 
 ## Management summary
 
@@ -124,6 +125,85 @@ orchestrator invoked a specialist. A specialist callback is attributed to that s
 the orchestrator's final answer is attributed to the orchestrator. Remote calls that bypass
 this adapter are outside this contract, and the remote orchestrator still controls whether
 it repeats attribution in its final user-facing answer.
+
+### Structured citations and sources
+
+The adapter preserves sources independently of responder identity using the optional
+`urn:foundry-copilot-a2a:citations:v1` data profile. This is an application-defined schema,
+not a built-in A2A citation standard. Agent cards advertise the optional extension and
+`application/json` output in addition to text. Legacy text-only answers remain unchanged.
+
+An answer carries its original text and a separate A2A data part:
+
+```json
+{
+  "data": {
+    "urn:foundry-copilot-a2a:citations:v1": {
+      "schemaVersion": "1",
+      "sources": [
+        {
+          "id": "source-report-1",
+          "title": "Committee report",
+          "url": "https://example.org/report",
+          "originatingAgent": {
+            "id": "research-specialist",
+            "name": "Research specialist"
+          },
+          "originatingMessageId": "answer-1"
+        }
+      ],
+      "citations": [
+        {
+          "sourceId": "source-report-1",
+          "marker": "[1]",
+          "locator": "Page 4"
+        }
+      ]
+    }
+  }
+}
+```
+
+A2A 0.3 adds `"kind": "data"` to that part. The same payload is accepted under a part's
+`metadata` extension key when forwarding an upstream response, but the adapter emits data
+parts. Sources require an ID, title, and originating agent; URL and original message ID
+are optional. References require a known `sourceId`; `marker`, `locator`, and `quote`
+(a provider-supplied excerpt, not an independently verified quotation) are optional.
+Sources without markers or public URLs can still be displayed without inventing either.
+
+- Copilot Studio native activity `entities[].citation[]` values are extracted from their
+  `appearance` (name, URL, abstract) and position. The adapter stamps the configured
+  responding agent as their origin; it does not infer a hidden specialist call.
+- Foundry and APIM A2A responses retain the structured profile from message and task-artifact
+  parts. Forwarding preserves the original source agent even when the immediate responder
+  changes. Arbitrary text links and unknown provider-specific annotation formats are not
+  promoted into structured sources.
+- Streaming data parts are citation additions: merge identical source IDs and reference
+  tuples. A late citation-only event does not replace the answer text. Final Copilot Studio
+  activities may contribute citations even when their repeated text is suppressed.
+  Non-streaming replies and cached replays retain the merged citation payload.
+- Both frontends show an accessible Sources list with safe links, available citation markers,
+  source details, and originating-agent names. The text's existing markers are left intact;
+  the adapter does not synthesize or renumber an orchestrator's citations.
+- Payloads are bounded to 100 sources and 200 references per answer, 256 characters for IDs,
+  and 8,192 characters for other strings. Malformed recognized payloads, unsupported versions,
+  conflicting source IDs, and dangling references fail explicitly. Links must use absolute
+  HTTP(S), without embedded credentials, control characters, backslashes, or known token/
+  signed-access query parameters. Sources are not fetched or granted additional permissions.
+  Citations alone cannot turn an empty or failed invocation into a successful answer.
+
+For an Azure-free example, run the existing CLI `run-mock` workflow and send
+`show citation example` to the mock agent. It emits an answer followed by a late source
+payload so the same path can be exercised in both frontends.
+
+**Native orchestration boundary:** preserving A2A data does not guarantee that a managed
+Copilot Studio or Foundry orchestrator consumes or re-emits custom citation parts. Update
+the agent instructions to retain evidence and verify the actual specialist-to-orchestrator
+path. If the provider only returns text, no structured provenance can be reconstructed
+reliably by this adapter. Source provenance is provider-reported, not independent verification.
+The text-only relayed conversation history is not a trusted source-provenance store; each
+response must supply its own citation data. No agent instructions or cloud connections are
+changed by enabling this application feature.
 
 ### Who decides to call the specialist
 

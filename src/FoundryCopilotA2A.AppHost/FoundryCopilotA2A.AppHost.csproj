@@ -10,6 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Aspire.Hosting.DevTunnels" Version="13.5.3" />
     <PackageReference Include="Aspire.Hosting.JavaScript" Version="13.5.3" />
   </ItemGroup>
 

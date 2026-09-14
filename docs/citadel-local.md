@@ -7,17 +7,27 @@ Optional native orchestration below reuses the same registrations, with addition
 Foundry consent and connection-specific Web redirects where required.
 
 ```text
-Browser / SPA registration (authorization code + PKCE)
+Chatbot / SPA registration (authorization code + PKCE)
   | token A: backend API audience, access_as_user, signed-in user
   v
-Citadel / APIM
+Citadel / APIM root runtime
   | validates token A and forwards Authorization unchanged
   v
 Dev Tunnel -> local A2A adapter / backend registration
   | validates token A again
   | OBO: token A + backend credential -> Power Platform token B
   v
-Copilot Studio -> streamed A2A answer -> APIM -> browser
+Copilot Studio orchestrator
+  | native A2A delegation when a specialist is selected
+  v
+Citadel / APIM specialist runtime -> Dev Tunnel -> local A2A adapter
+  | validates and preserves the same delegated user identity
+  | OBO to Power Platform
+  v
+Copilot Studio specialist
+
+Responses return over the same path to the chatbot. The chatbot is the browser
+entry point; agents never invoke the chatbot itself.
 ```
 
 The SPA never requests a token for APIM itself or for Power Platform. The backend
@@ -48,9 +58,11 @@ dotnet run --project .\src\FoundryCopilotA2A.Cli -- run-adapter `
 For an existing multi-agent Aspire setup, set `GatewayBaseUrl` to that same API base
 URL and `FrontendPort` to the registered port before starting the AppHost. The AppHost
 uses `GatewayBaseUrl` for adapter discovery and the initial frontend route, while also
-injecting the actual adapter endpoint for direct ingress in the flow builder. Omitting
-the gateway preserves direct-adapter operation. `AdapterPort` defaults to 5099
-and `FrontendPort` defaults to 5173.
+injecting the actual adapter endpoint for direct ingress in the flow builder. The chatbot
+inherits `GatewayBaseUrl` unless `ChatbotGatewayBaseUrl` is explicitly configured; set
+that setting to an empty value to retain a direct local chatbot route. Omitting the
+gateway preserves direct-adapter operation. `AdapterPort` defaults to 5099,
+`FrontendPort` to 5173, and `ChatbotPort` to 5174.
 
 **Worktrees:** `aspire start --isolated` randomizes resource ports, even explicit ones.
 Discover the running adapter URL with `aspire describe` and use its allocated port for
@@ -62,17 +74,38 @@ environment; do not copy secrets into frontend files.
 
 ## 2. Expose the adapter
 
-In a separate terminal, use the actual adapter port:
+When running the Aspire AppHost, prefer its native Dev Tunnels resource. Enable it
+without committing an environment-specific tunnel identifier:
+
+```powershell
+dotnet user-secrets set "DevTunnel:Enabled" "true" `
+  --project .\src\FoundryCopilotA2A.AppHost
+aspire start --apphost .\src\FoundryCopilotA2A.AppHost\FoundryCopilotA2A.AppHost.csproj
+```
+
+Aspire creates an `adapter-dev-tunnel` resource and a child port resource for the
+adapter. The allocated public URL is visible in the Aspire startup resource output,
+dashboard, and `aspire describe --include-hidden --format Json`. The tunnel ID is
+stable for this AppHost by default, so subsequent starts reuse it. Set
+`DevTunnel:TunnelId` in AppHost user secrets only when an existing tunnel must be
+reused; don't commit that environment-specific identifier.
+
+The tunnel permits anonymous transport so APIM and agent platforms can reach it,
+but the live adapter still requires a valid bearer token on protected routes.
+Aspire reports tunnel login, creation, port allocation, health, and host failures
+on the tunnel resources. It also removes obsolete ports from that tunnel when the
+modeled endpoints change.
+
+For a standalone adapter that isn't managed by Aspire, keep the tunnel in a separate
+terminal and use the operational CLI:
 
 ```powershell
 dotnet run --project .\src\FoundryCopilotA2A.Cli -- start-tunnel --port 5099
 ```
 
-Keep this command running and copy the printed HTTPS connection URL. The tunnel
-allows anonymous transport so APIM can reach it, but the live adapter still requires
-a valid bearer token. For Dev Tunnel hosts, the gateway adds the noninteractive
-anti-phishing bypass header so browser-originated requests receive API responses,
-not the tunnel's warning page.
+Copy the printed HTTPS connection URL. For either hosting approach, Dev Tunnel
+backends receive the noninteractive anti-phishing bypass header from the gateway so
+browser-originated requests receive API responses rather than the tunnel warning page.
 
 While the app is running, open **Connectivity** in the web console and select **Refresh
 status** to see adapter configuration and browser reachability. Paste the printed connection
@@ -80,6 +113,11 @@ URL into **Check a Dev Tunnel** to test its `/health` endpoint without credentia
 adapter advertises APIM, the tunnel behind it is not automatically discoverable. These
 checks do not inspect tunnel port mappings or APIM backend policies; browser CORS or the
 tunnel warning page can leave reachability **Not verified** even when the tunnel is running.
+
+When APIM fronts the tunnel, confirm that its API `serviceUrl` matches the URL shown
+by the current `adapter-dev-tunnel` port resource. A healthy Aspire tunnel does not
+retarget an existing APIM API automatically; rerun `configure-citadel --replace`
+after deliberately changing tunnel IDs or URLs.
 
 ## 3. Configure the separate Citadel API
 
@@ -89,7 +127,7 @@ dotnet run --project .\src\FoundryCopilotA2A.Cli -- configure-citadel `
   --resource-group <apim-resource-group> --service-name <existing-apim-name> `
   --backend-url "https://<dev-tunnel-host>" `
   --tenant-id <tenant-id> --api-client-id <backend-client-id> `
-  --allowed-origin http://localhost:5137
+  --allowed-origins http://localhost:5173,http://localhost:5174
 ```
 
 This uses the current Azure CLI login for **management-plane** access only.
@@ -100,6 +138,11 @@ used in step 1, update the adapter's public URL before continuing.
 These are HTTP proxy APIs carrying the adapter's A2A JSON-RPC/SSE contract, not a
 native APIM A2A-card import. The adapter remains responsible for advertising the
 public gateway URL and specialist OAuth schemes.
+
+`--allowed-origins` configures the browser callers of the root API. It does not
+make the chatbot callable by an agent. Server-side Copilot Studio A2A requests
+normally carry no browser `Origin` header and continue through the specialist API's
+delegated-token policy.
 
 | Operation relative to the API base | Access | Purpose |
 | --- | --- | --- |

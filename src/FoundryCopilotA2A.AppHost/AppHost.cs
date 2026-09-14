@@ -1,4 +1,5 @@
 using System.Globalization;
+using Aspire.Hosting.DevTunnels;
 using Microsoft.Extensions.Configuration;
 
 var builder = DistributedApplication.CreateBuilder(args);
@@ -78,6 +79,21 @@ if (string.IsNullOrWhiteSpace(adapterPublicBaseUrl))
 else
 {
     adapter.WithEnvironment("Adapter__PublicBaseUrl", adapterPublicBaseUrl);
+}
+
+if (builder.Configuration.GetValue("DevTunnel:Enabled", false))
+{
+    var configuredTunnelId = builder.Configuration["DevTunnel:TunnelId"]?.Trim();
+    builder
+        .AddDevTunnel(
+            "adapter-dev-tunnel",
+            tunnelId: string.IsNullOrEmpty(configuredTunnelId) ? null : configuredTunnelId,
+            options: new DevTunnelOptions
+            {
+                Description = "Public development ingress for the Foundry Copilot A2A adapter"
+            })
+        .WithReference(adapter.GetEndpoint("http"), allowAnonymous: true)
+        .WaitFor(adapter);
 }
 
 var foundryAgentEndpoint = builder.Configuration["FoundryAgentEndpoint"];
@@ -185,9 +201,14 @@ var chatbot = builder
     .WaitFor(adapter)
     .WithExternalHttpEndpoints();
 
+var chatbotGatewayBaseUrl = builder.Configuration["ChatbotGatewayBaseUrl"] ?? gatewayBaseUrl;
+if (chatbotGatewayBaseUrl is not null)
+{
+    chatbot.WithEnvironment("VITE_GATEWAY_BASE_URL", chatbotGatewayBaseUrl);
+}
+
 foreach (var setting in new Dictionary<string, string>
 {
-    ["ChatbotGatewayBaseUrl"] = "VITE_GATEWAY_BASE_URL",
     ["ChatbotOrchestratorName"] = "VITE_ORCHESTRATOR_NAME",
     ["ChatbotTenantId"] = "VITE_ENTRA_TENANT_ID",
     ["ChatbotSpaClientId"] = "VITE_ENTRA_CLIENT_ID",

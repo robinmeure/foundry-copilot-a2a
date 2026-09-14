@@ -13,7 +13,7 @@ public sealed class CitadelCommandsTests
         "https://adapter.example",
         "11111111-1111-1111-1111-111111111111",
         "22222222-2222-2222-2222-222222222222",
-        "http://localhost:5137", ["reverser"], false);
+        ["http://localhost:5137"], ["reverser"], false);
 
     [Fact]
     public void BrowserPolicyAllowsTheFrontendContractWithoutBuffering()
@@ -23,7 +23,9 @@ public sealed class CitadelCommandsTests
         Assert.Equal("cors", inbound.Elements().First().Name.LocalName);
         var cors = inbound.Element("cors")!;
         Assert.Equal("false", cors.Attribute("allow-credentials")!.Value);
-        Assert.Equal(Configuration.AllowedOrigin, cors.Descendants("origin").Single().Value);
+        Assert.Equal(
+            Configuration.AllowedOrigins,
+            cors.Descendants("origin").Select(origin => origin.Value));
         Assert.Contains(cors.Descendants("header"), header => header.Value == "X-Copilot-Agent");
         Assert.Contains(cors.Descendants("header"), header => header.Value == "X-A2A-Chain-Target");
         Assert.Contains(cors.Element("expose-headers")!.Elements(), header => header.Value == "X-Trace-Id");
@@ -130,6 +132,47 @@ public sealed class CitadelCommandsTests
         };
         var arguments = CommandArguments.Parse(options.SelectMany(pair => new[] { pair.Key, pair.Value }));
         Assert.Throws<CliException>(() => CitadelCommands.ParseConfiguration(arguments));
+    }
+
+    [Fact]
+    public void MultipleBrowserOriginsAreNormalizedAndDeduplicated()
+    {
+        var arguments = CommandArguments.Parse(
+        [
+            "--resource-group", Configuration.ResourceGroup,
+            "--service-name", Configuration.ServiceName,
+            "--backend-url", Configuration.BackendUrl,
+            "--tenant-id", Configuration.TenantId,
+            "--api-client-id", Configuration.ApiClientId,
+            "--allowed-origins",
+            "http://localhost:5173, http://localhost:5174,http://LOCALHOST:5173"
+        ]);
+
+        var configuration = CitadelCommands.ParseConfiguration(arguments);
+
+        Assert.Equal(
+            ["http://localhost:5173", "http://localhost:5174"],
+            configuration.AllowedOrigins);
+    }
+
+    [Fact]
+    public void SingularAndPluralBrowserOriginOptionsCannotBeCombined()
+    {
+        var arguments = CommandArguments.Parse(
+        [
+            "--resource-group", Configuration.ResourceGroup,
+            "--service-name", Configuration.ServiceName,
+            "--backend-url", Configuration.BackendUrl,
+            "--tenant-id", Configuration.TenantId,
+            "--api-client-id", Configuration.ApiClientId,
+            "--allowed-origin", "http://localhost:5173",
+            "--allowed-origins", "http://localhost:5173,http://localhost:5174"
+        ]);
+
+        var exception = Assert.Throws<CliException>(
+            () => CitadelCommands.ParseConfiguration(arguments));
+
+        Assert.Contains("either --allowed-origin or --allowed-origins", exception.Message);
     }
 
     [Fact]

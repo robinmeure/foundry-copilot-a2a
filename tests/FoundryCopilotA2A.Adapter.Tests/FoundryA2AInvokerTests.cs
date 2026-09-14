@@ -13,11 +13,15 @@ namespace FoundryCopilotA2A.Adapter.Tests;
 
 public sealed class FoundryA2AInvokerTests
 {
-    [Fact]
-    public async Task AdapterAttributesFoundryRepliesToTheConfiguredAgent()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AdapterAttributesFoundryRepliesToTheConfiguredAgent(bool withCitations)
     {
         using var outboundClient = new HttpClient(new StubHandler(
-            """{"result":{"message":{"parts":[{"text":"Direct response."}]}}}"""));
+            withCitations
+                ? CitationTests.UpstreamResponse("Direct response.")
+                : """{"result":{"message":{"parts":[{"text":"Direct response."}]}}}"""));
         using var factory = new A2AAdapterFactory().WithWebHostBuilder(builder =>
         {
             builder.UseSetting("Foundry:Agents:web-research:DisplayName", "Foundry Web Research");
@@ -65,6 +69,15 @@ public sealed class FoundryA2AInvokerTests
         var metadata = part.GetProperty("metadata");
         Assert.Equal("web-research", metadata.GetProperty("agentId").GetString());
         Assert.Equal("Foundry Web Research", metadata.GetProperty("agentName").GetString());
+        var citations = A2AResponseText.Read(body.RootElement).Citations;
+        if (withCitations)
+        {
+            Assert.Equal(CitationTests.Sample().Sources[0], Assert.Single(citations!.Sources));
+        }
+        else
+        {
+            Assert.Null(citations);
+        }
     }
 
     [Fact]

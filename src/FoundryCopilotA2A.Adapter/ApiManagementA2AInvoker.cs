@@ -75,15 +75,18 @@ public sealed class ApiManagementA2AInvoker(
                     $"API Management A2A failed: {message ?? "unknown JSON-RPC error"}.");
             }
 
-            var text = A2AResponseText.Extract(document.RootElement);
-            if (string.IsNullOrWhiteSpace(text))
+            var answer = A2AResponseText.Read(document.RootElement);
+            if (string.IsNullOrWhiteSpace(answer.Text))
             {
                 throw new AdapterRequestException(
                     "API Management A2A returned no text response.");
             }
 
             activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
-            update = new CopilotInvocationUpdate(text, metadata.ContextId, requestId);
+            update = new CopilotInvocationUpdate(answer.Text, metadata.ContextId, requestId)
+            {
+                Citations = answer.Citations
+            };
         }
         catch (Exception exception)
         {
@@ -97,58 +100,88 @@ public sealed class ApiManagementA2AInvoker(
 
 internal static class A2AResponseText
 {
-    internal static string Extract(JsonElement root)
+    internal static string Extract(JsonElement root) => Read(root).Text;
+
+    internal static (string Text, CitationBundle? Citations) Read(JsonElement root)
+    {
+        var parts = ReadParts(root);
+        CitationBundle? citations = null;
+        foreach (var part in parts)
+        {
+            if (IsInformative(part))
+            {
+                continue;
+            }
+            foreach (var name in new[] { "data", "metadata" })
+            {
+                if (part.TryGetProperty(name, out var container))
+                {
+                    citations = AgentCitations.Merge(citations, AgentCitations.ReadContainer(container));
+                }
+            }
+        }
+        return (JoinPartText(parts), citations);
+    }
+
+    private static JsonElement[] ReadParts(JsonElement root)
     {
         if (!root.TryGetProperty("result", out var result))
         {
-            return string.Empty;
+            return [];
         }
 
         if (result.TryGetProperty("message", out var message) &&
             message.TryGetProperty("parts", out var messageParts))
         {
-            return JoinPartText(messageParts);
+            return ToParts(messageParts);
         }
 
         if (result.TryGetProperty("parts", out var resultParts))
         {
-            return JoinPartText(resultParts);
+            return ToParts(resultParts);
         }
 
         if (!result.TryGetProperty("task", out var task))
         {
-            return string.Empty;
+            task = result;
         }
 
+        JsonElement[] artifactParts = [];
         if (task.TryGetProperty("artifacts", out var artifacts) &&
             artifacts.ValueKind == JsonValueKind.Array)
         {
-            var artifactText = string.Join(
-                Environment.NewLine,
-                artifacts.EnumerateArray()
-                    .Where(artifact => artifact.TryGetProperty("parts", out _))
-                    .Select(artifact => JoinPartText(artifact.GetProperty("parts")))
-                    .Where(text => !string.IsNullOrWhiteSpace(text)));
-            if (!string.IsNullOrWhiteSpace(artifactText))
+            artifactParts = artifacts.EnumerateArray()
+                .Where(artifact => artifact.TryGetProperty("parts", out _))
+                .SelectMany(artifact => ToParts(artifact.GetProperty("parts")))
+                .ToArray();
+            if (!string.IsNullOrWhiteSpace(JoinPartText(artifactParts)))
             {
-                return artifactText;
+                return artifactParts;
             }
         }
 
         return task.TryGetProperty("status", out var status) &&
                status.TryGetProperty("message", out var statusMessage) &&
                statusMessage.TryGetProperty("parts", out var statusParts)
-            ? JoinPartText(statusParts)
-            : string.Empty;
+            ? [.. artifactParts, .. ToParts(statusParts)]
+            : artifactParts;
     }
 
-    private static string JoinPartText(JsonElement parts) =>
+    private static JsonElement[] ToParts(JsonElement parts) =>
         parts.ValueKind == JsonValueKind.Array
-            ? string.Join(
-                Environment.NewLine,
-                parts.EnumerateArray()
-                    .Where(part => part.TryGetProperty("text", out _))
-                    .Select(part => part.GetProperty("text").GetString())
-                    .Where(text => !string.IsNullOrWhiteSpace(text)))
-            : string.Empty;
+            ? parts.EnumerateArray().Where(part => part.ValueKind == JsonValueKind.Object).ToArray()
+            : [];
+
+    private static bool IsInformative(JsonElement part) =>
+        part.TryGetProperty("metadata", out var metadata) &&
+        metadata.ValueKind == JsonValueKind.Object &&
+        metadata.TryGetProperty("isInformative", out var informative) &&
+        informative.ValueKind == JsonValueKind.True;
+
+    private static string JoinPartText(IEnumerable<JsonElement> parts) =>
+        string.Join(
+            Environment.NewLine,
+            parts.Where(part => !IsInformative(part) && part.TryGetProperty("text", out _))
+                .Select(part => part.GetProperty("text").GetString())
+                .Where(text => !string.IsNullOrWhiteSpace(text)));
 }

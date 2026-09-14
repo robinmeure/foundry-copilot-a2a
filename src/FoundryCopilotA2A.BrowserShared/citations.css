@@ -1,0 +1,17 @@
+.a2a-sources {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid #d4d8df;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.a2a-sources h3 { margin: 0 0 8px; font-size: 14px; }
+.a2a-sources > ul { margin: 0; padding-left: 20px; }
+.a2a-sources > ul > li + li { margin-top: 12px; }
+.a2a-sources a { color: #245f9d; text-decoration: underline; }
+.a2a-sources a:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+.a2a-sources .source-provenance { margin: 2px 0; font-size: 12px; color: #515b69; }
+.a2a-sources .source-references { padding-left: 0; list-style: none; }
+.a2a-sources .source-marker { margin-right: 8px; font-weight: 600; }
+.a2a-sources blockquote { margin: 4px 0 8px; padding-left: 10px; border-left: 2px solid #a1acb9; white-space: pre-wrap; }
