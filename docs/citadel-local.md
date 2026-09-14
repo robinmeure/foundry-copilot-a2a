@@ -393,6 +393,9 @@ handling, but a maker-only test is not proof that this channel completes every c
 or token-exchange challenge. Do not switch to maker credentials or app-only tokens to hide a
 channel limitation.
 
+See [Copilot Studio A2A connection lifecycle and consent](copilot-studio-a2a-connections.md)
+for connection states, token lifetime, new-user onboarding, and tenant-wide consent behavior.
+
 ### Observe actual delegation
 
 `canOrchestrate` is configured capability, not native connection readiness. `ChainTargets`
