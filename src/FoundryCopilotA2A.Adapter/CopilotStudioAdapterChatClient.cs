@@ -67,6 +67,7 @@ public sealed class CopilotStudioAdapterChatClient(
             payloadHash,
             token => StreamNormalizedAsync(prompt, metadata, activity, token),
             cancellationToken);
+        var answerStarted = false;
         await using var enumerator = updates.GetAsyncEnumerator(cancellationToken);
         while (true)
         {
@@ -95,19 +96,23 @@ public sealed class CopilotStudioAdapterChatClient(
             }
 
             var update = enumerator.Current;
-            var responseUpdate = new ChatResponseUpdate(ChatRole.Assistant, update.Text)
+            var responder = RequireResponder(update.Responder);
+            var text = update.IsInformative || !answerStarted
+                ? WithResponderHeader(update.Text, responder)
+                : update.Text;
+            var responseUpdate = new ChatResponseUpdate(
+                ChatRole.Assistant,
+                [CreateResponseContent(text, responder, update.IsInformative)])
             {
+                AuthorName = responder.Name,
                 ConversationId = metadata.ContextId ?? update.ConversationId,
                 ResponseId = update.ResponseId,
                 MessageId = $"response-{metadata.MessageId}",
                 ModelId = metadata.AgentId
             };
-            if (update.IsInformative)
+            if (!update.IsInformative)
             {
-                responseUpdate.Contents[0].AdditionalProperties = new AdditionalPropertiesDictionary
-                {
-                    ["isInformative"] = true
-                };
+                answerStarted = true;
             }
 
             yield return responseUpdate;
@@ -154,6 +159,7 @@ public sealed class CopilotStudioAdapterChatClient(
     {
         await foreach (var update in invoker.StreamAsync(prompt, metadata, cancellationToken))
         {
+            RequireResponder(update.Responder);
             if (CopilotStudioResponseClassifier.IsUnsupportedHarnessResponse(update.Text))
             {
                 activity?.SetTag("copilot_studio.client.compatible", false);
@@ -170,13 +176,44 @@ public sealed class CopilotStudioAdapterChatClient(
 
     private static ChatResponse ToChatResponse(
         CopilotInvocationResult result,
-        A2ARequestMetadata metadata) =>
-        new(new ChatMessage(ChatRole.Assistant, result.Text))
+        A2ARequestMetadata metadata)
+    {
+        var responder = RequireResponder(result.Responder);
+        return new(new ChatMessage(
+            ChatRole.Assistant,
+            [CreateResponseContent(WithResponderHeader(result.Text, responder), responder)])
+        {
+            AuthorName = responder.Name
+        })
         {
             ConversationId = metadata.ContextId ?? result.ConversationId,
             ResponseId = result.ResponseId,
             ModelId = metadata.AgentId
         };
+    }
+
+    private static AgentResponder RequireResponder(AgentResponder? responder) =>
+        responder ?? throw new InvalidOperationException(
+            "The delegated agent response is missing its responder identity.");
+
+    private static string WithResponderHeader(string text, AgentResponder responder) =>
+        $"Responding agent: {responder.Name}\n\n{text}";
+
+    private static TextContent CreateResponseContent(
+        string text, AgentResponder responder, bool isInformative = false)
+    {
+        var properties = new AdditionalPropertiesDictionary
+        {
+            ["agentId"] = responder.Id,
+            ["agentName"] = responder.Name
+        };
+        if (isInformative)
+        {
+            properties["isInformative"] = true;
+        }
+
+        return new TextContent(text) { AdditionalProperties = properties };
+    }
 }
 
 /// <summary>Raised for conditions that should surface to the A2A caller as a defined error.</summary>
@@ -462,6 +499,7 @@ public sealed class IdempotencyStore : IDisposable
             var text = new StringBuilder();
             string? conversationId = null;
             string? responseId = null;
+            AgentResponder? responder = null;
 
             try
             {
@@ -476,6 +514,7 @@ public sealed class IdempotencyStore : IDisposable
                     if (!update.IsInformative)
                     {
                         text.Append(update.Text);
+                        responder = update.Responder;
                     }
                     conversationId = update.ConversationId ?? conversationId;
                     responseId = update.ResponseId ?? responseId;
@@ -488,7 +527,10 @@ public sealed class IdempotencyStore : IDisposable
                         "The delegated agent returned no text response.");
                 }
 
-                Complete(new CopilotInvocationResult(text.ToString(), conversationId, responseId));
+                Complete(new CopilotInvocationResult(text.ToString(), conversationId, responseId)
+                {
+                    Responder = responder
+                });
             }
             catch (Exception exception)
             {

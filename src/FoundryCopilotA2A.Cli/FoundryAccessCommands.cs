@@ -69,6 +69,78 @@ internal static class FoundryAccessCommands
             : throw new CliException("Azure CLI returned no Microsoft Graph access token.");
     }
 
+    public static async Task<int> RegisterSpaRedirectAsync(
+        CliContext context, CommandArguments arguments, CancellationToken cancellationToken)
+    {
+        arguments.EnsureOnly("tenant-id", "client-id", "redirect-uri", "help");
+        var tenantId = arguments.Require("tenant-id");
+        var clientId = arguments.Require("client-id");
+        if (!Guid.TryParse(tenantId, out _) || !Guid.TryParse(clientId, out _))
+        {
+            throw new CliException("--tenant-id and --client-id must be tenant/application GUIDs.");
+        }
+
+        var redirect = ValidateSpaRedirect(arguments.Require("redirect-uri"));
+        var token = await GetGraphTokenAsync(context, tenantId, cancellationToken);
+        await AddSpaRedirectAsync(context.HttpClient, token, clientId, redirect, cancellationToken);
+        context.Out.WriteLine($"Verified SPA redirect on the existing frontend registration: {redirect}");
+        context.Out.WriteLine("Existing redirects, permissions, credentials, and other platforms were preserved.");
+        return 0;
+    }
+
+    internal static string ValidateSpaRedirect(string value)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttps &&
+             !(uri.Scheme == Uri.UriSchemeHttp && uri.IsLoopback)) ||
+            !string.IsNullOrEmpty(uri.UserInfo) ||
+            value.Contains('?') || value.Contains('#'))
+        {
+            throw new CliException(
+                "--redirect-uri must be HTTPS (or HTTP on loopback), without credentials, a query, or a fragment.");
+        }
+
+        return uri.AbsolutePath == "/" ? uri.GetLeftPart(UriPartial.Authority) : uri.AbsoluteUri;
+    }
+
+    internal static async Task AddSpaRedirectAsync(
+        HttpClient client, string token, string clientId, string redirect,
+        CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(clientId, out _))
+        {
+            throw new CliException("The SPA client ID must be an application GUID.");
+        }
+        redirect = ValidateSpaRedirect(redirect);
+        using var applications = await GetAsync(client, token,
+            "applications?$filter=" + Uri.EscapeDataString($"appId eq '{clientId}'") +
+            "&$select=id,spa", cancellationToken);
+        var application = SingleValue(applications, "existing SPA application");
+        var spa = JsonNode.Parse(application.GetProperty("spa").GetRawText()) as JsonObject
+            ?? throw new CliException("The application has an invalid SPA platform configuration.");
+        var redirects = spa["redirectUris"] as JsonArray
+            ?? throw new CliException("The application has an invalid SPA redirect URI list.");
+        var existing = redirects.Select(item => item?.GetValue<string>()
+            ?? throw new CliException("The application has an invalid SPA redirect URI.")).ToArray();
+        if (existing.Contains(redirect, StringComparer.Ordinal))
+        {
+            return;
+        }
+
+        redirects.Add(redirect);
+        var applicationId = application.GetProperty("id").GetString()!;
+        await WriteAsync(client, token, HttpMethod.Patch, $"applications/{applicationId}",
+            new { spa }, cancellationToken);
+        using var confirmed = await GetAsync(
+            client, token, $"applications/{applicationId}?$select=spa", cancellationToken);
+        var saved = confirmed.RootElement.GetProperty("spa").GetProperty("redirectUris")
+            .EnumerateArray().Select(item => item.GetString()).ToHashSet(StringComparer.Ordinal);
+        if (!saved.IsSupersetOf(existing.Append(redirect)))
+        {
+            throw new CliException("The new and existing SPA redirects were not all present after the update.");
+        }
+    }
+
     internal static string ValidateConsentRedirect(string value)
     {
         if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
@@ -284,7 +356,7 @@ internal static class FoundryAccessCommands
                 detail = detail[..800];
             }
             throw new CliException(
-                $"Foundry backend registration configuration returned HTTP {(int)response.StatusCode} " +
+                $"Application registration configuration returned HTTP {(int)response.StatusCode} " +
                 $"for {response.RequestMessage?.Method} " +
                 $"{response.RequestMessage?.RequestUri?.GetLeftPart(UriPartial.Path)}: {detail} " +
                 "An authorized directory identity/client is required; any completed registration " +

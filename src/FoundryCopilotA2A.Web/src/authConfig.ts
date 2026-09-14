@@ -1,4 +1,9 @@
 import type { Configuration, RedirectRequest } from '@azure/msal-browser'
+import { readEndpoint } from '../../FoundryCopilotA2A.BrowserShared/configuration.ts'
+import {
+  createBrowserAuthConfig,
+  createDelegatedLoginRequest,
+} from '../../FoundryCopilotA2A.BrowserShared/authentication.ts'
 
 export interface RuntimeConfig {
   /** Initial catalog endpoint; prefers APIM when configured. */
@@ -60,50 +65,10 @@ export function withGatewayBaseUrl(config: RuntimeConfig, gatewayBaseUrl: string
   }
 }
 
-function readEndpoint(value: string | undefined, name: string, requireHttps = false) {
-  if (!value?.trim()) {
-    return undefined
-  }
-
-  const message = `${name} must be an absolute ${requireHttps ? 'HTTPS' : 'HTTP(S)'} API base URL without credentials, a query, or a fragment.`
-  let endpoint: URL
-  try {
-    endpoint = new URL(value.trim())
-  } catch (reason) {
-    if (!(reason instanceof TypeError)) {
-      throw reason
-    }
-    throw new Error(message)
-  }
-  if (
-    !['http:', 'https:'].includes(endpoint.protocol) ||
-    (requireHttps && endpoint.protocol !== 'https:') ||
-    endpoint.username ||
-    endpoint.password ||
-    endpoint.href.includes('?') ||
-    endpoint.href.includes('#')
-  ) {
-    throw new Error(message)
-  }
-  return endpoint.href.replace(/\/+$/, '')
-}
-
 export function createMsalConfig(config: RuntimeConfig): Configuration {
-  return {
-    auth: {
-      clientId: config.spaClientId,
-      authority: `https://login.microsoftonline.com/${config.tenantId}`,
-      redirectUri: window.location.origin,
-      postLogoutRedirectUri: window.location.origin,
-    },
-    cache: {
-      cacheLocation: 'sessionStorage',
-    },
-  }
+  return createBrowserAuthConfig(config, window.location.origin)
 }
 
 export function createLoginRequest(config: RuntimeConfig): RedirectRequest {
-  return {
-    scopes: [`api://${config.adapterApiClientId}/access_as_user`],
-  }
+  return createDelegatedLoginRequest(config)
 }

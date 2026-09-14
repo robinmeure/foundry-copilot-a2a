@@ -84,7 +84,10 @@ public sealed class A2AAdapterTests : IClassFixture<A2AAdapterFactory>
 
         response.EnsureSuccessStatusCode();
         var answer = string.Concat(AnswerTexts(content));
-        Assert.Equal(string.Concat(MockCopilotStudioInvoker.StreamedAnswerDeltas), answer);
+        Assert.Equal(
+            "Responding agent: Mock Copilot Studio\n\n" +
+            string.Concat(MockCopilotStudioInvoker.StreamedAnswerDeltas),
+            answer);
         Assert.Equal(
             MockCopilotStudioInvoker.StreamedAnswerDeltas.Length,
             AnswerTexts(content).Count);

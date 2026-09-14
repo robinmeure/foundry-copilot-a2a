@@ -87,6 +87,9 @@ public sealed class NativeOrchestrationTests
             "Current request", metadata, CancellationToken.None));
 
         Assert.Equal("Native answer", updates.Last().Text);
+        Assert.All(updates, update => Assert.Equal(
+            new AgentResponder(orchestratorId, catalog.ResolveAgent(orchestratorId).DisplayName),
+            update.Responder));
         var nativePrompt = copilot.Prompt ?? handler.Prompt!;
         Assert.Contains("Current request", nativePrompt);
         Assert.Equal(chain, nativePrompt.Contains("\"Specialist\"", StringComparison.Ordinal));
@@ -174,7 +177,12 @@ public sealed class NativeOrchestrationTests
         request.RequestUri = new Uri(AdapterConstants.ChainAgentRuntimePath("specialist"), UriKind.Relative);
         request.Headers.Add(AdapterConstants.AgentHeaderName, "studio");
         using var response = await client.SendAsync(request);
-        Assert.Contains("Native answer", await response.Content.ReadAsStringAsync());
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var part = body.RootElement.GetProperty("result").GetProperty("message")
+            .GetProperty("parts")[0];
+        Assert.Equal("Responding agent: specialist\n\nNative answer", part.GetProperty("text").GetString());
+        Assert.Equal("specialist", part.GetProperty("metadata").GetProperty("agentId").GetString());
+        Assert.Equal("specialist", part.GetProperty("metadata").GetProperty("agentName").GetString());
         Assert.Equal("specialist", invoker.Metadata?.AgentId);
         Assert.True(invoker.Metadata?.IsAgentRoute);
         Assert.Equal("Current request", invoker.Prompt);

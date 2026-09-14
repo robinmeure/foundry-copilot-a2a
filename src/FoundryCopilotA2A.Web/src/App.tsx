@@ -1,5 +1,6 @@
 import { InteractionRequiredAuthError } from '@azure/msal-browser'
 import { useIsAuthenticated, useMsal } from '@azure/msal-react'
+import { parseConsentRequest } from '../../FoundryCopilotA2A.BrowserShared/consent.ts'
 import {
   Fragment,
   type FormEvent,
@@ -81,13 +82,6 @@ interface TurnRecord {
   trace?: AdapterTrace
   traceError?: string
 }
-
-interface ConsentRequest {
-  url: string
-}
-
-const consentRequiredMarker = 'AUTHENTICATION REQUIRED:'
-const consentUrlPattern = /https:\/\/[^\s<>"']+/i
 
 function App({ config }: AppProps) {
   const { accounts, instance } = useMsal()
@@ -790,32 +784,6 @@ function AssistantMessage({ answer }: { answer: string }) {
       <small>A new task will be created automatically when you retry.</small>
     </div>
   )
-}
-
-function parseConsentRequest(answer: string): ConsentRequest | undefined {
-  if (
-    !answer.includes(consentRequiredMarker) ||
-    !answer.toLowerCase().includes('user consent is required')
-  ) {
-    return undefined
-  }
-
-  const match = answer.match(consentUrlPattern)
-  if (!match) {
-    return undefined
-  }
-
-  try {
-    const url = new URL(match[0])
-    const isAzureApimConsentHost =
-      url.hostname === 'consent.azure-apim.net' ||
-      url.hostname.endsWith('.consent.azure-apim.net')
-    return url.protocol === 'https:' && isAzureApimConsentHost
-      ? { url: url.href }
-      : undefined
-  } catch {
-    return undefined
-  }
 }
 
 interface Hop {

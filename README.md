@@ -14,6 +14,39 @@ Operational setup, provider wiring, APIM publication, and end-to-end smoke tests
 in the versioned [Foundry Copilot A2A CLI](src/FoundryCopilotA2A.Cli/README.md). Its README
 explains what every command does and why the project lives beside the application code.
 
+## Chatbot frontend
+
+The separate [Orchestrator Chat frontend](src/FoundryCopilotA2A.Chatbot/README.md) provides
+only sign-in and chat with one configured Orchestrator. It reuses the console's A2A streaming
+handlers without its flow designer, specialist selectors, or diagnostic panels.
+
+Aspire starts three resources together:
+
+| Resource | Default address | Purpose |
+| --- | --- | --- |
+| `adapter` | `http://localhost:5099` | Protected A2A handlers and server-side OBO |
+| `frontend` | `http://localhost:5173` | Existing diagnostic console |
+| `chatbot` | `http://localhost:5174` | Dedicated chat-only frontend |
+
+Both browser origins are allowed by the local adapter. Configure the chatbot's **dedicated SPA**
+registration and the existing backend API identity in its ignored `.env.local`; its SPA redirect
+URI must be `<chatbot-origin>/auth-redirect.html` for its MSAL redirect bridge. Sign-in, token
+renewal, and sign-out use redirects, like the existing console, not popups.
+All calls use the signed-in user's delegated backend token,
+and OBO remains on the server. Existing console settings and its app registration are unchanged.
+
+AppHost settings `ChatbotPort`, `ChatbotOrchestratorAgentId`, and `ChatbotOrchestratorName`
+override chatbot defaults. The default live agent is `orchestrator`; an explicit mock AppHost
+uses `mock` with local-only anonymous development mode. Live AppHost startup uses its existing
+Copilot Studio connections, authentication settings, and backend confidential credentials.
+Optional `ChatbotTenantId`, `ChatbotSpaClientId`, and `ChatbotApiClientId` override the chatbot's
+local identity configuration. Never configure a backend client secret in the frontend.
+
+The chatbot defaults to the direct adapter; it does not inherit the console's gateway override.
+Set `ChatbotGatewayBaseUrl` (or its own `VITE_GATEWAY_BASE_URL`) to use an APIM ingress instead
+and allow the chatbot origin in that gateway's CORS policy. Native specialist delegation still
+uses the Orchestrator's configured A2A connections.
+
 ## Management summary
 
 ### What this is
@@ -60,6 +93,37 @@ The public URL must be reachable from the provider, not just from the developer 
 
 Each Copilot Studio specialist gets its own route (`/a2a-agents/<id>/a2a`) and its own agent
 card, so a native tool addresses one specialist rather than a generic router.
+
+### Responder identity in A2A replies
+
+Every adapter-produced answer starts with `Responding agent: <display name>`, followed by
+a blank line and the original answer. This makes the source visible even to orchestrators
+that consume only tool-result text. Each answer/progress text part also carries
+`metadata.agentId` and `metadata.agentName`; progress parts retain `metadata.isInformative`.
+For example:
+
+```json
+{
+  "text": "Responding agent: Weather specialist\n\nSunny",
+  "metadata": {
+    "agentId": "weather",
+    "agentName": "Weather specialist"
+  }
+}
+```
+
+Names come from the invoked agent's configured `DisplayName` (or the discovered APIM agent
+card), never from caller-supplied attribution or a requested chain target. Both the shared
+runtime and agent-specific routes expose this identity in A2A 1.0 and 0.3 replies, including
+follow-up turns and cached replays. Streaming emits the answer header only on the first
+answer chunk; each informative progress update gets its own header. Answer text otherwise
+remains unchanged, and empty or failed invocations remain errors, not attributed answers.
+
+Attribution identifies the immediate responder at each adapter hop, not proof that a native
+orchestrator invoked a specialist. A specialist callback is attributed to that specialist;
+the orchestrator's final answer is attributed to the orchestrator. Remote calls that bypass
+this adapter are outside this contract, and the remote orchestrator still controls whether
+it repeats attribution in its final user-facing answer.
 
 ### Who decides to call the specialist
 

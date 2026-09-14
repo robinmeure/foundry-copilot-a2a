@@ -34,6 +34,8 @@ internal sealed class CliApplication(CliContext context)
                     context, commandArguments, cancellationToken),
                 "register-spa" => await EntraCommands.RegisterSpaAsync(
                     context, commandArguments, cancellationToken),
+                "register-spa-redirect" => await FoundryAccessCommands.RegisterSpaRedirectAsync(
+                    context, commandArguments, cancellationToken),
                 "delete-app" => await EntraCommands.DeleteAppAsync(
                     context, commandArguments, cancellationToken),
                 "consent" => await EntraCommands.ConsentAsync(
@@ -113,6 +115,8 @@ internal sealed class CliApplication(CliContext context)
             Commands:
               register-app  Create the backend API app used by the adapter and OBO flow.
               register-spa  Create a frontend SPA app with delegated access to the backend API.
+              register-spa-redirect
+                            Add a SPA redirect URI to an existing frontend registration.
               consent       Grant CopilotStudio.Copilots.Invoke for the signed-in user.
               grant-foundry-consent
                             Grant only Foundry's delegated scope to the existing backend app.
@@ -156,6 +160,15 @@ internal sealed class CliApplication(CliContext context)
                 Creates a secretless single-tenant SPA app and grants it delegated access to the
                 backend API's access_as_user scope. The redirect URI defaults to
                 http://localhost:5173. Admin consent is opt-in.
+                """,
+            "register-spa-redirect" =>
+                """
+                register-spa-redirect --tenant-id <tenant-id> --client-id <frontend-application-id>
+                                      --redirect-uri <url>
+
+                Adds and verifies a SPA redirect URI on an existing application in the specified
+                tenant. Preserves existing redirects, permissions, credentials, and other platforms.
+                Uses the current Azure CLI identity; does not create a new registration or grant consent.
                 """,
             "delete-app" =>
                 """

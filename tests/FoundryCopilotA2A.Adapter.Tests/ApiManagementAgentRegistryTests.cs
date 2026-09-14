@@ -1,6 +1,11 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Text;
+using System.Text.Json;
 using Azure.Core;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -79,6 +84,52 @@ public sealed class ApiManagementAgentRegistryTests
         Assert.Equal("Bearer delegated-token", handler.RuntimeAuthorization);
         Assert.Contains("\"method\":\"SendMessage\"", handler.RuntimeBody);
         Assert.Contains("Will it rain?", handler.RuntimeBody);
+    }
+
+    [Fact]
+    public async Task AdapterAttributesDiscoveredAgentRepliesToTheAgentCardName()
+    {
+        using var outboundClient = new HttpClient(new ApimHandler());
+        var registry = CreateRegistry(outboundClient);
+        using var factory = new A2AAdapterFactory().WithWebHostBuilder(builder =>
+            builder.ConfigureTestServices(services =>
+            {
+                services.RemoveAll<ApiManagementAgentRegistry>();
+                services.AddSingleton(registry);
+                services.RemoveAll<IHttpClientFactory>();
+                services.AddSingleton<IHttpClientFactory>(new StubHttpClientFactory(outboundClient));
+            }));
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, AdapterConstants.RuntimePath)
+        {
+            Content = JsonContent.Create(new
+            {
+                jsonrpc = "2.0",
+                id = "weather",
+                method = "SendMessage",
+                @params = new
+                {
+                    message = new
+                    {
+                        role = "ROLE_USER",
+                        messageId = "weather",
+                        contextId = "weather-context",
+                        parts = new[] { new { text = "Will it rain?" } }
+                    }
+                }
+            })
+        };
+        request.Headers.Add("A2A-Version", "1.0");
+        request.Headers.Add(AdapterConstants.AgentHeaderName, "apim-weather-api");
+
+        using var response = await client.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var part = body.RootElement.GetProperty("result").GetProperty("message").GetProperty("parts")[0];
+        Assert.Equal("Responding agent: Weather specialist\n\nSunny", part.GetProperty("text").GetString());
+        var metadata = part.GetProperty("metadata");
+        Assert.Equal("apim-weather-api", metadata.GetProperty("agentId").GetString());
+        Assert.Equal("Weather specialist", metadata.GetProperty("agentName").GetString());
     }
 
     private static ApiManagementAgentRegistry CreateRegistry(

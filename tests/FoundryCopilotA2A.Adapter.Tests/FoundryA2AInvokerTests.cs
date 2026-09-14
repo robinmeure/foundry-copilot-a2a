@@ -1,12 +1,72 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Text;
+using System.Text.Json;
 using Azure.Core;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 
 namespace FoundryCopilotA2A.Adapter.Tests;
 
 public sealed class FoundryA2AInvokerTests
 {
+    [Fact]
+    public async Task AdapterAttributesFoundryRepliesToTheConfiguredAgent()
+    {
+        using var outboundClient = new HttpClient(new StubHandler(
+            """{"result":{"message":{"parts":[{"text":"Direct response."}]}}}"""));
+        using var factory = new A2AAdapterFactory().WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("Foundry:Agents:web-research:DisplayName", "Foundry Web Research");
+            builder.UseSetting(
+                "Foundry:Agents:web-research:Endpoint",
+                "https://foundry.example/agents/agent/endpoint/protocols/a2a");
+            builder.ConfigureTestServices(services =>
+            {
+                services.RemoveAll<TokenCredential>();
+                services.AddSingleton<TokenCredential, StubCredential>();
+                services.RemoveAll<IHttpClientFactory>();
+                services.AddSingleton<IHttpClientFactory>(new StubHttpClientFactory(outboundClient));
+            });
+        });
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post, AdapterConstants.ChainAgentRuntimePath("web-research"))
+        {
+            Content = JsonContent.Create(new
+            {
+                jsonrpc = "2.0",
+                id = "foundry-response",
+                method = "SendMessage",
+                @params = new
+                {
+                    message = new
+                    {
+                        role = "ROLE_USER",
+                        messageId = "foundry-response",
+                        contextId = "foundry-context",
+                        parts = new[] { new { text = "Research this" } }
+                    }
+                }
+            })
+        };
+        request.Headers.Add("A2A-Version", "1.0");
+
+        using var response = await client.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var part = body.RootElement.GetProperty("result").GetProperty("message").GetProperty("parts")[0];
+        Assert.Equal(
+            "Responding agent: Foundry Web Research\n\nDirect response.",
+            part.GetProperty("text").GetString());
+        var metadata = part.GetProperty("metadata");
+        Assert.Equal("web-research", metadata.GetProperty("agentId").GetString());
+        Assert.Equal("Foundry Web Research", metadata.GetProperty("agentName").GetString());
+    }
+
     [Fact]
     public async Task InvokeAsyncExtractsCompletedTaskArtifactText()
     {

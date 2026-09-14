@@ -71,6 +71,7 @@ public sealed class RoutingAgentInvoker(
                 $"Agent '{agent.Id}' has an unsupported provider.")
         };
 
+        var responder = new AgentResponder(agent.Id, agent.DisplayName);
         await using var enumerator = updates.GetAsyncEnumerator(cancellationToken);
         while (true)
         {
@@ -93,7 +94,10 @@ public sealed class RoutingAgentInvoker(
                 yield break;
             }
 
-            yield return enumerator.Current;
+            yield return enumerator.Current with
+            {
+                Responder = responder
+            };
         }
     }
 }

@@ -54,12 +54,24 @@ Long-lived infrastructure remains declarative under `infra/`.
 | --- | --- | --- |
 | `register-app` | Creates the single-tenant backend API registration, exposes `access_as_user`, adds the Copilot Studio delegated permission, enables optional device-code consent, and creates the confidential-client secret required for OBO. | Establishes the adapter's protected API audience and same-user token exchange. |
 | `register-spa` | Creates a secretless SPA registration and grants delegated access to the backend's `access_as_user` scope. | Gives the browser the minimum registration needed to call the adapter or APIM facade. |
+| `register-spa-redirect` | Adds and verifies a SPA redirect URI on an existing frontend registration, preserving other redirects and settings. | Connects a dedicated chatbot SPA to its local origin without creating another app or changing permissions. |
 | `consent` | Uses device-code authentication to record a per-user delegated Copilot Studio grant. | Supports development tenants where tenant-wide admin consent is not used. |
 | `grant-foundry-consent` | Adds only Foundry's `https://ai.azure.com/user_impersonation` delegated permission to the existing backend registration and grants tenant-wide consent. | Allows the adapter to exchange the caller token for a same-user Foundry token without broad application permissions. |
 | `register-foundry-redirect` | Adds the exact generated Azure APIM consent callback as a Web redirect on the existing backend registration. | Completes the redirect prerequisite for a native Foundry OAuth A2A connection while preserving existing redirects. |
 | `delete-app` | Deletes a temporary app registration and service principal by client ID. | Provides explicit cleanup for registrations created during the repro. |
 
 ### Local runtime
+
+For an existing dedicated chatbot registration:
+
+```powershell
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- register-spa-redirect `
+  --tenant-id <tenant-id> --client-id <chatbot-spa-client-id> `
+  --redirect-uri http://localhost:5174/auth-redirect.html
+```
+
+The operation is idempotent, verifies the saved redirect list, and uses the Azure CLI identity
+in the explicitly selected tenant. No client secret or new consent grant is created.
 
 | Command | What it does | Why it is here |
 | --- | --- | --- |

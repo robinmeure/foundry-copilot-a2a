@@ -13,13 +13,21 @@ namespace FoundryCopilotA2A.Adapter;
 public sealed record CopilotInvocationResult(
     string Text,
     string? ConversationId,
-    string? ResponseId);
+    string? ResponseId)
+{
+    public AgentResponder? Responder { get; init; }
+}
 
 public sealed record CopilotInvocationUpdate(
     string Text,
     string? ConversationId,
     string? ResponseId,
-    bool IsInformative = false);
+    bool IsInformative = false)
+{
+    public AgentResponder? Responder { get; init; }
+}
+
+public sealed record AgentResponder(string Id, string Name);
 
 public interface ICopilotStudioInvoker
 {

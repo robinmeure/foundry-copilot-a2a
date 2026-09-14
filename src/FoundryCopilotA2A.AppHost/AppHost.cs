@@ -5,16 +5,24 @@ var builder = DistributedApplication.CreateBuilder(args);
 
 var adapterPort = builder.Configuration.GetValue("AdapterPort", 5099);
 var frontendPort = builder.Configuration.GetValue("FrontendPort", 5173);
+var chatbotPort = builder.Configuration.GetValue("ChatbotPort", 5174);
 var requestTimeoutSeconds = builder.Configuration.GetValue("AdapterRequestTimeoutSeconds", 120);
-if (adapterPort is < 1 or > 65535 || frontendPort is < 1 or > 65535)
+if (adapterPort is < 1 or > 65535 || frontendPort is < 1 or > 65535 || chatbotPort is < 1 or > 65535)
 {
-    throw new InvalidOperationException("AdapterPort and FrontendPort must be between 1 and 65535.");
+    throw new InvalidOperationException("AdapterPort, FrontendPort and ChatbotPort must be between 1 and 65535.");
+}
+if (new[] { adapterPort, frontendPort, chatbotPort }.Distinct().Count() != 3)
+{
+    throw new InvalidOperationException("AdapterPort, FrontendPort and ChatbotPort must be distinct.");
 }
 if (requestTimeoutSeconds <= 0)
 {
     throw new InvalidOperationException("AdapterRequestTimeoutSeconds must be positive.");
 }
 var frontendOrigin = $"http://localhost:{frontendPort}";
+var chatbotOrigin = $"http://localhost:{chatbotPort}";
+var useLiveBackend = string.Equals(
+    builder.Configuration["AdapterBackend"], "CopilotStudio", StringComparison.OrdinalIgnoreCase);
 var gatewayBaseUrl = builder.Configuration["GatewayBaseUrl"]?.Trim().TrimEnd('/');
 if (!string.IsNullOrEmpty(gatewayBaseUrl) &&
     (!Uri.TryCreate(gatewayBaseUrl, UriKind.Absolute, out var gatewayUri) ||
@@ -34,7 +42,8 @@ var adapter = builder
     .WithEnvironment("Adapter__EnableFailureMock", "true")
     .WithEnvironment(
         "Adapter__RequestTimeoutSeconds", requestTimeoutSeconds.ToString(CultureInfo.InvariantCulture))
-    .WithEnvironment("Adapter__AllowedOrigins__0", frontendOrigin);
+    .WithEnvironment("Adapter__AllowedOrigins__0", frontendOrigin)
+    .WithEnvironment("Adapter__AllowedOrigins__1", chatbotOrigin);
 
 if (builder.Configuration.GetValue("ApiManagementDiscovery:Enabled", false))
 {
@@ -86,10 +95,7 @@ if (!string.IsNullOrWhiteSpace(foundryAgentEndpoint))
     ConfigureChainTargets("FoundryChainTargetAgent", "Foundry__Agents__web_research");
 }
 
-if (string.Equals(
-    builder.Configuration["AdapterBackend"],
-    "CopilotStudio",
-    StringComparison.OrdinalIgnoreCase))
+if (useLiveBackend)
 {
     var tenantId = builder.AddParameter("copilot-studio-tenant-id");
     var clientId = builder.AddParameter("copilot-studio-client-id");
@@ -166,6 +172,33 @@ builder
     .WithReference(adapter)
     .WaitFor(adapter)
     .WithExternalHttpEndpoints();
+
+var chatbot = builder
+    .AddViteApp("chatbot", "../FoundryCopilotA2A.Chatbot")
+    .WithEndpoint("http", endpoint => endpoint.Port = chatbotPort)
+    .WithEnvironment("VITE_ADAPTER_BASE_URL", adapter.GetEndpoint("http"))
+    .WithEnvironment(
+        "VITE_ORCHESTRATOR_AGENT_ID",
+        builder.Configuration["ChatbotOrchestratorAgentId"] ?? (useLiveBackend ? "orchestrator" : "mock"))
+    .WithEnvironment("VITE_CHATBOT_AUTH_MODE", useLiveBackend ? "entra" : "anonymous")
+    .WithReference(adapter)
+    .WaitFor(adapter)
+    .WithExternalHttpEndpoints();
+
+foreach (var setting in new Dictionary<string, string>
+{
+    ["ChatbotGatewayBaseUrl"] = "VITE_GATEWAY_BASE_URL",
+    ["ChatbotOrchestratorName"] = "VITE_ORCHESTRATOR_NAME",
+    ["ChatbotTenantId"] = "VITE_ENTRA_TENANT_ID",
+    ["ChatbotSpaClientId"] = "VITE_ENTRA_CLIENT_ID",
+    ["ChatbotApiClientId"] = "VITE_ADAPTER_API_CLIENT_ID"
+})
+{
+    if (builder.Configuration[setting.Key] is { } value)
+    {
+        chatbot.WithEnvironment(setting.Value, value);
+    }
+}
 
 builder.Build().Run();
 
