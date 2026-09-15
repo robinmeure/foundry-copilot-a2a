@@ -1438,6 +1438,24 @@ When `CopilotStudio:Agents` is configured, each named agent requires either its 
 `DirectConnectUrl`, or both `EnvironmentId` and `SchemaName`. Without named agents, the
 legacy top-level address settings remain supported.
 
+### Where these settings come from
+
+The table above is the schema. At runtime almost none of it is read from a file:
+
+| Source | Supplies | Notes |
+| --- | --- | --- |
+| `src/FoundryCopilotA2A.Adapter/appsettings.json` | Safe defaults and log levels | Deliberately fails closed: it cannot start the adapter on its own. |
+| AppHost user secrets → `AppHost.cs` `WithEnvironment` | Everything for local dev | Secrets and connection strings live in user secrets, never in the repo. |
+| CLI `run-mock` / `run-adapter` | Environment for one child process | The client secret is read from `COPILOT_STUDIO_CLIENT_SECRET`. |
+| `infra/main.bicep` app settings | Azure App Service | Secrets are Key Vault references resolved by managed identity. |
+
+Configuration order is `appsettings.json` → `appsettings.{Environment}.json` → environment
+variables → command line, and `__` maps to `:`. Environment variables therefore always win, which
+is why the committed file holds only defaults that are safe to publish. Values that are secret
+(client secret, direct-connect URLs) or that are only known at runtime (`Adapter:PublicBaseUrl`,
+which follows the endpoint, Dev Tunnel, or APIM gateway, and `Adapter:AllowedOrigins`, which
+follows the configured ports) must never be committed to an appsettings file.
+
 ## Detecting a degraded agent
 
 Copilot Studio reports several operational problems as an ordinary agent message with HTTP
