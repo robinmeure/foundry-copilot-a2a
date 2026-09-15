@@ -49,6 +49,10 @@ param reverserClassicDirectConnectUrl string
 param reverserNewDirectConnectUrl string
 
 @secure()
+@description('Direct-connect URL for the AI Search Vragen Copilot Studio agent.')
+param aiSearchVragenDirectConnectUrl string
+
+@secure()
 @description('Direct-connect URL for the Orchestrator Copilot Studio agent.')
 param orchestratorDirectConnectUrl string
 
@@ -156,6 +160,7 @@ module adapterSecrets 'modules/adapter-secrets.bicep' = {
     tweedeKamerDirectConnectUrl: tweedeKamerDirectConnectUrl
     reverserClassicDirectConnectUrl: reverserClassicDirectConnectUrl
     reverserNewDirectConnectUrl: reverserNewDirectConnectUrl
+    aiSearchVragenDirectConnectUrl: aiSearchVragenDirectConnectUrl
     orchestratorDirectConnectUrl: orchestratorDirectConnectUrl
   }
 }

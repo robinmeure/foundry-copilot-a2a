@@ -16,6 +16,9 @@ param reverserClassicDirectConnectUrl string
 param reverserNewDirectConnectUrl string
 
 @secure()
+param aiSearchVragenDirectConnectUrl string
+
+@secure()
 param orchestratorDirectConnectUrl string
 
 resource keyVault 'Microsoft.KeyVault/vaults@2024-11-01' existing = {
@@ -55,6 +58,15 @@ resource reverserNewUrl 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = {
   properties: {
     contentType: 'Copilot Studio direct-connect URL'
     value: reverserNewDirectConnectUrl
+  }
+}
+
+resource aiSearchVragenUrl 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = {
+  parent: keyVault
+  name: 'ai-search-vragen-direct-connect-url'
+  properties: {
+    contentType: 'Copilot Studio direct-connect URL'
+    value: aiSearchVragenDirectConnectUrl
   }
 }
 

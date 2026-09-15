@@ -732,8 +732,8 @@ replayed there when a new conversation has to be started.
 
 The AppHost selects `Mock` unless its local `AdapterBackend` configuration is
 `CopilotStudio`. Live mode configures the `tweede-kamer`, `reverser-classic`,
-`reverser-new`, `tweede-kamer-classic`, and `orchestrator` agents with shared tenant
-and backend application credentials. Their
+`reverser-new`, `tweede-kamer-classic`, `ai-search-vragen`, and `orchestrator` agents
+with shared tenant and backend application credentials. Their
 direct-connect URLs stay in these AppHost user-secret parameters:
 
 ```text
@@ -741,6 +741,7 @@ Parameters:copilot-studio-direct-connect-url
 Parameters:copilot-studio-reverser-direct-connect-url
 Parameters:copilot-studio-reverser-new-direct-connect-url
 Parameters:copilot-studio-tweede-kamer-classic-direct-connect-url
+Parameters:copilot-studio-ai-search-vragen-direct-connect-url
 Parameters:copilot-studio-orchestrator-direct-connect-url
 ```
 
@@ -1341,6 +1342,15 @@ an `artifactUpdate` with `append` and `lastChunk`, so a client appends chunks as
 treats `append: false` as a restart of that artifact. Task status updates carry generic lifecycle
 text and are not part of the answer. Plain `SendMessage` still returns a single message, so callers
 that do not stream, including chained Foundry calls, are unaffected.
+
+#### End-of-stream marker
+
+A2A 0.3 ends a stream with a `status-update` carrying `final: true`, and a strict client waits for
+that marker. The hosting and compatibility packages emit terminal states with `final: false`, so the
+adapter rewrites the event as it is written, without buffering the response. Only 0.3 payloads in a
+terminal state (`completed`, `failed`, `canceled`, `rejected`) are touched; `working` and `submitted`
+are left alone so a client never stops reading early. A2A 1.0 has no `final` field and passes
+through unchanged.
 
 ### Chained call latency
 

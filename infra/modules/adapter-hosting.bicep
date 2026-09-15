@@ -91,6 +91,10 @@ var baseAppSettings = {
   CopilotStudio__Agents__reverser_new__Harness: 'GitHubCopilot'
   CopilotStudio__Agents__reverser_new__DirectConnectUrl: '@Microsoft.KeyVault(SecretUri=${keyVaultSecretBaseUrl}/reverser-new-direct-connect-url)'
 
+  CopilotStudio__Agents__ai_search_vragen__Id: 'ai-search-vragen'
+  CopilotStudio__Agents__ai_search_vragen__DisplayName: 'AI Search Vragen'
+  CopilotStudio__Agents__ai_search_vragen__DirectConnectUrl: '@Microsoft.KeyVault(SecretUri=${keyVaultSecretBaseUrl}/ai-search-vragen-direct-connect-url)'
+
   CopilotStudio__Agents__orchestrator__DisplayName: 'Orchestrator'
   CopilotStudio__Agents__orchestrator__DirectConnectUrl: '@Microsoft.KeyVault(SecretUri=${keyVaultSecretBaseUrl}/orchestrator-direct-connect-url)'
 

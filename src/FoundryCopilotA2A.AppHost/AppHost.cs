@@ -124,6 +124,8 @@ if (useLiveBackend)
         builder.AddParameter("copilot-studio-reverser-new-direct-connect-url", secret: true);
     var tweedeKamerClassicDirectConnectUrl =
         builder.AddParameter("copilot-studio-tweede-kamer-classic-direct-connect-url", secret: true);
+    var aiSearchVragenDirectConnectUrl =
+        builder.AddParameter("copilot-studio-ai-search-vragen-direct-connect-url", secret: true);
     var orchestratorDirectConnectUrl =
         builder.AddParameter("copilot-studio-orchestrator-direct-connect-url", secret: true);
     var authority = builder.AddParameter("authentication-authority");
@@ -164,6 +166,12 @@ if (useLiveBackend)
         .WithEnvironment(
             "CopilotStudio__Agents__tweede-kamer-classic__DirectConnectUrl",
             tweedeKamerClassicDirectConnectUrl)
+        .WithEnvironment(
+            "CopilotStudio__Agents__ai-search-vragen__DisplayName",
+            "AI Search Vragen")
+        .WithEnvironment(
+            "CopilotStudio__Agents__ai-search-vragen__DirectConnectUrl",
+            aiSearchVragenDirectConnectUrl)
         .WithEnvironment(
             "CopilotStudio__Agents__orchestrator__DisplayName",
             "Orchestrator")

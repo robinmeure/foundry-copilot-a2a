@@ -44,12 +44,20 @@
     "reverserNewDirectConnectUrl": {
       "value": "https://example/x"
     },
+    "aiSearchVragenDirectConnectUrl": {
+      "value": "https://example/x"
+    },
     "orchestratorDirectConnectUrl": {
       "value": "https://example/x"
     },
     "adapterAllowedOrigins": {
       "value": [
         "http://localhost:5173"
+      ]
+    },
+    "specialistAgentIds": {
+      "value": [
+        "ai-search-vragen"
       ]
     },
     "appServicePlanSku": {

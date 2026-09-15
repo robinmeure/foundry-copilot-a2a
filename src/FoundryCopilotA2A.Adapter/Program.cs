@@ -77,6 +77,7 @@ builder.Services.Configure<ApiManagementDiscoveryOptions>(
     builder.Configuration.GetSection(ApiManagementDiscoveryOptions.SectionName));
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<A2ARequestMetadataAccessor>();
+builder.Services.AddSingleton<CopilotStudioResponseMetadataAccessor>();
 builder.Services.AddSingleton<AgentIsolationKeyContext>();
 builder.Services.AddSingleton<AgentCatalog>();
 builder.Services.AddSingleton<ApiManagementAgentRegistry>();
@@ -209,6 +210,8 @@ if (authenticationOptions.Enabled)
 
 // Must run after authentication so the caller's claims are available to the metadata accessor.
 app.UseMiddleware<A2ARequestContextMiddleware>();
+// Restores the A2A 0.3 end-of-stream marker that the hosting packages leave as final: false.
+app.UseMiddleware<A2AStreamingFinalMiddleware>();
 app.Use(async (context, next) =>
 {
     if (HttpMethods.IsPost(context.Request.Method) &&

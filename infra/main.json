@@ -6,7 +6,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.46.1.21595",
-      "templateHash": "3271537371506090431"
+      "templateHash": "9715216636720669241"
     },
     "name": "Foundry Copilot A2A Citadel infrastructure",
     "description": "Deploys the A2A adapter, APIM governance gateway, Microsoft Foundry project, and shared monitoring."
@@ -95,6 +95,12 @@
       "type": "securestring",
       "metadata": {
         "description": "Direct-connect URL for the Reverser New Copilot Studio agent."
+      }
+    },
+    "aiSearchVragenDirectConnectUrl": {
+      "type": "securestring",
+      "metadata": {
+        "description": "Direct-connect URL for the AI Search Vragen Copilot Studio agent."
       }
     },
     "orchestratorDirectConnectUrl": {
@@ -530,6 +536,9 @@
           "reverserNewDirectConnectUrl": {
             "value": "[parameters('reverserNewDirectConnectUrl')]"
           },
+          "aiSearchVragenDirectConnectUrl": {
+            "value": "[parameters('aiSearchVragenDirectConnectUrl')]"
+          },
           "orchestratorDirectConnectUrl": {
             "value": "[parameters('orchestratorDirectConnectUrl')]"
           }
@@ -541,7 +550,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.46.1.21595",
-              "templateHash": "4801627234989720104"
+              "templateHash": "14504037307499657974"
             },
             "name": "A2A adapter secrets",
             "description": "Stores the adapter Copilot Studio credentials and direct-connect URLs in Key Vault."
@@ -560,6 +569,9 @@
               "type": "securestring"
             },
             "reverserNewDirectConnectUrl": {
+              "type": "securestring"
+            },
+            "aiSearchVragenDirectConnectUrl": {
               "type": "securestring"
             },
             "orchestratorDirectConnectUrl": {
@@ -601,6 +613,15 @@
               "properties": {
                 "contentType": "Copilot Studio direct-connect URL",
                 "value": "[parameters('reverserNewDirectConnectUrl')]"
+              }
+            },
+            {
+              "type": "Microsoft.KeyVault/vaults/secrets",
+              "apiVersion": "2024-11-01",
+              "name": "[format('{0}/{1}', parameters('keyVaultName'), 'ai-search-vragen-direct-connect-url')]",
+              "properties": {
+                "contentType": "Copilot Studio direct-connect URL",
+                "value": "[parameters('aiSearchVragenDirectConnectUrl')]"
               }
             },
             {
@@ -870,7 +891,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.46.1.21595",
-              "templateHash": "18135073092364442270"
+              "templateHash": "4396521811868097975"
             },
             "name": "A2A adapter hosting",
             "description": "Deploys the Linux App Service Plan and Linux Web App for the adapter."
@@ -987,6 +1008,9 @@
               "CopilotStudio__Agents__reverser_new__DisplayName": "Reverser New",
               "CopilotStudio__Agents__reverser_new__Harness": "GitHubCopilot",
               "CopilotStudio__Agents__reverser_new__DirectConnectUrl": "[format('@Microsoft.KeyVault(SecretUri={0}/reverser-new-direct-connect-url)', variables('keyVaultSecretBaseUrl'))]",
+              "CopilotStudio__Agents__ai_search_vragen__Id": "ai-search-vragen",
+              "CopilotStudio__Agents__ai_search_vragen__DisplayName": "AI Search Vragen",
+              "CopilotStudio__Agents__ai_search_vragen__DirectConnectUrl": "[format('@Microsoft.KeyVault(SecretUri={0}/ai-search-vragen-direct-connect-url)', variables('keyVaultSecretBaseUrl'))]",
               "CopilotStudio__Agents__orchestrator__DisplayName": "Orchestrator",
               "CopilotStudio__Agents__orchestrator__DirectConnectUrl": "[format('@Microsoft.KeyVault(SecretUri={0}/orchestrator-direct-connect-url)', variables('keyVaultSecretBaseUrl'))]",
               "Foundry__Agents__web_research__Id": "web-research",

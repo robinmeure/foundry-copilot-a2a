@@ -330,9 +330,12 @@ public sealed class SanitizedTraceProcessor(SanitizedTraceStore store)
 
 public sealed class CopilotStudioTraceHandler(
     SanitizedTraceStore traceStore,
-    A2ARequestMetadataAccessor metadataAccessor)
+    A2ARequestMetadataAccessor metadataAccessor,
+    CopilotStudioResponseMetadataAccessor responseMetadataAccessor)
     : DelegatingHandler
 {
+    private const string ConversationIdHeaderName = "x-ms-conversationid";
+
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
         CancellationToken cancellationToken)
@@ -353,6 +356,16 @@ public sealed class CopilotStudioTraceHandler(
         try
         {
             var response = await base.SendAsync(request, cancellationToken);
+            if (response.Headers.TryGetValues(ConversationIdHeaderName, out var conversationIds))
+            {
+                var conversationId = conversationIds.FirstOrDefault(
+                    value => !string.IsNullOrWhiteSpace(value));
+                if (conversationId is not null)
+                {
+                    responseMetadataAccessor.CaptureConversationId(conversationId);
+                }
+            }
+
             var capturedResponse = new TraceHttpResponse(
                 (int)response.StatusCode,
                 "Response content is consumed as Copilot Studio activities and is not buffered by tracing.");
@@ -403,6 +416,7 @@ internal static class TraceSanitizer
         "copilot_studio.attachment.count",
         "copilot_studio.backend",
         "copilot_studio.client.compatible",
+        "copilot_studio.conversation.id.source",
         "copilot_studio.conversation.restarted",
         "copilot_studio.conversation.reused",
         "copilot_studio.message.adaptive_card_text.count",

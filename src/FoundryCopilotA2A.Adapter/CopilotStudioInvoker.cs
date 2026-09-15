@@ -203,6 +203,7 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
     private readonly ILogger<SdkCopilotStudioInvoker> _logger;
     private readonly OboTokenBroker _tokenBroker;
     private readonly CopilotConversationStore _conversationStore;
+    private readonly CopilotStudioResponseMetadataAccessor _responseMetadataAccessor;
     private readonly IReadOnlyDictionary<string, CopilotStudioAgentRuntime> _agents;
 
     public SdkCopilotStudioInvoker(
@@ -211,13 +212,15 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
         ILoggerFactory loggerFactory,
         ILogger<SdkCopilotStudioInvoker> logger,
         OboTokenBroker tokenBroker,
-        CopilotConversationStore conversationStore)
+        CopilotConversationStore conversationStore,
+        CopilotStudioResponseMetadataAccessor responseMetadataAccessor)
     {
         _httpClientFactory = httpClientFactory;
         _loggerFactory = loggerFactory;
         _logger = logger;
         _tokenBroker = tokenBroker;
         _conversationStore = conversationStore;
+        _responseMetadataAccessor = responseMetadataAccessor;
 
         var value = options.Value;
         _agents = value.ResolveAgents().ToDictionary(
@@ -390,6 +393,7 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
 
         if (conversationId is null)
         {
+            using var responseMetadata = _responseMetadataAccessor.BeginCapture();
             await foreach (var activity in client.StartConversationAsync(
                 emitStartConversationEvent: true,
                 cancellationToken: cancellationToken))
@@ -402,12 +406,21 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
                 conversationId ??= activity.Conversation?.Id;
                 oauthCard ??= ExtractOAuthCard(activity);
             }
+
+            if (conversationId is null &&
+                responseMetadata.ConversationId is { } headerConversationId)
+            {
+                conversationId = headerConversationId;
+                traceActivity?.SetTag(
+                    "copilot_studio.conversation.id.source",
+                    "response_header");
+            }
         }
 
         if (conversationId is null)
         {
             var exception = new CopilotStudioResponseException(
-                "Copilot Studio did not return a conversation id when starting the conversation. " +
+                "Copilot Studio did not return a conversation id in the activity stream or response header. " +
                 "Confirm that the configured agent is published and uses the standard harness.");
             AdapterTelemetry.RecordFailure(traceActivity, exception);
             AdapterTelemetry.RecordFailureReason(traceActivity, exception.Message);
