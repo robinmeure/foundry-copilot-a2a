@@ -18,41 +18,6 @@ Operational setup, provider wiring, APIM publication, and end-to-end smoke tests
 in the versioned [Foundry Copilot A2A CLI](src/FoundryCopilotA2A.Cli/README.md). Its README
 explains what every command does and why the project lives beside the application code.
 
-## Chatbot frontend
-
-The separate [Orchestrator Chat frontend](src/FoundryCopilotA2A.Chatbot/README.md) provides
-only sign-in and chat with one configured Orchestrator. It reuses the console's A2A streaming
-handlers without its flow designer, specialist selectors, or diagnostic panels.
-
-Aspire starts three application resources together; the Dev Tunnel is an optional extra resource:
-
-| Resource | Default address | Purpose |
-| --- | --- | --- |
-| `adapter` | `http://localhost:5099` | Protected A2A handlers and server-side OBO |
-| `frontend` | `http://localhost:5173` | Existing diagnostic console |
-| `chatbot` | `http://localhost:5174` | Dedicated chat-only frontend |
-
-Both browser origins are allowed by the local adapter. Configure the chatbot's **dedicated SPA**
-registration and the existing backend API identity in its ignored `.env.local`; its SPA redirect
-URI must be `<chatbot-origin>/auth-redirect.html` for its MSAL redirect bridge. Sign-in, token
-renewal, and sign-out use redirects, like the existing console, not popups.
-In live mode, calls use the signed-in user's delegated backend token, and OBO remains on the
-server. The explicit local mock mode does not sign in or perform OBO. Existing console settings
-and its app registration are unchanged.
-
-AppHost settings `ChatbotPort`, `ChatbotOrchestratorAgentId`, and `ChatbotOrchestratorName`
-override chatbot defaults. The default live agent is `orchestrator`; an explicit mock AppHost
-uses `mock` with local-only anonymous development mode. Live AppHost startup uses its existing
-Copilot Studio connections, authentication settings, and backend confidential credentials.
-Optional `ChatbotTenantId`, `ChatbotSpaClientId`, and `ChatbotApiClientId` override the chatbot's
-local identity configuration. Never configure a backend client secret in the frontend.
-
-When `GatewayBaseUrl` is configured, the Aspire-hosted chatbot inherits it and sends every
-message through APIM. `ChatbotGatewayBaseUrl` can override that route independently; set it to
-an empty value to retain direct local adapter ingress. Allow the chatbot origin in the gateway's
-CORS policy. Native specialist delegation still uses the Orchestrator's configured A2A
-connections; agents never invoke the chatbot itself.
-
 ## Management summary
 
 ### What this is
@@ -1843,3 +1808,39 @@ for prerequisites, generated routes, and verification.
 
 Platform alternative, distinct from this repository's proxy publication:
 [Import an A2A agent API into Azure API Management](https://learn.microsoft.com/azure/api-management/agent-to-agent-api).
+
+
+## Chatbot frontend
+
+The separate [Orchestrator Chat frontend](src/FoundryCopilotA2A.Chatbot/README.md) provides
+only sign-in and chat with one configured Orchestrator. It reuses the console's A2A streaming
+handlers without its flow designer, specialist selectors, or diagnostic panels.
+
+Aspire starts three application resources together; the Dev Tunnel is an optional extra resource:
+
+| Resource | Default address | Purpose |
+| --- | --- | --- |
+| `adapter` | `http://localhost:5099` | Protected A2A handlers and server-side OBO |
+| `frontend` | `http://localhost:5173` | Existing diagnostic console |
+| `chatbot` | `http://localhost:5174` | Dedicated chat-only frontend |
+
+Both browser origins are allowed by the local adapter. Configure the chatbot's **dedicated SPA**
+registration and the existing backend API identity in its ignored `.env.local`; its SPA redirect
+URI must be `<chatbot-origin>/auth-redirect.html` for its MSAL redirect bridge. Sign-in, token
+renewal, and sign-out use redirects, like the existing console, not popups.
+In live mode, calls use the signed-in user's delegated backend token, and OBO remains on the
+server. The explicit local mock mode does not sign in or perform OBO. Existing console settings
+and its app registration are unchanged.
+
+AppHost settings `ChatbotPort`, `ChatbotOrchestratorAgentId`, and `ChatbotOrchestratorName`
+override chatbot defaults. The default live agent is `orchestrator`; an explicit mock AppHost
+uses `mock` with local-only anonymous development mode. Live AppHost startup uses its existing
+Copilot Studio connections, authentication settings, and backend confidential credentials.
+Optional `ChatbotTenantId`, `ChatbotSpaClientId`, and `ChatbotApiClientId` override the chatbot's
+local identity configuration. Never configure a backend client secret in the frontend.
+
+When `GatewayBaseUrl` is configured, the Aspire-hosted chatbot inherits it and sends every
+message through APIM. `ChatbotGatewayBaseUrl` can override that route independently; set it to
+an empty value to retain direct local adapter ingress. Allow the chatbot origin in the gateway's
+CORS policy. Native specialist delegation still uses the Orchestrator's configured A2A
+connections; agents never invoke the chatbot itself.
