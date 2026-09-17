@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -14,39 +15,44 @@ public sealed class ApiManagementA2AInvoker(
         A2ARequestMetadata metadata,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var agent = await registry.TryResolveAsync(metadata.AgentId, cancellationToken) ??
-                    throw new AdapterRequestException(
-                        $"API Management agent '{metadata.AgentId}' is not configured.");
-        var effectivePrompt = ConversationTranscript.Prepend(prompt, metadata.History);
-        var requestId = Guid.NewGuid().ToString("N");
-        var body = JsonSerializer.Serialize(new
-        {
-            jsonrpc = "2.0",
-            id = requestId,
-            method = "SendMessage",
-            @params = new
-            {
-                message = new
-                {
-                    role = "ROLE_USER",
-                    parts = new[] { new { text = effectivePrompt } },
-                    messageId = metadata.MessageId,
-                    contextId = metadata.ContextId
-                }
-            }
-        });
-
         using var activity = AdapterTelemetry.StartActivity("apim.a2a.invoke");
-        activity?.SetTag("apim.api.id", agent.ApiId);
-        activity?.SetTag("a2a.agent.id", agent.Id);
-        using var genAiActivity = GenAiTelemetry.StartInvokeAgent(
-            "azure.apim",
-            agent.DisplayName,
-            agent.Id,
-            metadata.ContextId);
+        var invocationStarted = Stopwatch.GetTimestamp();
+        var invocationCompleted = false;
+        string? apiId = null;
+        Activity? genAiActivity = null;
         CopilotInvocationUpdate update;
         try
         {
+            var agent = await registry.TryResolveAsync(metadata.AgentId, cancellationToken) ??
+                        throw new AdapterRequestException(
+                            $"API Management agent '{metadata.AgentId}' is not configured.");
+            apiId = agent.ApiId;
+            activity?.SetTag("apim.api.id", agent.ApiId);
+            activity?.SetTag("a2a.agent.id", agent.Id);
+            var effectivePrompt = ConversationTranscript.Prepend(prompt, metadata.History);
+            var requestId = Guid.NewGuid().ToString("N");
+            var body = JsonSerializer.Serialize(new
+            {
+                jsonrpc = "2.0",
+                id = requestId,
+                method = "SendMessage",
+                @params = new
+                {
+                    message = new
+                    {
+                        role = "ROLE_USER",
+                        parts = new[] { new { text = effectivePrompt } },
+                        messageId = metadata.MessageId,
+                        contextId = metadata.ContextId
+                    }
+                }
+            });
+
+            genAiActivity = GenAiTelemetry.StartInvokeAgent(
+                "azure.apim",
+                agent.DisplayName,
+                agent.Id,
+                metadata.ContextId);
             using var request = new HttpRequestMessage(HttpMethod.Post, agent.Endpoint);
             if (!string.IsNullOrWhiteSpace(metadata.BearerToken))
             {
@@ -58,6 +64,7 @@ public sealed class ApiManagementA2AInvoker(
             using var response = await httpClientFactory
                 .CreateClient("apim-a2a")
                 .SendAsync(request, cancellationToken);
+            activity?.SetTag("http.response.status_code", (int)response.StatusCode);
             var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
@@ -83,6 +90,8 @@ public sealed class ApiManagementA2AInvoker(
             }
 
             activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
+            genAiActivity?.SetStatus(ActivityStatusCode.Ok);
+            invocationCompleted = true;
             update = new CopilotInvocationUpdate(answer.Text, metadata.ContextId, requestId)
             {
                 Citations = answer.Citations
@@ -90,8 +99,18 @@ public sealed class ApiManagementA2AInvoker(
         }
         catch (Exception exception)
         {
+            AdapterTelemetry.RecordFailure(activity, exception);
             GenAiTelemetry.RecordFailure(genAiActivity, exception);
             throw;
+        }
+        finally
+        {
+            genAiActivity?.Dispose();
+            AdapterTelemetry.RecordApiManagementA2AInvocation(
+                activity,
+                Stopwatch.GetElapsedTime(invocationStarted),
+                apiId,
+                invocationCompleted);
         }
 
         yield return update;

@@ -18,6 +18,9 @@ Operational setup, provider wiring, APIM publication, and end-to-end smoke tests
 in the versioned [Foundry Copilot A2A CLI](src/FoundryCopilotA2A.Cli/README.md). Its README
 explains what every command does and why the project lives beside the application code.
 
+For guidance on APIM versus adapter-owned OBO and app registrations as agents scale, see
+[Authentication placement and app registration strategy](docs/authentication-and-agent-scaling.md).
+
 ## Management summary
 
 ### What this is
@@ -25,14 +28,6 @@ explains what every command does and why the project lives beside the applicatio
 A governed bridge that exposes supported Copilot Studio agents over A2A. A Microsoft Foundry
 agent or a standard-harness Copilot Studio agent can be the native orchestrator. The adapter
 uses delegated OBO; it does not implement an in-process Agent A-then-Agent B pipeline.
-
-Recorded live runs include a signed-in browser calling a separate Citadel/APIM development API
-through Dev Tunnel, and a migrated Foundry-to-Reverser callback with same-user delegated OBO.
-In the latter run, Foundry started a separate downstream trace; the console cannot join that hop
-without propagated trace context. These are historical observations, not a health check of the
-current tenant or published agent version. Either native orchestrator still requires its own
-configured A2A connections and per-user authorization. Rerun the relevant CLI smoke test after
-changing a connection, gateway, credential, or agent version.
 
 ### End-to-end flow
 
@@ -1089,6 +1084,32 @@ Every target must name a configured, supported Copilot Studio agent other than t
 Never attach two native tools for the same target route. Catalog capability is not proof that
 the remote tools are configured or that their user consent has completed.
 
+#### Optionally bypass Copilot Studio connector consent cards
+
+An administrator can suppress the first-use connector consent cards for all users of one
+standard-harness Copilot Studio agent. This setting is scoped to the agent's Dataverse `botid`
+and Power Platform environment; it isn't configurable for only one user or only one tool.
+
+Use a separate single-tenant public-client registration with redirect URI `http://localhost`
+and delegated Power Platform API permission `CopilotStudio.AdminActions.Invoke`. The signed-in
+operator must be a Power Platform Administrator, AI Administrator, or Global Administrator.
+Don't add this administrative permission to the adapter runtime registration.
+
+```text
+dotnet run --project src/FoundryCopilotA2A.Cli -- register-consent-bypass-app --tenant-id <tenant-id>
+
+dotnet run --project src/FoundryCopilotA2A.Cli -- get-connector-consent-bypass --tenant-id <tenant-id> --admin-client-id <admin-client-id> --environment-id <environment-guid> --bot-id <dataverse-bot-guid>
+
+dotnet run --project src/FoundryCopilotA2A.Cli -- set-connector-consent-bypass --tenant-id <tenant-id> --admin-client-id <admin-client-id> --environment-id <environment-guid> --bot-id <dataverse-bot-guid> --enabled true
+```
+
+Enable it on the orchestrator that owns the A2A connections, not on a specialist merely because
+the specialist is a target. The bypass removes Copilot Studio's conversational consent-card
+step; it doesn't create shared credentials, repair stale connections, bypass Entra or resource
+authorization, or affect Foundry OAuth identity-passthrough consent. See
+[the connection lifecycle guide](docs/copilot-studio-a2a-connections.md#connector-consent-card-bypass)
+for scope, rollback, and verification.
+
 Local AppHost settings do not automatically become App Service settings. The current
 [hosting module](infra/modules/adapter-hosting.bicep) does not set native `ChainTargets`, and
 its static catalog does not include the AppHost-only `tweede-kamer-classic` entry. Add the
@@ -1609,6 +1630,43 @@ Attributes emitted are `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.
 `gen_ai.agent.id`, `gen_ai.tool.name`, `gen_ai.tool.type`, `gen_ai.tool.description`,
 `gen_ai.conversation.id`, and `error.type` on failure. Optional attributes are omitted rather
 than written as empty strings.
+
+#### Adapter latency telemetry
+
+The adapter's `FoundryCopilotA2A.Adapter` activity source and meter add latency boundaries that
+the generic ASP.NET Core and `HttpClient` instrumentation cannot infer:
+
+| Signal | What it measures |
+| --- | --- |
+| `copilot_studio.start_conversation` span | New-conversation setup, including how the conversation ID was obtained. |
+| `copilot_studio.collect_answer` span | Complete activity-stream consumption, with first-activity, first-progress, and first-answer timing attributes. |
+| `copilot_studio.stream.first_activity` event | The first activity received from Copilot Studio. |
+| `copilot_studio.stream.first_progress` event | The first non-empty text forwarded to the caller, including informative progress. |
+| `copilot_studio.stream.first_answer` event | The first non-informative answer text forwarded to the caller. |
+| `apim.discovery.resolve` span | Cache hit, refresh, refresh-lock wait, or failure while resolving the APIM catalog. |
+| `apim.discovery.refresh` span | Complete APIM catalog refresh with candidate, discovered, and skipped counts. |
+| `apim.discovery.acquire_arm_token`, `apim.discovery.read_management`, and `apim.discovery.read_agent_cards` spans | Credential, ARM management, and gateway agent-card stages of a refresh. |
+| `apim.a2a.invoke` span | Full discovered-APIM invocation, including a cache refresh when one is required. |
+
+The corresponding histograms are exported through OTLP and appear on the Aspire dashboard's
+metrics page:
+
+- `copilot_studio.client.invoke.duration`
+- `copilot_studio.client.conversation.start.duration`
+- `copilot_studio.client.answer_stream.duration`
+- `copilot_studio.client.answer_stream.time_to_first_activity`
+- `copilot_studio.client.answer_stream.time_to_first_progress`
+- `copilot_studio.client.answer_stream.time_to_first_answer`
+- `apim.discovery.resolve.duration`
+- `apim.discovery.lock_wait.duration`
+- `apim.discovery.refresh.duration`
+- `apim.discovery.stage.duration`
+- `apim.a2a.invoke.duration`
+
+Metric durations use seconds, following OpenTelemetry conventions; searchable timing attributes
+on spans and events use milliseconds. Dimensions are limited to configured agent/API IDs and
+bounded outcome values. Prompts, answer text, bearer tokens, and conversation IDs are never
+recorded as metric dimensions.
 
 Two notes on the conventions. `gen_ai.system` was renamed to `gen_ai.provider.name` when GenAI
 moved to its own repository, so this code uses the current name. Copilot Studio has no registered

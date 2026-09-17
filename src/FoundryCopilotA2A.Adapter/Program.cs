@@ -11,6 +11,7 @@ using Microsoft.Agents.AI.Hosting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.AI;
 using Microsoft.IdentityModel.Tokens;
+using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -35,6 +36,8 @@ var traceStore = new SanitizedTraceStore(
     Microsoft.Extensions.Options.Options.Create(adapterOptions));
 builder.Services.AddSingleton(traceStore);
 builder.Services.AddOpenTelemetry()
+    .WithMetrics(metrics => metrics
+        .AddMeter(AdapterTelemetry.MeterName))
     .WithTracing(tracing => tracing
         .AddSource(AdapterTelemetry.ActivitySourceName)
         .AddSource(GenAiTelemetry.ActivitySourceName)

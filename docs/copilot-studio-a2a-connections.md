@@ -1,6 +1,6 @@
 # Copilot Studio A2A connection lifecycle and consent
 
-Last verified: 2026-09-14
+Last verified: 2026-09-16
 
 This document describes the connection lifecycle for a native Copilot Studio
 Agent2Agent (A2A) connected agent that uses OAuth 2.0 end-user authentication.
@@ -116,6 +116,12 @@ If the user declines or cannot complete authorization, the A2A target remains
 unavailable to that user. Other agent capabilities that do not depend on the
 connection can continue to work.
 
+This is the default consent-card flow. When an administrator enables the
+per-agent connector consent-card bypass described below, Copilot Studio
+suppresses the conversational confirmation in steps 3 and 4. Interactive
+Microsoft Entra authentication can still be required when no usable user token
+exists or policy requires it.
+
 ## Consent model
 
 This architecture has two independent delegated permission grants:
@@ -158,6 +164,135 @@ Entra browser session, this can be a brief redirect with no permission prompt.
 Tenant-wide consent is normally granted once per application, tenant, and
 permission set. A scope change can require new consent.
 
+## Connector consent-card bypass
+
+Copilot Studio provides an administrator setting that bypasses the connector
+consent cards normally shown when an agent first uses a connector on behalf of a
+user. The setting is:
+
+- Scoped to one Copilot Studio agent (`botid`) in one Power Platform environment.
+- Applied to all connector consent cards presented by that agent.
+- Effective for all users of that agent.
+- Supported only for agents powered by the standard harness.
+
+It is not a per-user or per-tool allowlist. If different user populations require
+different confirmation behavior, use separate agents or leave the cards enabled.
+The setting doesn't apply to GitHub Copilot-harness agents.
+
+For this project's native Copilot Studio chain, enable the bypass on the
+standard-harness **orchestrator**, because that agent owns and invokes the A2A
+connections. Don't enable it on a specialist merely because that specialist is an
+A2A target. A specialist needs its own setting only if it independently invokes
+connectors for its users.
+
+Microsoft's article describes the feature generically for connectors and doesn't
+explicitly enumerate native A2A connected agents. Treat a successful setting
+update as configuration evidence, not runtime proof: test the published
+orchestrator with a new non-maker user and confirm both that no consent card
+appears and that the specialist callback succeeds as that user.
+
+### What the bypass does not remove
+
+The documented switch is specifically a consent-card bypass. It doesn't state
+that any of these security boundaries are disabled:
+
+- Microsoft Entra sign-in and token issuance.
+- Conditional Access, MFA, or device requirements.
+- The user's authorization to the backend and downstream resources.
+- OAuth token refresh, revocation, expiration, or stale-connection handling.
+- The adapter's delegated JWT validation and OBO exchange.
+- Foundry OAuth identity-passthrough consent, which has a separate lifecycle.
+
+It also doesn't create one shared maker connection or convert calls to app-only
+authentication. Keep the end-user OAuth and OBO design unchanged.
+
+Connector consent-card bypass and tenant-wide Microsoft Entra permission consent
+are independent controls. The former suppresses a Copilot Studio conversation
+card for one agent; the latter grants an application's delegated scopes for the
+tenant. Configure each only when its separate security review supports it.
+
+### One-time administrator setup
+
+Create a dedicated single-tenant Microsoft Entra public-client application for
+this administrative operation. The project CLI creates or verifies the exact
+least-privilege registration:
+
+```powershell
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- `
+  register-consent-bypass-app `
+  --tenant-id <tenant-id>
+```
+
+Add `--admin-consent` only when an authorized tenant administrator intends to
+grant the delegated permission tenant-wide. Otherwise the administrator who runs
+the first get/set command completes any consent prompt required by tenant policy.
+
+The resulting application:
+
+1. Configure the native/mobile and desktop redirect URI `http://localhost`.
+2. Add the delegated **Power Platform API** permission
+   `CopilotStudio.AdminActions.Invoke`. The production Power Platform API
+   application ID is `8578e004-a5c6-46e7-913e-12f58912df43`.
+3. Complete the consent action required by tenant policy.
+4. Assign each operator one supported Microsoft Entra role:
+   **Power Platform Administrator** (least privilege of the documented roles),
+   **AI Administrator**, or **Global Administrator**.
+
+Keep this admin client separate from the adapter runtime registration. The
+adapter doesn't need and shouldn't receive the administrative scope.
+
+The environment ID is the Power Platform environment GUID. The bot ID is the
+Dataverse Copilot table's primary key, `botid`. A modern Copilot Studio URL can
+show a schema name such as `cr5c9_Orchestrator` instead of that GUID; in that
+case, find the corresponding row in the Dataverse `bots` table and use its
+`botid`.
+
+### Read, enable, and disable
+
+The project CLI opens the system browser for administrator authentication. The
+access token is held only for the command process and isn't persisted by this
+repository.
+
+```powershell
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- `
+  get-connector-consent-bypass `
+  --tenant-id <tenant-id> `
+  --admin-client-id <consent-bypass-admin-client-id> `
+  --environment-id <power-platform-environment-guid> `
+  --bot-id <dataverse-bot-guid>
+```
+
+Enable the bypass:
+
+```powershell
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- `
+  set-connector-consent-bypass `
+  --tenant-id <tenant-id> `
+  --admin-client-id <consent-bypass-admin-client-id> `
+  --environment-id <power-platform-environment-guid> `
+  --bot-id <dataverse-bot-guid> `
+  --enabled true
+```
+
+Restore consent cards:
+
+```powershell
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- `
+  set-connector-consent-bypass `
+  --tenant-id <tenant-id> `
+  --admin-client-id <consent-bypass-admin-client-id> `
+  --environment-id <power-platform-environment-guid> `
+  --bot-id <dataverse-bot-guid> `
+  --enabled false
+```
+
+Run the read command after either update and test with a new non-maker user.
+Neither command publishes the agent or changes its tool definitions.
+
+The Power Platform API endpoint and the equivalent `pac copilot-studio
+get-connector-consent-bypass` and `set-connector-consent-bypass` commands are
+currently preview management surfaces.
+
 ## Expected production experience
 
 In a stable production environment, connection setup should be a one-time
@@ -165,6 +300,11 @@ onboarding action:
 
 > One initial OAuth connection per user, per A2A target connection, per Power
 > Platform environment.
+
+With connector consent-card bypass enabled, that user-specific authorization
+can be transparent when Microsoft Entra can issue the token silently. It remains
+user-specific and can still require interaction after revocation, expiration, or
+a Conditional Access challenge.
 
 Afterward:
 
@@ -219,6 +359,9 @@ server definition and connection.
 - [Connect an agent available over A2A](https://learn.microsoft.com/microsoft-copilot-studio/add-agent-agent-to-agent)
 - [Configure and manage Copilot Studio connections](https://learn.microsoft.com/microsoft-copilot-studio/authoring-connections)
 - [Configure end-user authentication for tools](https://learn.microsoft.com/microsoft-copilot-studio/configure-enduser-authentication)
+- [Bypass connector consent cards for an agent](https://learn.microsoft.com/microsoft-copilot-studio/admin-connector-consent-bypass)
+- [Power Platform CLI `pac copilot-studio`](https://learn.microsoft.com/power-platform/developer/cli/reference/copilot-studio)
+- [Dataverse Copilot (`bot`) table](https://learn.microsoft.com/power-apps/developer/data-platform/reference/entities/bot)
 - [Microsoft Entra refresh tokens](https://learn.microsoft.com/entra/identity-platform/refresh-tokens)
 - [Microsoft Entra Conditional Access session lifetime](https://learn.microsoft.com/entra/identity/conditional-access/concept-session-lifetime)
 - [Grant tenant-wide admin consent](https://learn.microsoft.com/entra/identity/enterprise-apps/grant-admin-consent)

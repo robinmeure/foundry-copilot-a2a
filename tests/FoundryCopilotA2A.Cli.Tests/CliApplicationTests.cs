@@ -16,9 +16,12 @@ public class CliApplicationTests
         Assert.Equal(0, exitCode);
         Assert.Contains("register-app", output.ToString());
         Assert.Contains("register-spa", output.ToString());
+        Assert.Contains("register-consent-bypass-app", output.ToString());
         Assert.Contains("test-foundry", output.ToString());
         Assert.Contains("enable-foundry-a2a", output.ToString());
         Assert.Contains("configure-foundry-chain", output.ToString());
+        Assert.Contains("get-connector-consent-bypass", output.ToString());
+        Assert.Contains("set-connector-consent-bypass", output.ToString());
 
         var commandOutput = new StringWriter();
         var applicationWithCommandOutput = new CliApplication(

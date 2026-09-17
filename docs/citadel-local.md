@@ -424,6 +424,12 @@ this adapter does not support GitHub Copilot-harness agents. In the maker experi
    connected agent with a useful description and publish the orchestrator.
 5. Repeat for each specialist, keeping exactly one native connection per target.
 
+An administrator can suppress the Copilot Studio orchestrator's connector consent cards for
+all users with the per-agent consent-bypass setting. This standard-harness feature doesn't
+apply to the Foundry flow above and doesn't replace end-user authentication, token refresh,
+resource authorization, or stale-connection recovery. See
+[Copilot Studio A2A connection lifecycle and consent](copilot-studio-a2a-connections.md#connector-consent-card-bypass).
+
 Set AppHost's `CopilotStudioChainTargetAgent` to the comma-separated targets for the existing
 `orchestrator` catalog entry. Configure its Direct Connect URL as usual. These settings enable
 the catalog capability; they do not create or publish the native connections.

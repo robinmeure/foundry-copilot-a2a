@@ -34,12 +34,21 @@ internal sealed class CliApplication(CliContext context)
                     context, commandArguments, cancellationToken),
                 "register-spa" => await EntraCommands.RegisterSpaAsync(
                     context, commandArguments, cancellationToken),
+                "register-consent-bypass-app" =>
+                    await ConsentBypassAppRegistrationCommands.RegisterAsync(
+                        context, commandArguments, cancellationToken),
                 "register-spa-redirect" => await FoundryAccessCommands.RegisterSpaRedirectAsync(
                     context, commandArguments, cancellationToken),
                 "delete-app" => await EntraCommands.DeleteAppAsync(
                     context, commandArguments, cancellationToken),
                 "consent" => await EntraCommands.ConsentAsync(
                     context, commandArguments, cancellationToken),
+                "get-connector-consent-bypass" =>
+                    await CopilotStudioConsentBypassCommands.GetAsync(
+                        context, commandArguments, cancellationToken),
+                "set-connector-consent-bypass" =>
+                    await CopilotStudioConsentBypassCommands.SetAsync(
+                        context, commandArguments, cancellationToken),
                 "grant-foundry-consent" => await FoundryAccessCommands.GrantConsentAsync(
                     context, commandArguments, cancellationToken),
                 "register-foundry-redirect" => await FoundryAccessCommands.RegisterRedirectAsync(
@@ -115,9 +124,15 @@ internal sealed class CliApplication(CliContext context)
             Commands:
               register-app  Create the backend API app used by the adapter and OBO flow.
               register-spa  Create a frontend SPA app with delegated access to the backend API.
+              register-consent-bypass-app
+                            Create the public-client app used by consent-bypass administrators.
               register-spa-redirect
                             Add a SPA redirect URI to an existing frontend registration.
               consent       Grant CopilotStudio.Copilots.Invoke for the signed-in user.
+              get-connector-consent-bypass
+                            Read a Copilot Studio agent's connector consent-card bypass.
+              set-connector-consent-bypass
+                            Enable or disable connector consent-card bypass for one agent.
               grant-foundry-consent
                             Grant only Foundry's delegated scope to the existing backend app.
               register-foundry-redirect
@@ -161,6 +176,19 @@ internal sealed class CliApplication(CliContext context)
                 backend API's access_as_user scope. The redirect URI defaults to
                 http://localhost:5173. Admin consent is opt-in.
                 """,
+            "register-consent-bypass-app" =>
+                """
+                register-consent-bypass-app --tenant-id <tenant-id>
+                                            [--display-name <name>]
+                                            [--admin-consent]
+
+                Creates or verifies a secretless, single-tenant native public-client application
+                with only the http://localhost redirect and delegated Power Platform API permission
+                CopilotStudio.AdminActions.Invoke. The default display name is
+                foundry-copilot-a2a-consent-admin. A conflicting same-name app is never overwritten.
+                Tenant-wide admin consent is opt-in; otherwise an authorized administrator can
+                consent during the first interactive get/set command.
+                """,
             "register-spa-redirect" =>
                 """
                 register-spa-redirect --tenant-id <tenant-id> --client-id <frontend-application-id>
@@ -183,6 +211,32 @@ internal sealed class CliApplication(CliContext context)
 
                 Runs MSAL device-code authentication and records a per-user delegated grant.
                 The backend app must have public client flow enabled; register-app configures it.
+                """,
+            "get-connector-consent-bypass" =>
+                """
+                get-connector-consent-bypass --tenant-id <tenant-id>
+                                             --admin-client-id <admin-application-id>
+                                             --environment-id <power-platform-environment-guid>
+                                             --bot-id <dataverse-bot-guid>
+
+                Opens an interactive administrator sign-in and reads the standard-harness
+                Copilot Studio agent's connector consent-card bypass. The separate single-tenant
+                public-client app must use http://localhost and have delegated Power Platform API
+                permission CopilotStudio.AdminActions.Invoke. The account must be a Power Platform
+                Administrator, AI Administrator, or Global Administrator.
+                """,
+            "set-connector-consent-bypass" =>
+                """
+                set-connector-consent-bypass --tenant-id <tenant-id>
+                                             --admin-client-id <admin-application-id>
+                                             --environment-id <power-platform-environment-guid>
+                                             --bot-id <dataverse-bot-guid>
+                                             --enabled <true|false>
+
+                Explicitly enables or disables connector consent-card bypass for one
+                standard-harness Copilot Studio agent. This per-agent setting affects all users;
+                it doesn't create shared credentials, repair stale connections, or bypass
+                Microsoft Entra and resource authorization.
                 """,
             "grant-foundry-consent" =>
                 """

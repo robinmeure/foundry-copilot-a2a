@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text;
@@ -55,6 +57,15 @@ public sealed class ApiManagementAgentRegistryTests
     [Fact]
     public async Task InvokerForwardsTheDelegatedTokenToTheDiscoveredRuntime()
     {
+        var activities = new ConcurrentQueue<Activity>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == AdapterTelemetry.ActivitySourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) =>
+                ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = activity => activities.Enqueue(activity)
+        };
+        ActivitySource.AddActivityListener(listener);
         var handler = new ApimHandler();
         using var client = new HttpClient(handler);
         var registry = CreateRegistry(client);
@@ -84,6 +95,42 @@ public sealed class ApiManagementAgentRegistryTests
         Assert.Equal("Bearer delegated-token", handler.RuntimeAuthorization);
         Assert.Contains("\"method\":\"SendMessage\"", handler.RuntimeBody);
         Assert.Contains("Will it rain?", handler.RuntimeBody);
+
+        var invocation = Assert.Single(
+            activities,
+            activity =>
+                activity.DisplayName == "apim.a2a.invoke" &&
+                Equals(activity.GetTagItem("apim.api.id"), "weather-api"));
+        var traceActivities = activities
+            .Where(activity => activity.TraceId == invocation.TraceId)
+            .ToArray();
+        var resolve = Assert.Single(
+            traceActivities,
+            activity => activity.DisplayName == "apim.discovery.resolve");
+        var refresh = Assert.Single(
+            traceActivities,
+            activity => activity.DisplayName == "apim.discovery.refresh");
+
+        Assert.Equal(ActivityStatusCode.Ok, invocation.Status);
+        Assert.Equal(invocation.SpanId, resolve.ParentSpanId);
+        Assert.Equal("refreshed", resolve.GetTagItem("apim.discovery.cache.result"));
+        Assert.Equal(1, refresh.GetTagItem("apim.discovery.candidate.count"));
+        Assert.Equal(1, refresh.GetTagItem("apim.discovery.agent.count"));
+        Assert.Contains(
+            traceActivities,
+            activity =>
+                activity.DisplayName == "apim.discovery.acquire_arm_token" &&
+                activity.ParentSpanId == refresh.SpanId);
+        Assert.Contains(
+            traceActivities,
+            activity =>
+                activity.DisplayName == "apim.discovery.read_management" &&
+                activity.ParentSpanId == refresh.SpanId);
+        Assert.Contains(
+            traceActivities,
+            activity =>
+                activity.DisplayName == "apim.discovery.read_agent_cards" &&
+                activity.ParentSpanId == refresh.SpanId);
     }
 
     [Theory]

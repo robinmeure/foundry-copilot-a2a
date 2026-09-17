@@ -2,11 +2,13 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using ActivityStatusCode = System.Diagnostics.ActivityStatusCode;
 using Microsoft.Agents.Core.Models;
 using Microsoft.Agents.CopilotStudio.Client;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 using Microsoft.Identity.Client;
+using Stopwatch = System.Diagnostics.Stopwatch;
 
 namespace FoundryCopilotA2A.Adapter;
 
@@ -260,6 +262,8 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
         using var traceActivity = AdapterTelemetry.StartActivity("copilot_studio.invoke");
         traceActivity?.SetTag("copilot_studio.backend", "sdk");
         traceActivity?.SetTag("copilot_studio.agent.id", metadata.AgentId);
+        var invocationStarted = Stopwatch.GetTimestamp();
+        var invocationCompleted = false;
 
         if (!_agents.TryGetValue(metadata.AgentId, out var agent))
         {
@@ -272,28 +276,41 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
             agent.DisplayName,
             metadata.AgentId,
             metadata.ContextId);
-        await using var enumerator = StreamCoreAsync(
-                agent, prompt, metadata, traceActivity, cancellationToken)
-            .GetAsyncEnumerator(cancellationToken);
-        while (true)
+        try
         {
-            bool hasNext;
-            try
+            await using var enumerator = StreamCoreAsync(
+                    agent, prompt, metadata, traceActivity, cancellationToken)
+                .GetAsyncEnumerator(cancellationToken);
+            while (true)
             {
-                hasNext = await enumerator.MoveNextAsync();
-            }
-            catch (Exception exception)
-            {
-                GenAiTelemetry.RecordFailure(genAiActivity, exception);
-                throw;
-            }
+                bool hasNext;
+                try
+                {
+                    hasNext = await enumerator.MoveNextAsync();
+                }
+                catch (Exception exception)
+                {
+                    AdapterTelemetry.RecordFailure(traceActivity, exception);
+                    GenAiTelemetry.RecordFailure(genAiActivity, exception);
+                    throw;
+                }
 
-            if (!hasNext)
-            {
-                yield break;
-            }
+                if (!hasNext)
+                {
+                    invocationCompleted = true;
+                    yield break;
+                }
 
-            yield return enumerator.Current;
+                yield return enumerator.Current;
+            }
+        }
+        finally
+        {
+            AdapterTelemetry.RecordCopilotStudioInvocation(
+                traceActivity,
+                Stopwatch.GetElapsedTime(invocationStarted),
+                metadata.AgentId,
+                invocationCompleted);
         }
     }
 
@@ -393,27 +410,67 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
 
         if (conversationId is null)
         {
-            using var responseMetadata = _responseMetadataAccessor.BeginCapture();
-            await foreach (var activity in client.StartConversationAsync(
-                emitStartConversationEvent: true,
-                cancellationToken: cancellationToken))
+            using var conversationActivity =
+                AdapterTelemetry.StartActivity("copilot_studio.start_conversation");
+            conversationActivity?.SetTag("copilot_studio.agent.id", metadata.AgentId);
+            var conversationStarted = Stopwatch.GetTimestamp();
+            var conversationCreated = false;
+            try
             {
-                if (activity is null)
+                string? conversationIdSource = null;
+                using var responseMetadata = _responseMetadataAccessor.BeginCapture();
+                await foreach (var activity in client.StartConversationAsync(
+                    emitStartConversationEvent: true,
+                    cancellationToken: cancellationToken))
                 {
-                    continue;
+                    if (activity is null)
+                    {
+                        continue;
+                    }
+
+                    if (conversationId is null &&
+                        activity.Conversation?.Id is { } activityConversationId)
+                    {
+                        conversationId = activityConversationId;
+                        conversationIdSource = "activity_stream";
+                    }
+
+                    oauthCard ??= ExtractOAuthCard(activity);
                 }
 
-                conversationId ??= activity.Conversation?.Id;
-                oauthCard ??= ExtractOAuthCard(activity);
-            }
+                if (conversationId is null &&
+                    responseMetadata.ConversationId is { } headerConversationId)
+                {
+                    conversationId = headerConversationId;
+                    conversationIdSource = "response_header";
+                }
 
-            if (conversationId is null &&
-                responseMetadata.ConversationId is { } headerConversationId)
+                conversationCreated = conversationId is not null;
+                if (conversationIdSource is not null)
+                {
+                    traceActivity?.SetTag(
+                        "copilot_studio.conversation.id.source",
+                        conversationIdSource);
+                    conversationActivity?.SetTag(
+                        "copilot_studio.conversation.id.source",
+                        conversationIdSource);
+                }
+
+                conversationActivity?.SetStatus(
+                    conversationCreated ? ActivityStatusCode.Ok : ActivityStatusCode.Error);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
             {
-                conversationId = headerConversationId;
-                traceActivity?.SetTag(
-                    "copilot_studio.conversation.id.source",
-                    "response_header");
+                AdapterTelemetry.RecordFailure(conversationActivity, exception);
+                throw;
+            }
+            finally
+            {
+                AdapterTelemetry.RecordCopilotStudioConversationStart(
+                    conversationActivity,
+                    Stopwatch.GetElapsedTime(conversationStarted),
+                    metadata.AgentId,
+                    conversationCreated);
             }
         }
 
@@ -523,51 +580,105 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         using var traceActivity = AdapterTelemetry.StartActivity("copilot_studio.collect_answer");
+        traceActivity?.SetTag("copilot_studio.agent.id", responder.Id);
         var collectionSummary = new CopilotStudioActivitySummary();
         var answerStream = new CopilotStudioAnswerStream();
-
-        await foreach (var activity in activities.WithCancellation(cancellationToken))
+        var streamStarted = Stopwatch.GetTimestamp();
+        var firstActivityRecorded = false;
+        var firstProgressRecorded = false;
+        var firstAnswerRecorded = false;
+        var streamCompleted = false;
+        try
         {
-            if (activity is null)
+            await foreach (var activity in activities.WithCancellation(cancellationToken))
             {
-                continue;
+                if (activity is null)
+                {
+                    continue;
+                }
+
+                if (!firstActivityRecorded)
+                {
+                    firstActivityRecorded = true;
+                    AdapterTelemetry.RecordCopilotStudioStreamMilestone(
+                        traceActivity,
+                        AdapterTelemetry.StreamMilestone.FirstActivity,
+                        Stopwatch.GetElapsedTime(streamStarted),
+                        responder.Id);
+                }
+
+                var card = ExtractOAuthCard(activity);
+                var connectionManagerText =
+                    CopilotStudioAttachmentText.ExtractConnectionManagerCardText(activity);
+                var isMessage =
+                    string.Equals(activity.Type, "message", StringComparison.OrdinalIgnoreCase);
+                var messageText = isMessage
+                    ? string.IsNullOrWhiteSpace(activity.Text)
+                        ? connectionManagerText
+                        : activity.Text
+                    : null;
+
+                // A suppressed final message is still observed, so a fully streamed turn is never
+                // misreported as an empty response.
+                collectionSummary.Observe(
+                    activity,
+                    card is not null,
+                    messageText,
+                    connectionManagerText is not null);
+                if (card is not null)
+                {
+                    yield return new AnswerStreamItem(null, card);
+                }
+
+                if (answerStream.NextUpdate(
+                        activity,
+                        messageText,
+                        conversationId,
+                        responder) is not { } update)
+                {
+                    continue;
+                }
+
+                if (!firstProgressRecorded && !string.IsNullOrWhiteSpace(update.Text))
+                {
+                    firstProgressRecorded = true;
+                    AdapterTelemetry.RecordCopilotStudioStreamMilestone(
+                        traceActivity,
+                        AdapterTelemetry.StreamMilestone.FirstProgress,
+                        Stopwatch.GetElapsedTime(streamStarted),
+                        responder.Id);
+                }
+
+                if (!firstAnswerRecorded &&
+                    !update.IsInformative &&
+                    !string.IsNullOrWhiteSpace(update.Text))
+                {
+                    firstAnswerRecorded = true;
+                    AdapterTelemetry.RecordCopilotStudioStreamMilestone(
+                        traceActivity,
+                        AdapterTelemetry.StreamMilestone.FirstAnswer,
+                        Stopwatch.GetElapsedTime(streamStarted),
+                        responder.Id);
+                }
+
+                yield return new AnswerStreamItem(update, null);
             }
 
-            var card = ExtractOAuthCard(activity);
-            var connectionManagerText =
-                CopilotStudioAttachmentText.ExtractConnectionManagerCardText(activity);
-            var isMessage =
-                string.Equals(activity.Type, "message", StringComparison.OrdinalIgnoreCase);
-            var messageText = isMessage
-                ? string.IsNullOrWhiteSpace(activity.Text)
-                    ? connectionManagerText
-                    : activity.Text
-                : null;
-
-            // A suppressed final message is still observed, so a fully streamed turn is never
-            // misreported as an empty response.
-            collectionSummary.Observe(
-                activity,
-                card is not null,
-                messageText,
-                connectionManagerText is not null);
-            if (card is not null)
-            {
-                yield return new AnswerStreamItem(null, card);
-            }
-
-            if (answerStream.NextUpdate(activity, messageText, conversationId, responder) is not { } update)
-            {
-                continue;
-            }
-
-            yield return new AnswerStreamItem(update, null);
+            streamCompleted = true;
+        }
+        finally
+        {
+            traceActivity?.SetTag("copilot_studio.stream.delta.count", answerStream.DeltaCount);
+            traceActivity?.SetTag(
+                "copilot_studio.stream.final.suppressed",
+                answerStream.SuppressedFinalCount);
+            AdapterTelemetry.RecordCopilotStudioAnswerStream(
+                traceActivity,
+                Stopwatch.GetElapsedTime(streamStarted),
+                responder.Id,
+                streamCompleted);
         }
 
-        traceActivity?.SetTag("copilot_studio.stream.delta.count", answerStream.DeltaCount);
-        traceActivity?.SetTag(
-            "copilot_studio.stream.final.suppressed",
-            answerStream.SuppressedFinalCount);
         turnSummary.Merge(collectionSummary);
         collectionSummary.RecordTelemetry(traceActivity, allowOAuthChallenge);
     }
