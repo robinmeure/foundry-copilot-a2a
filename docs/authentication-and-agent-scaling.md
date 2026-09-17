@@ -17,6 +17,9 @@ document does not change runtime behavior or provision registrations.
   not automatically for every agent or adapter replica.**
 - **Prefer federated or certificate credentials over client secrets, and reduce
   consent friction with preauthorization rather than duplicate registrations.**
+- **If the gateway must be a trust boundary, use the API Hub pattern:** the hub
+  gets its own audience and exchanges for the adapter's audience, rather than
+  exchanging for a downstream resource the adapter would have to reject.
 
 ## 1. Authentication: APIM or the adapter?
 
@@ -119,28 +122,229 @@ Relaying a middle-tier token onward increases interception risk and prevents tok
 binding, claim step-up (such as MFA or sign-in frequency), and device-based
 policies from being satisfied correctly.
 
-### When gateway-owned OBO can make sense
+### Option: the API Hub pattern (gateway as its own audience)
 
-Centralizing OBO becomes attractive when many independently implemented backends
-need a centrally operated delegation service with consistent credentials,
-policies, and auditing. APIM can acquire onward tokens through custom policies,
-including `send-request` to the identity provider.
+There is a variant of gateway-owned delegation that does work cleanly. Instead of
+the gateway exchanging for a *downstream* resource, the gateway becomes its own
+OAuth resource and exchanges for the **adapter's** audience. Each hop then receives
+a token minted for itself, so the audience invariant holds at every step.
 
-Treat that as an identity-boundary redesign, with these requirements:
+```text
+UI            token A   aud = api://<hub>        (user oid)
+  v
+API Hub       OBO: assertion = A, client = hub
+              token B   aud = api://<adapter>    (same oid)
+  v
+Adapter       validates B, then performs its own OBO
+              token C   aud = Power Platform or Foundry (same oid)
+  v
+Copilot Studio or Foundry
+```
 
-- Keep the OBO client identity aligned with the incoming API audience.
-- Define how verified user context reaches the adapter without accepting spoofed
-  headers or treating a downstream-resource token as an adapter API token.
-- Secure gateway-to-backend communication and restrict direct backend access when
-  gateway enforcement must be mandatory.
-- Isolate token caches by the relevant user/assertion, tenant, client, resource,
-  and scopes; honor expiry and never log credentials or bearer tokens.
-- Preserve consent/Conditional Access error handling and streaming behavior.
-- Retain the mock backend and deliberately support any required no-APIM path.
+This is chained delegation: a middle tier may request further tokens for downstream
+APIs on behalf of the same user. Contrast it with the design that does not work,
+where the gateway exchanges for Power Platform and forwards a token whose audience
+the adapter must reject.
 
-**Recommendation:** keep the current split unless centralized credential and
-delegation management becomes a concrete requirement across multiple services.
-Moving OBO alone is not a solution to native connection consent prompts.
+**The adapter needs no code change.** It already verifies that the caller's token
+was issued for its own audience and rejects app-only callers. A hub-issued token is
+delegated, carries `scp`, and has the adapter's `aud`; only `azp`/`appid` differs,
+and the adapter validates the resource side rather than the client application.
+
+#### What the pattern buys, and what it does not
+
+The browser only ever holds a hub-audience token, so a stolen frontend token cannot
+be replayed directly against the adapter. That is genuine identity segmentation
+rather than policy enforcement alone.
+
+It is only complete if native A2A connections also target the hub. If a Foundry or
+Copilot Studio connection keeps requesting the adapter scope directly,
+adapter-audience tokens still exist outside the hub. Keep network-level ingress
+restriction as the backstop in either case. The pattern also does not remove the
+adapter's own OBO exchange or the native connection consent lifecycle.
+
+#### App registration setup
+
+This adds **one** registration. The adapter registration keeps its current role.
+
+| Registration | Change |
+| --- | --- |
+| Frontend SPA | Request the hub scope instead of the adapter scope |
+| **API Hub (new)** | Confidential client; exposes `api://<hub-id>/access_as_user`; holds delegated permission to the adapter API |
+| Adapter API | Unchanged audience, scope, and downstream permissions |
+
+Configure it in this order:
+
+1. **Register the hub** as a single-tenant application. Set its Application ID URI
+   to `api://<hub-client-id>` and expose a delegated scope named `access_as_user`.
+   Do not configure a custom signing key: that would disqualify it as an OBO middle
+   tier.
+2. **Grant the hub delegated permission** to the adapter API's `access_as_user`
+   scope, then consent to it. This is the grant that lets the hub's exchange
+   succeed.
+3. **Give the hub a credential without a secret.** Assign a user-assigned managed
+   identity to the API Management instance, then add a **federated identity
+   credential** on the hub registration with scenario *Managed Identity*, issuer
+   `https://login.microsoftonline.com/<tenant-id>/v2.0`, subject set to the managed
+   identity's **object (principal) ID**, and audience `api://AzureADTokenExchange`.
+   APIM can then authenticate as the hub with no stored secret.
+4. **Preauthorize the clients** to suppress avoidable prompts. On the hub
+   registration, preauthorize the frontend SPA and any native OAuth client for
+   `access_as_user`. On the adapter registration, preauthorize the hub.
+5. **Register redirect URIs on the registration whose scope is requested.** An
+   interactive consent callback belongs to the application that owns the requested
+   scope. Once connections request the hub scope, the generated callbacks become
+   Web redirects on the **hub** registration rather than the adapter's.
+
+Three delegated grants now exist, and none implies another:
+
+| Grant | Client | Resource |
+| --- | --- | --- |
+| 1 | Frontend SPA or native OAuth client | Hub `access_as_user` |
+| 2 | API Hub | Adapter `access_as_user` |
+| 3 | Adapter API | Power Platform `CopilotStudio.Copilots.Invoke`, optional Foundry `user_impersonation` |
+
+Grant 3 is unchanged and still fails late with `AADSTS65001` when missing, because
+sign-in and gateway validation succeed before the adapter's exchange runs.
+
+#### Gateway policy
+
+`authentication-managed-identity` supports `output-token-variable-name`, which is
+what makes the secretless client assertion possible.
+
+```xml
+<validate-azure-ad-token tenant-id="{{entra-tenant-id}}"
+                         output-token-variable-name="callerJwt">
+  <audiences><audience>api://{{hub-client-id}}</audience></audiences>
+  <required-claims>
+    <claim name="scp" match="any" separator=" "><value>access_as_user</value></claim>
+  </required-claims>
+</validate-azure-ad-token>
+
+<set-variable name="cacheKey" value="@{
+    var jwt = (Jwt)context.Variables["callerJwt"];
+    return $"obo:{jwt.Claims.GetValueOrDefault("tid","?")}:" +
+           $"{jwt.Claims.GetValueOrDefault("oid","?")}:adapter";
+}" />
+<cache-lookup-value key="@((string)context.Variables["cacheKey"])"
+                    variable-name="adapterToken" caching-type="internal" />
+
+<choose>
+  <when condition="@(!context.Variables.ContainsKey("adapterToken"))">
+    <authentication-managed-identity resource="api://AzureADTokenExchange"
+        client-id="{{apim-identity-client-id}}"
+        output-token-variable-name="clientAssertion" ignore-error="false" />
+
+    <send-request mode="new" response-variable-name="obo" timeout="20">
+      <set-url>https://login.microsoftonline.com/{{entra-tenant-id}}/oauth2/v2.0/token</set-url>
+      <set-method>POST</set-method>
+      <set-header name="Content-Type" exists-action="override">
+        <value>application/x-www-form-urlencoded</value>
+      </set-header>
+      <set-body>@{
+        var caller = context.Request.Headers
+            .GetValueOrDefault("Authorization","").Split(' ').Last();
+        return "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer"
+          + "&client_id={{hub-client-id}}"
+          + "&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+          + "&client_assertion=" + System.Net.WebUtility.UrlEncode((string)context.Variables["clientAssertion"])
+          + "&assertion=" + System.Net.WebUtility.UrlEncode(caller)
+          + "&scope=" + System.Net.WebUtility.UrlEncode("api://{{adapter-client-id}}/access_as_user")
+          + "&requested_token_use=on_behalf_of";
+      }</set-body>
+    </send-request>
+
+    <set-variable name="adapterToken" value="@(((IResponse)context.Variables["obo"])
+        .Body.As<JObject>(preserveContent: true)["access_token"].ToString())" />
+    <cache-store-value key="@((string)context.Variables["cacheKey"])"
+                       value="@((string)context.Variables["adapterToken"])"
+                       duration="@(((IResponse)context.Variables["obo"])
+                           .Body.As<JObject>(preserveContent: true)["expires_in"].Value<int>() - 300)"
+                       caching-type="internal" />
+  </when>
+</choose>
+
+<set-header name="Authorization" exists-action="override">
+  <value>@("Bearer " + (string)context.Variables["adapterToken"])</value>
+</set-header>
+```
+
+Add an explicit non-200 branch on the `obo` response that returns 401 or 403 with
+the Entra error, so consent and Conditional Access failures do not surface as 500s.
+
+#### Operational requirements
+
+- **Key the cache by user.** Include `oid` and `tid`. Keying only by scope would
+  return one user's token to another. Prefer `caching-type="internal"` so tokens
+  stay in gateway memory rather than an external cache.
+- **Expire before the token does.** Derive the cache duration from `expires_in`
+  minus a safety margin, and never cache refresh tokens.
+- **Treat policy-edit rights as a security boundary.** Anyone who can edit APIM
+  policies can use the managed identity to obtain and exfiltrate tokens. Restrict
+  and audit policy changes.
+- **Propagate claims challenges.** Conditional Access step-up cannot be satisfied
+  at the gateway; return `WWW-Authenticate` to the client instead of swallowing it.
+- **Preserve streaming.** Keep response buffering disabled so A2A SSE still flows.
+- **Never log tokens** or write them to trace attributes.
+- **Keep the no-gateway path working.** The adapter must remain directly runnable
+  with its mock backend for local development.
+
+#### Configuring native A2A OAuth connections against the hub
+
+Both providers hold an OAuth client configuration per A2A connection. Pointing a
+connection at the hub changes three things consistently: the **target URL**, the
+**requested scope**, and the **registration that owns the callback**.
+
+| Connection setting | Adapter-audience (today) | Hub-audience |
+| --- | --- | --- |
+| Target / A2A endpoint | Adapter or APIM adapter route | Hub API route |
+| Scope | `api://<adapter-client-id>/access_as_user` `offline_access` | `api://<hub-client-id>/access_as_user` `offline_access` |
+| OAuth client ID/secret | Backend registration | Native client registration, or the hub's own client |
+| Callback registered on | Adapter registration | **Hub registration** |
+| Authorization/token/refresh URLs | `https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/{authorize,token}` | Unchanged |
+
+**Microsoft Foundry.** A project connection of category `RemoteA2A` with
+`authType: OAuth2` carries `target`, `scopes`, `credentials.clientId`,
+`credentials.clientSecret`, and the authorize/token/refresh URLs. To move it to the
+hub, create a **new** connection whose `target` is the hub route and whose `scopes`
+are the hub scope plus `offline_access`, then attach it as the agent's A2A tool.
+Foundry's OAuth updates are not performed in place in this repository's tooling, so
+use a new connection name rather than editing an existing one. Take the callback
+URL that Foundry generates for the new connection and add it as a **Web** redirect
+URI on the hub registration before authorizing. Foundry's `UserEntraToken` and
+`ProjectManagedIdentity` modes are unaffected by this pattern, but a project managed
+identity is app-only and cannot produce same-user delegation.
+
+**Copilot Studio.** The A2A server definition holds the target URL and OAuth client
+configuration; each user then establishes their own connection instance. Update the
+server definition's target to the hub route and its requested scopes to the hub
+scope plus `offline_access`, register the generated callback on the hub
+registration, and republish. Because the scope and client configuration changed,
+**existing user connections must be reauthorized** — a maker's working connection
+does not authorize other users, and changed scopes invalidate the previous binding.
+Expect connections to report `Not Connected`, `Expired`, or `Stale` until each user
+reconnects.
+
+For either provider, verify with a non-maker user. A successful maker test does not
+establish same-user delegation. See
+[the connection lifecycle guide](copilot-studio-a2a-connections.md) for states,
+reauthentication triggers, and the consent model.
+
+#### Migration order
+
+1. Create the hub registration, its exposed scope, and its grant to the adapter API.
+2. Add the federated identity credential binding APIM's managed identity to the hub.
+3. Publish the hub API with the exchange policy and validate it with one frontend.
+4. Repoint the frontends to the hub scope.
+5. Create replacement native connections against the hub, register their callbacks
+   on the hub registration, and have users reauthorize.
+6. Restrict direct adapter ingress once no caller needs the adapter origin.
+7. Remove obsolete redirect URIs and unused grants from the adapter registration.
+
+**Recommendation:** adopt this pattern when the gateway is a real trust boundary,
+when frontend tokens must not be adapter-usable, or when several backends need one
+centrally operated delegation layer. Keep the simpler split otherwise: moving the
+exchange alone does not remove native connection consent prompts.
 
 ### APIM hardening that applies to the current design
 
@@ -328,6 +532,7 @@ For example:
 | Two frontends and one logical adapter, using the current native-client reuse pattern | 3 |
 | Two frontends, one logical adapter, and one separately isolated native OAuth client | 4 |
 | The previous arrangement with a second independently trusted native OAuth client | 5 |
+| Any of the above with the [API Hub pattern](#option-the-api-hub-pattern-gateway-as-its-own-audience) | +1 for the hub |
 
 Adding specialists or replicas within those existing boundaries does not by itself
 increase the count. Native connection definitions and per-user authorizations may
@@ -370,6 +575,8 @@ boundaries rather than according to agent count.
 - [APIM authentication and authorization patterns](https://learn.microsoft.com/azure/api-management/authentication-authorization-overview)
 - [APIM credential manager](https://learn.microsoft.com/azure/api-management/credentials-overview)
 - [Validate Microsoft Entra token policy](https://learn.microsoft.com/azure/api-management/validate-azure-ad-token-policy)
+- [Authenticate with managed identity policy](https://learn.microsoft.com/azure/api-management/authentication-managed-identity-policy)
+- [Send request policy](https://learn.microsoft.com/azure/api-management/send-request-policy)
 - [App registration and Zero Trust guidance](https://learn.microsoft.com/security/zero-trust/develop/app-registration)
 - [Security best practices for application properties](https://learn.microsoft.com/entra/identity-platform/security-best-practices-for-app-registration)
 - [Microsoft identity platform integration checklist](https://learn.microsoft.com/entra/identity-platform/identity-platform-integration-checklist)
