@@ -2,10 +2,6 @@
 
 This sample exposes supported Copilot Studio agents through an A2A protocol boundary:
 
-```text
-Foundry agent -> A2A JSON-RPC -> adapter -> Copilot Studio client
-```
-
 The application also supports browser entry points, a standard-harness Copilot Studio
 orchestrator, configured Foundry agents, and optional APIM discovery and ingress. Native
 orchestration stays with the selected provider; the adapter is not a local multi-agent pipeline.

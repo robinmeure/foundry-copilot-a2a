@@ -173,25 +173,32 @@ This adds **one** registration. The adapter registration keeps its current role.
 | **API Hub (new)** | Confidential client; exposes `api://<hub-id>/access_as_user`; holds delegated permission to the adapter API |
 | Adapter API | Unchanged audience, scope, and downstream permissions |
 
-Configure it in this order:
+Configure it in this order. The operational CLI performs each step; see
+[the CLI README](../src/FoundryCopilotA2A.Cli/README.md).
 
-1. **Register the hub** as a single-tenant application. Set its Application ID URI
-   to `api://<hub-client-id>` and expose a delegated scope named `access_as_user`.
-   Do not configure a custom signing key: that would disqualify it as an OBO middle
-   tier.
+1. **Register the hub** as a single-tenant application with `register-hub`. It sets
+   the Application ID URI to `api://<hub-client-id>`, exposes a delegated
+   `access_as_user` scope, requests v2 access tokens, and creates **no client
+   secret**. Do not configure a custom signing key: that would disqualify it as an
+   OBO middle tier.
 2. **Grant the hub delegated permission** to the adapter API's `access_as_user`
-   scope, then consent to it. This is the grant that lets the hub's exchange
-   succeed.
-3. **Give the hub a credential without a secret.** Assign a user-assigned managed
-   identity to the API Management instance, then add a **federated identity
-   credential** on the hub registration with scenario *Managed Identity*, issuer
-   `https://login.microsoftonline.com/<tenant-id>/v2.0`, subject set to the managed
-   identity's **object (principal) ID**, and audience `api://AzureADTokenExchange`.
-   APIM can then authenticate as the hub with no stored secret.
-4. **Preauthorize the clients** to suppress avoidable prompts. On the hub
-   registration, preauthorize the frontend SPA and any native OAuth client for
-   `access_as_user`. On the adapter registration, preauthorize the hub.
-5. **Register redirect URIs on the registration whose scope is requested.** An
+   scope. `register-hub --api-client-id` does this as part of creation.
+3. **Give the hub a credential without a secret.** Pass
+   `--managed-identity-principal-id <object-id>` to add a **federated identity
+   credential** with issuer `https://login.microsoftonline.com/<tenant-id>/v2.0`,
+   subject set to the gateway managed identity's **object (principal) ID**, and
+   audience `api://AzureADTokenExchange`. API Management can then authenticate as
+   the hub with no stored secret.
+4. **Preauthorize the clients** to suppress avoidable prompts. Pass
+   `--preauthorize-client-ids` to `register-hub` for the frontends, and use
+   `preauthorize-client --api-client-id <adapter> --client-id <hub>` so the hub
+   receives the adapter scope. Preauthorization is the supported way to grant a
+   middle tier its scope in the OBO flow, and unlike tenant-wide admin consent it
+   does not require a privileged role.
+5. **Repoint each frontend** with `grant-hub-access`, then set the frontend's
+   `VITE_ADAPTER_API_CLIENT_ID` to the hub client ID. The browser derives its scope
+   as `api://<id>/access_as_user`, so no frontend code change is required.
+6. **Register redirect URIs on the registration whose scope is requested.** An
    interactive consent callback belongs to the application that owns the requested
    scope. Once connections request the hub scope, the generated callbacks become
    Web redirects on the **hub** registration rather than the adapter's.
@@ -207,10 +214,17 @@ Three delegated grants now exist, and none implies another:
 Grant 3 is unchanged and still fails late with `AADSTS65001` when missing, because
 sign-in and gateway validation succeed before the adapter's exchange runs.
 
+Grants 1 and 2 can be satisfied by preauthorization instead of consent. Grant 3
+cannot: preauthorization on one API never grants that API's own downstream
+permissions.
+
 #### Gateway policy
 
 `authentication-managed-identity` supports `output-token-variable-name`, which is
-what makes the secretless client assertion possible.
+what makes the secretless client assertion possible. `configure-hub` publishes this
+policy; the template lives in
+[citadel-hub-exchange.xml](../infra/policies/citadel-hub-exchange.xml). Discovery
+operations stay public, and only runtime operations perform the exchange.
 
 ```xml
 <validate-azure-ad-token tenant-id="{{entra-tenant-id}}"
@@ -332,10 +346,13 @@ reauthentication triggers, and the consent model.
 
 #### Migration order
 
-1. Create the hub registration, its exposed scope, and its grant to the adapter API.
-2. Add the federated identity credential binding APIM's managed identity to the hub.
-3. Publish the hub API with the exchange policy and validate it with one frontend.
-4. Repoint the frontends to the hub scope.
+1. Create the hub registration, its exposed scope, and its grant to the adapter API
+   with `register-hub`.
+2. Add the federated identity credential binding the gateway managed identity to the
+   hub, and preauthorize the hub on the adapter with `preauthorize-client`.
+3. Publish the hub API with `configure-hub` and validate it with one frontend.
+4. Repoint the frontends with `grant-hub-access` and the `VITE_ADAPTER_API_CLIENT_ID`
+   setting.
 5. Create replacement native connections against the hub, register their callbacks
    on the hub registration, and have users reauthorize.
 6. Restrict direct adapter ingress once no caller needs the adapter origin.

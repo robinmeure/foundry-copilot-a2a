@@ -1,0 +1,131 @@
+<policies>
+  <inbound>
+    <base />
+    <validate-azure-ad-token tenant-id="{{entra-tenant-id}}"
+                             header-name="Authorization"
+                             failed-validation-httpcode="401"
+                             failed-validation-error-message="Unauthorized. A delegated API Hub token is required."
+                             output-token-variable-name="hubJwt">
+      <audiences>
+        <audience>{{hub-api-audience}}</audience>
+        <audience>{{hub-api-bare-audience}}</audience>
+      </audiences>
+      <required-claims>
+        <claim name="scp" match="any" separator=" ">
+          <value>{{hub-delegated-scope}}</value>
+        </claim>
+        <claim name="tid" match="all">
+          <value>{{entra-tenant-id}}</value>
+        </claim>
+      </required-claims>
+    </validate-azure-ad-token>
+    <rate-limit-by-key calls="__RATE_LIMIT_CALLS__"
+                       renewal-period="60"
+                       counter-key='@(context.Api.Id + ":" + context.Operation.Id + ":" + ((Jwt)context.Variables["hubJwt"]).Claims.GetValueOrDefault("tid", "unknown") + ":" + ((Jwt)context.Variables["hubJwt"]).Claims.GetValueOrDefault("oid", "unknown"))' />
+    <!-- The cache key must isolate users: a key without the caller identity would hand one
+         user's delegated adapter token to another. -->
+    <set-variable name="hubOboCacheKey" value="@{
+        var jwt = (Jwt)context.Variables["hubJwt"];
+        return "hub-obo:"
+            + jwt.Claims.GetValueOrDefault("tid", "unknown") + ":"
+            + jwt.Claims.GetValueOrDefault("oid", "unknown") + ":"
+            + "{{adapter-delegated-scope}}";
+    }" />
+    <cache-lookup-value key="@((string)context.Variables["hubOboCacheKey"])"
+                        variable-name="adapterToken"
+                        caching-type="internal" />
+    <choose>
+      <when condition="@(!context.Variables.ContainsKey("adapterToken"))">
+        <!-- Authenticates as the hub through a federated identity credential, so no client
+             secret is stored in the gateway. -->
+        <authentication-managed-identity resource="api://AzureADTokenExchange"__IDENTITY_CLIENT_ID__
+                                         output-token-variable-name="hubClientAssertion"
+                                         ignore-error="false" />
+        <send-request mode="new" response-variable-name="hubOboResponse" timeout="20" ignore-error="true">
+          <set-url>__ENTRA_LOGIN_ENDPOINT__{{entra-tenant-id}}/oauth2/v2.0/token</set-url>
+          <set-method>POST</set-method>
+          <set-header name="Content-Type" exists-action="override">
+            <value>application/x-www-form-urlencoded</value>
+          </set-header>
+          <set-body>@{
+            var caller = context.Request.Headers.GetValueOrDefault("Authorization", "").Split(' ').Last();
+            var assertion = (string)context.Variables["hubClientAssertion"];
+            return "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer"
+                + "&amp;client_id={{hub-client-id}}"
+                + "&amp;client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+                + "&amp;client_assertion=" + System.Net.WebUtility.UrlEncode(assertion)
+                + "&amp;assertion=" + System.Net.WebUtility.UrlEncode(caller)
+                + "&amp;scope=" + System.Net.WebUtility.UrlEncode("{{adapter-delegated-scope}}")
+                + "&amp;requested_token_use=on_behalf_of";
+          }</set-body>
+        </send-request>
+        <choose>
+          <when condition="@(!context.Variables.ContainsKey("hubOboResponse") || ((IResponse)context.Variables["hubOboResponse"]).StatusCode != 200)">
+            <!-- Surface consent and Conditional Access failures instead of a generic 500.
+                 The token endpoint body is never echoed back to the caller. -->
+            <return-response>
+              <set-status code="403" reason="Delegation failed" />
+              <set-header name="Content-Type" exists-action="override">
+                <value>application/json</value>
+              </set-header>
+              <set-header name="WWW-Authenticate" exists-action="override">
+                <value>@{
+                  if (!context.Variables.ContainsKey("hubOboResponse")) { return "Bearer error=\"invalid_token\""; }
+                  var failure = ((IResponse)context.Variables["hubOboResponse"]).Body.As&lt;JObject&gt;(preserveContent: true);
+                  return "Bearer error=\"" + ((string)failure["error"] ?? "invalid_token") + "\"";
+                }</value>
+              </set-header>
+              <set-body>@{
+                var code = "";
+                var error = "delegation_failed";
+                if (context.Variables.ContainsKey("hubOboResponse"))
+                {
+                    var failure = ((IResponse)context.Variables["hubOboResponse"]).Body.As&lt;JObject&gt;(preserveContent: true);
+                    error = (string)failure["error"] ?? error;
+                    var description = (string)failure["error_description"] ?? "";
+                    var separator = description.IndexOf(':');
+                    code = description.StartsWith("AADSTS") &amp;&amp; separator > 0
+                        ? description.Substring(0, separator)
+                        : "";
+                }
+                return new JObject(
+                    new JProperty("error", error),
+                    new JProperty("entraErrorCode", code),
+                    new JProperty("message",
+                        "The API Hub could not obtain a delegated adapter token for this user. "
+                        + "Check the hub-to-adapter grant and any Conditional Access requirement.")
+                ).ToString();
+              }</set-body>
+            </return-response>
+          </when>
+        </choose>
+        <set-variable name="adapterToken" value="@{
+            var body = ((IResponse)context.Variables["hubOboResponse"]).Body.As&lt;JObject&gt;(preserveContent: true);
+            return (string)body["access_token"];
+        }" />
+        <!-- Expire ahead of the token itself so a cached value is never presented after expiry. -->
+        <cache-store-value key="@((string)context.Variables["hubOboCacheKey"])"
+                           value="@((string)context.Variables["adapterToken"])"
+                           duration="@{
+                               var body = ((IResponse)context.Variables["hubOboResponse"]).Body.As&lt;JObject&gt;(preserveContent: true);
+                               var lifetime = body["expires_in"] != null ? (int)body["expires_in"] : 3600;
+                               return lifetime > 600 ? lifetime - 300 : 60;
+                           }"
+                           caching-type="internal" />
+      </when>
+    </choose>
+    <set-header name="Authorization" exists-action="override">
+      <value>@("Bearer " + (string)context.Variables["adapterToken"])</value>
+    </set-header>
+    __REQUEST_VALIDATION__
+  </inbound>
+  <backend>
+    <base />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>

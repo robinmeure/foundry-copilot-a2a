@@ -34,6 +34,12 @@ internal sealed class CliApplication(CliContext context)
                     context, commandArguments, cancellationToken),
                 "register-spa" => await EntraCommands.RegisterSpaAsync(
                     context, commandArguments, cancellationToken),
+                "register-hub" => await EntraCommands.RegisterHubAsync(
+                    context, commandArguments, cancellationToken),
+                "grant-hub-access" => await EntraCommands.GrantHubAccessAsync(
+                    context, commandArguments, cancellationToken),
+                "preauthorize-client" => await EntraCommands.PreauthorizeClientAsync(
+                    context, commandArguments, cancellationToken),
                 "register-consent-bypass-app" =>
                     await ConsentBypassAppRegistrationCommands.RegisterAsync(
                         context, commandArguments, cancellationToken),
@@ -62,6 +68,8 @@ internal sealed class CliApplication(CliContext context)
                 "test-adapter" => await SmokeTestCommands.TestAdapterAsync(
                     context, commandArguments, cancellationToken),
                 "configure-citadel" => await CitadelCommands.ConfigureAsync(
+                    context, commandArguments, cancellationToken),
+                "configure-hub" => await HubCommands.ConfigureAsync(
                     context, commandArguments, cancellationToken),
                 "test-citadel" => await CitadelSmokeTest.RunAsync(
                     context, commandArguments, cancellationToken),
@@ -124,6 +132,11 @@ internal sealed class CliApplication(CliContext context)
             Commands:
               register-app  Create the backend API app used by the adapter and OBO flow.
               register-spa  Create a frontend SPA app with delegated access to the backend API.
+              register-hub  Create the API Hub app the gateway uses to exchange caller tokens.
+              grant-hub-access
+                            Grant an existing frontend delegated access to the API Hub scope.
+              preauthorize-client
+                            Preauthorize a client for an API scope, avoiding a consent prompt.
               register-consent-bypass-app
                             Create the public-client app used by consent-bypass administrators.
               register-spa-redirect
@@ -143,6 +156,8 @@ internal sealed class CliApplication(CliContext context)
               start-tunnel  Expose the local adapter through an anonymous Dev Tunnel.
               configure-citadel
                             Publish a separate delegated-OAuth API in an existing APIM instance.
+              configure-hub
+                            Publish the API Hub that exchanges hub tokens for adapter tokens.
               test-citadel   Exercise browser CORS, streaming, traces, and optional OBO through APIM.
               test-foundry  Connect Foundry to an adapter and run the cloud smoke test.
               enable-foundry-a2a
@@ -175,6 +190,61 @@ internal sealed class CliApplication(CliContext context)
                 Creates a secretless single-tenant SPA app and grants it delegated access to the
                 backend API's access_as_user scope. The redirect URI defaults to
                 http://localhost:5173. Admin consent is opt-in.
+                """,
+            "register-hub" =>
+                """
+                register-hub --api-client-id <adapter-backend-application-id>
+                             [--display-name <name>]
+                             [--managed-identity-principal-id <object-id>]
+                             [--preauthorize-client-ids <client-id>[,<client-id>...]]
+                             [--admin-consent]
+
+                Creates the single-tenant API Hub application used by the gateway, exposes its own
+                access_as_user scope, and grants it delegated access to the adapter API. Supplying
+                the gateway managed identity's object (principal) ID adds a federated identity
+                credential so API Management can act as the hub without a client secret. No client
+                secret is created. The default display name is foundry-copilot-a2a-hub.
+                """,
+            "grant-hub-access" =>
+                """
+                grant-hub-access --client-id <frontend-application-id>
+                                 --hub-client-id <hub-application-id>
+                                 [--admin-consent]
+
+                Grants an existing frontend registration delegated access to the API Hub's
+                access_as_user scope, so the browser requests a hub-audience token. Existing
+                adapter permissions and redirect URIs are preserved; remove them separately once
+                every caller uses the hub.
+                """,
+            "configure-hub" =>
+                """
+                configure-hub --subscription-id <subscription-id> --resource-group <rg>
+                              --service-name <apim-name>
+                              --backend-url <adapter-origin>
+                              --tenant-id <tenant-id>
+                              --hub-client-id <hub-application-id>
+                              --adapter-client-id <adapter-application-id>
+                              [--api-id <id>] [--api-path <path>]
+                              [--identity-client-id <user-assigned-identity-client-id>]
+                              [--allowed-origins <origin>[,<origin>...]] [--replace]
+
+                Publishes the API Hub API. Callers present a hub-audience delegated token; the
+                gateway exchanges it on-behalf-of the same user for an adapter-audience token and
+                forwards that to the adapter. The gateway authenticates as the hub through a
+                federated identity credential, so no client secret is stored. Discovery operations
+                stay public. Requires a managed identity on the API Management service.
+                """,
+            "preauthorize-client" =>
+                """
+                preauthorize-client --api-client-id <api-application-id>
+                                    --client-id <client-application-id>
+                                    [--scope <scope-name>]
+
+                Preauthorizes a client application for an API's delegated scope, so the client
+                receives it without a consent prompt. This is the supported way to let a middle
+                tier obtain a scope in the OBO flow without a privileged consent operation. The
+                scope defaults to access_as_user. Existing preauthorized entries are preserved,
+                and the command is idempotent.
                 """,
             "register-consent-bypass-app" =>
                 """

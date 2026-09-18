@@ -22,6 +22,8 @@ public class CliApplicationTests
         Assert.Contains("configure-foundry-chain", output.ToString());
         Assert.Contains("get-connector-consent-bypass", output.ToString());
         Assert.Contains("set-connector-consent-bypass", output.ToString());
+        Assert.Contains("register-hub", output.ToString());
+        Assert.Contains("grant-hub-access", output.ToString());
 
         var commandOutput = new StringWriter();
         var applicationWithCommandOutput = new CliApplication(
@@ -326,6 +328,154 @@ public class CliApplicationTests
         Assert.Contains("--skill-description", output.ToString());
         Assert.Contains("--replace-card", output.ToString());
         Assert.Contains("--smoke-prompt", output.ToString());
+    }
+
+    [Fact]
+    public async Task RegisterHubRejectsANonGuidAdapterClientId()
+    {
+        var (application, _, error) = CreateApplication();
+
+        var exitCode = await application.RunAsync(
+            ["register-hub", "--api-client-id", "not-a-guid"],
+            CancellationToken.None);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("must be an application (client) ID", error.ToString());
+    }
+
+    [Fact]
+    public async Task RegisterHubRejectsANonGuidManagedIdentityPrincipal()
+    {
+        var (application, _, error) = CreateApplication();
+
+        var exitCode = await application.RunAsync(
+            [
+                "register-hub",
+                "--api-client-id", "11111111-1111-1111-1111-111111111111",
+                "--managed-identity-principal-id", "not-a-guid"
+            ],
+            CancellationToken.None);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("object (principal) ID", error.ToString());
+    }
+
+    [Fact]
+    public async Task RegisterHubDoesNotAcceptAClientSecret()
+    {
+        var (application, _, error) = CreateApplication();
+
+        var exitCode = await application.RunAsync(
+            [
+                "register-hub",
+                "--api-client-id", "11111111-1111-1111-1111-111111111111",
+                "--client-secret", "observable-secret"
+            ],
+            CancellationToken.None);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("Unknown option '--client-secret'", error.ToString());
+        Assert.DoesNotContain("observable-secret", error.ToString());
+    }
+
+    [Fact]
+    public async Task GrantHubAccessRejectsTheSameApplicationTwice()
+    {
+        var (application, _, error) = CreateApplication();
+
+        var exitCode = await application.RunAsync(
+            [
+                "grant-hub-access",
+                "--client-id", "11111111-1111-1111-1111-111111111111",
+                "--hub-client-id", "11111111-1111-1111-1111-111111111111"
+            ],
+            CancellationToken.None);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("must be different applications", error.ToString());
+    }
+
+    [Fact]
+    public async Task ConfigureHubRejectsTheSameHubAndAdapterApplication()
+    {
+        var (application, _, error) = CreateApplication();
+
+        var exitCode = await application.RunAsync(
+            [
+                "configure-hub",
+                "--subscription-id", "00000000-0000-0000-0000-000000000000",
+                "--resource-group", "rg",
+                "--service-name", "apim",
+                "--backend-url", "https://adapter.example",
+                "--tenant-id", "tenant",
+                "--hub-client-id", "11111111-1111-1111-1111-111111111111",
+                "--adapter-client-id", "11111111-1111-1111-1111-111111111111"
+            ],
+            CancellationToken.None);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("must be different applications", error.ToString());
+    }
+
+    [Fact]
+    public async Task ConfigureHubDoesNotAcceptAClientSecret()
+    {
+        var (application, _, error) = CreateApplication();
+
+        var exitCode = await application.RunAsync(
+            [
+                "configure-hub",
+                "--subscription-id", "00000000-0000-0000-0000-000000000000",
+                "--resource-group", "rg",
+                "--service-name", "apim",
+                "--backend-url", "https://adapter.example",
+                "--tenant-id", "tenant",
+                "--hub-client-id", "11111111-1111-1111-1111-111111111111",
+                "--adapter-client-id", "22222222-2222-2222-2222-222222222222",
+                "--client-secret", "observable-secret"
+            ],
+            CancellationToken.None);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("Unknown option '--client-secret'", error.ToString());
+        Assert.DoesNotContain("observable-secret", error.ToString());
+    }
+
+    [Fact]
+    public void HubExchangePolicyIsolatesTheCacheByCallerAndTargetsTheAdapterScope()
+    {
+        var policy = HubCommands.BuildExchangePolicy(
+            "tenant-id",
+            "11111111-1111-1111-1111-111111111111",
+            "22222222-2222-2222-2222-222222222222",
+            identityClientId: null,
+            runtime: true);
+
+        Assert.Contains("api://11111111-1111-1111-1111-111111111111", policy);
+        Assert.Contains(
+            "api://22222222-2222-2222-2222-222222222222/access_as_user", policy);
+        Assert.Contains("requested_token_use=on_behalf_of", policy);
+        // A cache key without the caller identity would return one user's token to another.
+        Assert.Contains("jwt.Claims.GetValueOrDefault(\"oid\", \"unknown\")", policy);
+        Assert.Contains("caching-type=\"internal\"", policy);
+        // No secret may appear in a gateway policy.
+        Assert.DoesNotContain("client_secret", policy);
+        Assert.Contains("api://AzureADTokenExchange", policy);
+        Assert.DoesNotContain("__IDENTITY_CLIENT_ID__", policy);
+        Assert.DoesNotContain("__REQUEST_VALIDATION__", policy);
+    }
+
+    [Fact]
+    public void HubExchangePolicyUsesTheSuppliedUserAssignedIdentity()
+    {
+        var policy = HubCommands.BuildExchangePolicy(
+            "tenant-id",
+            "11111111-1111-1111-1111-111111111111",
+            "22222222-2222-2222-2222-222222222222",
+            identityClientId: "33333333-3333-3333-3333-333333333333",
+            runtime: false);
+
+        Assert.Contains("client-id=\"33333333-3333-3333-3333-333333333333\"", policy);
     }
 
     [Fact]
