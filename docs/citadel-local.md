@@ -100,10 +100,13 @@ For a standalone adapter that isn't managed by Aspire, keep the tunnel in a sepa
 terminal and use the operational CLI:
 
 ```powershell
-dotnet run --project .\src\FoundryCopilotA2A.Cli -- start-tunnel --port 5099
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- start-tunnel `
+  --port 5099 --tunnel-id fca2a-adapter-hub.euw
 ```
 
-Copy the printed HTTPS connection URL. For either hosting approach, Dev Tunnel
+Omit `--tunnel-id` for an ephemeral tunnel. Use a persistent ID when APIM should
+keep the same backend URL across local sessions. Copy the printed HTTPS connection
+URL. For either hosting approach, Dev Tunnel
 backends receive the noninteractive anti-phishing bypass header from the gateway so
 browser-originated requests receive API responses rather than the tunnel warning page.
 
@@ -118,6 +121,20 @@ When APIM fronts the tunnel, confirm that its API `serviceUrl` matches the URL s
 by the current `adapter-dev-tunnel` port resource. A healthy Aspire tunnel does not
 retarget an existing APIM API automatically; rerun `configure-citadel --replace`
 after deliberately changing tunnel IDs or URLs.
+
+For an API Hub configured with both origins, do not republish policy to move between
+local and hosted handlers. Switch the owned named value instead:
+
+```powershell
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- set-hub-backend `
+  --subscription-id <subscription-id> `
+  --resource-group <hub-resource-group> --service-name <hub-apim-name> `
+  --backend-mode devtunnel
+```
+
+Use `--backend-mode appservice` to switch back. The command refuses APIs that do
+not carry the `configure-hub` ownership marker. Dev Tunnel mode keeps the same hub
+JWT validation and OBO policy and adds only the tunnel anti-phishing bypass header.
 
 ## 3. Configure the separate Citadel API
 

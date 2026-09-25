@@ -1,0 +1,905 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
+  "languageVersion": "2.0",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.46.1.21595",
+      "templateHash": "18029138594684356443"
+    },
+    "name": "Foundry Copilot A2A API Hub infrastructure",
+    "description": "Deploys a separate APIM OBO hub and standby A2A handler without modifying the existing Citadel stack."
+  },
+  "parameters": {
+    "environmentName": {
+      "type": "string",
+      "defaultValue": "dev",
+      "minLength": 2,
+      "maxLength": 12,
+      "metadata": {
+        "description": "Short environment name used in resource names and tags."
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "westus2",
+      "metadata": {
+        "description": "Azure region for all resources in this development stack."
+      }
+    },
+    "tenantId": {
+      "type": "string",
+      "defaultValue": "63645c73-a00c-4659-b911-eb6c4c2d4a8f",
+      "metadata": {
+        "description": "Microsoft Entra tenant that issues delegated tokens."
+      }
+    },
+    "handlerClientId": {
+      "type": "string",
+      "metadata": {
+        "description": "Client ID of the handler API app registration."
+      }
+    },
+    "allowedOrigins": {
+      "type": "array",
+      "defaultValue": [
+        "http://localhost:5173"
+      ],
+      "minLength": 1,
+      "metadata": {
+        "description": "Browser origins allowed to call the hub and handler."
+      }
+    },
+    "publisherName": {
+      "type": "string",
+      "defaultValue": "Foundry Copilot A2A",
+      "metadata": {
+        "description": "API Management publisher display name."
+      }
+    },
+    "publisherEmail": {
+      "type": "string",
+      "metadata": {
+        "description": "API Management publisher email address."
+      }
+    },
+    "apimSkuName": {
+      "type": "string",
+      "defaultValue": "Developer",
+      "allowedValues": [
+        "Developer",
+        "StandardV2",
+        "PremiumV2"
+      ],
+      "metadata": {
+        "description": "API Management SKU. Developer is intended only for development."
+      }
+    },
+    "apimSkuCapacity": {
+      "type": "int",
+      "defaultValue": 1,
+      "minValue": 1,
+      "metadata": {
+        "description": "API Management scale-unit count."
+      }
+    },
+    "appServicePlanSku": {
+      "type": "string",
+      "defaultValue": "B1",
+      "metadata": {
+        "description": "App Service Plan SKU for the standby handler."
+      }
+    },
+    "linuxFxVersion": {
+      "type": "string",
+      "defaultValue": "DOTNETCORE|10.0",
+      "metadata": {
+        "description": "Linux runtime stack for the handler Web App."
+      }
+    },
+    "logRetentionInDays": {
+      "type": "int",
+      "defaultValue": 30,
+      "minValue": 30,
+      "metadata": {
+        "description": "Log Analytics retention in days."
+      }
+    },
+    "logDailyQuotaGb": {
+      "type": "int",
+      "defaultValue": 1,
+      "metadata": {
+        "description": "Log Analytics daily ingestion cap in GB. Use -1 for no cap."
+      }
+    },
+    "resourceGroupName": {
+      "type": "string",
+      "defaultValue": "[format('rg-fca2a-hub-{0}-wus2', parameters('environmentName'))]",
+      "metadata": {
+        "description": "Name of the separate resource group created by this deployment."
+      }
+    },
+    "tags": {
+      "type": "object",
+      "defaultValue": {},
+      "metadata": {
+        "description": "Additional tags merged with the standard deployment tags."
+      }
+    }
+  },
+  "variables": {
+    "suffix": "[toLower(uniqueString(subscription().id, parameters('resourceGroupName'), parameters('location')))]",
+    "apimName": "[format('apim-fca2a-hub-{0}-{1}', parameters('environmentName'), variables('suffix'))]",
+    "gatewayBaseUrl": "[format('https://{0}.azure-api.net/hub', variables('apimName'))]",
+    "commonTags": "[union(createObject('workload', 'foundry-copilot-a2a', 'environment', parameters('environmentName'), 'managedBy', 'bicep', 'deployment', 'api-hub'), parameters('tags'))]"
+  },
+  "resources": {
+    "resourceGroup": {
+      "type": "Microsoft.Resources/resourceGroups",
+      "apiVersion": "2025-04-01",
+      "name": "[parameters('resourceGroupName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('commonTags')]"
+    },
+    "monitoring": {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "[format('hub-monitoring-{0}', variables('suffix'))]",
+      "resourceGroup": "[parameters('resourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "workspaceName": {
+            "value": "[format('log-fca2a-hub-{0}-{1}', parameters('environmentName'), variables('suffix'))]"
+          },
+          "appInsightsName": {
+            "value": "[format('appi-fca2a-hub-{0}-{1}', parameters('environmentName'), variables('suffix'))]"
+          },
+          "retentionInDays": {
+            "value": "[parameters('logRetentionInDays')]"
+          },
+          "dailyQuotaGb": {
+            "value": "[parameters('logDailyQuotaGb')]"
+          },
+          "tags": {
+            "value": "[variables('commonTags')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "languageVersion": "2.0",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.46.1.21595",
+              "templateHash": "10514416752205111232"
+            },
+            "name": "A2A monitoring",
+            "description": "Deploys Log Analytics and workspace-based Application Insights."
+          },
+          "parameters": {
+            "location": {
+              "type": "string"
+            },
+            "workspaceName": {
+              "type": "string"
+            },
+            "appInsightsName": {
+              "type": "string"
+            },
+            "retentionInDays": {
+              "type": "int"
+            },
+            "dailyQuotaGb": {
+              "type": "int"
+            },
+            "tags": {
+              "type": "object"
+            }
+          },
+          "resources": {
+            "workspace": {
+              "type": "Microsoft.OperationalInsights/workspaces",
+              "apiVersion": "2025-02-01",
+              "name": "[parameters('workspaceName')]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "features": {
+                  "enableLogAccessUsingOnlyResourcePermissions": true
+                },
+                "publicNetworkAccessForIngestion": "Enabled",
+                "publicNetworkAccessForQuery": "Enabled",
+                "retentionInDays": "[parameters('retentionInDays')]",
+                "sku": {
+                  "name": "PerGB2018"
+                },
+                "workspaceCapping": {
+                  "dailyQuotaGb": "[parameters('dailyQuotaGb')]"
+                }
+              }
+            },
+            "appInsights": {
+              "type": "Microsoft.Insights/components",
+              "apiVersion": "2020-02-02",
+              "name": "[parameters('appInsightsName')]",
+              "location": "[parameters('location')]",
+              "kind": "web",
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "Application_Type": "web",
+                "DisableIpMasking": false,
+                "IngestionMode": "LogAnalytics",
+                "publicNetworkAccessForIngestion": "Enabled",
+                "publicNetworkAccessForQuery": "Enabled",
+                "Request_Source": "rest",
+                "RetentionInDays": "[parameters('retentionInDays')]",
+                "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('workspaceName'))]"
+              },
+              "dependsOn": [
+                "workspace"
+              ]
+            }
+          },
+          "outputs": {
+            "workspaceId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('workspaceName'))]"
+            },
+            "workspaceName": {
+              "type": "string",
+              "value": "[parameters('workspaceName')]"
+            },
+            "workspaceCustomerId": {
+              "type": "string",
+              "value": "[reference('workspace').customerId]"
+            },
+            "workspaceSharedKey": {
+              "type": "securestring",
+              "value": "[listKeys('workspace', '2025-02-01').primarySharedKey]"
+            },
+            "appInsightsId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.Insights/components', parameters('appInsightsName'))]"
+            },
+            "appInsightsName": {
+              "type": "string",
+              "value": "[parameters('appInsightsName')]"
+            },
+            "appInsightsConnectionString": {
+              "type": "securestring",
+              "value": "[reference('appInsights').ConnectionString]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "resourceGroup"
+      ]
+    },
+    "handlerFoundation": {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "[format('hub-handler-foundation-{0}', variables('suffix'))]",
+      "resourceGroup": "[parameters('resourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "identityName": {
+            "value": "[format('id-fca2a-handler-{0}-{1}', parameters('environmentName'), variables('suffix'))]"
+          },
+          "keyVaultName": {
+            "value": "[format('kvfca2ahubd{0}', variables('suffix'))]"
+          },
+          "tenantId": {
+            "value": "[parameters('tenantId')]"
+          },
+          "tags": {
+            "value": "[variables('commonTags')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.46.1.21595",
+              "templateHash": "8809717955729080137"
+            },
+            "name": "A2A adapter identity foundation",
+            "description": "Deploys the adapter identity, Key Vault, and narrowly scoped role assignments."
+          },
+          "parameters": {
+            "location": {
+              "type": "string"
+            },
+            "identityName": {
+              "type": "string"
+            },
+            "keyVaultName": {
+              "type": "string"
+            },
+            "tenantId": {
+              "type": "string"
+            },
+            "tags": {
+              "type": "object"
+            }
+          },
+          "variables": {
+            "keyVaultSecretsUserRoleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')]"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+              "apiVersion": "2024-11-30",
+              "name": "[parameters('identityName')]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]"
+            },
+            {
+              "type": "Microsoft.KeyVault/vaults",
+              "apiVersion": "2024-11-01",
+              "name": "[parameters('keyVaultName')]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "enablePurgeProtection": true,
+                "enableRbacAuthorization": true,
+                "enableSoftDelete": true,
+                "publicNetworkAccess": "Enabled",
+                "softDeleteRetentionInDays": 90,
+                "tenantId": "[parameters('tenantId')]",
+                "sku": {
+                  "family": "A",
+                  "name": "standard"
+                },
+                "networkAcls": {
+                  "bypass": "AzureServices",
+                  "defaultAction": "Allow"
+                }
+              }
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
+              "name": "[guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('identityName')), variables('keyVaultSecretsUserRoleDefinitionId'))]",
+              "properties": {
+                "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('identityName')), '2024-11-30').principalId]",
+                "principalType": "ServicePrincipal",
+                "roleDefinitionId": "[variables('keyVaultSecretsUserRoleDefinitionId')]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('identityName'))]",
+                "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "identityId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('identityName'))]"
+            },
+            "identityName": {
+              "type": "string",
+              "value": "[parameters('identityName')]"
+            },
+            "identityPrincipalId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('identityName')), '2024-11-30').principalId]"
+            },
+            "identityClientId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('identityName')), '2024-11-30').clientId]"
+            },
+            "keyVaultId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+            },
+            "keyVaultName": {
+              "type": "string",
+              "value": "[parameters('keyVaultName')]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "resourceGroup"
+      ]
+    },
+    "hubFoundation": {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "[format('hub-apim-{0}', variables('suffix'))]",
+      "resourceGroup": "[parameters('resourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "apimName": {
+            "value": "[variables('apimName')]"
+          },
+          "apimSkuName": {
+            "value": "[parameters('apimSkuName')]"
+          },
+          "apimSkuCapacity": {
+            "value": "[parameters('apimSkuCapacity')]"
+          },
+          "publisherName": {
+            "value": "[parameters('publisherName')]"
+          },
+          "publisherEmail": {
+            "value": "[parameters('publisherEmail')]"
+          },
+          "appInsightsName": {
+            "value": "[reference('monitoring').outputs.appInsightsName.value]"
+          },
+          "logAnalyticsWorkspaceId": {
+            "value": "[reference('monitoring').outputs.workspaceId.value]"
+          },
+          "tags": {
+            "value": "[variables('commonTags')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.46.1.21595",
+              "templateHash": "5449824334530574316"
+            },
+            "name": "A2A API Hub foundation",
+            "description": "Deploys API Management and its monitoring resources before the owned hub API is published by the operational CLI."
+          },
+          "parameters": {
+            "location": {
+              "type": "string"
+            },
+            "apimName": {
+              "type": "string"
+            },
+            "apimSkuName": {
+              "type": "string",
+              "allowedValues": [
+                "Developer",
+                "StandardV2",
+                "PremiumV2"
+              ]
+            },
+            "apimSkuCapacity": {
+              "type": "int"
+            },
+            "publisherName": {
+              "type": "string"
+            },
+            "publisherEmail": {
+              "type": "string"
+            },
+            "appInsightsName": {
+              "type": "string"
+            },
+            "logAnalyticsWorkspaceId": {
+              "type": "string"
+            },
+            "tags": {
+              "type": "object"
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.ApiManagement/service",
+              "apiVersion": "2024-05-01",
+              "name": "[parameters('apimName')]",
+              "location": "[parameters('location')]",
+              "identity": {
+                "type": "SystemAssigned"
+              },
+              "sku": {
+                "name": "[parameters('apimSkuName')]",
+                "capacity": "[parameters('apimSkuCapacity')]"
+              },
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "customProperties": {
+                  "Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Backend.Protocols.Ssl30": "False",
+                  "Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Backend.Protocols.Tls10": "False",
+                  "Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Backend.Protocols.Tls11": "False",
+                  "Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Ciphers.TripleDes168": "False",
+                  "Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Protocols.Ssl30": "False",
+                  "Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Protocols.Tls10": "False",
+                  "Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Protocols.Tls11": "False"
+                },
+                "publisherEmail": "[parameters('publisherEmail')]",
+                "publisherName": "[parameters('publisherName')]",
+                "publicNetworkAccess": "Enabled",
+                "virtualNetworkType": "None"
+              }
+            },
+            {
+              "type": "Microsoft.ApiManagement/service/loggers",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}', parameters('apimName'), 'application-insights')]",
+              "properties": {
+                "credentials": {
+                  "connectionString": "[reference(resourceId('Microsoft.Insights/components', parameters('appInsightsName')), '2020-02-02').ConnectionString]"
+                },
+                "description": "Workspace-based Application Insights logger for the API Hub.",
+                "isBuffered": true,
+                "loggerType": "applicationInsights",
+                "resourceId": "[resourceId('Microsoft.Insights/components', parameters('appInsightsName'))]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service', parameters('apimName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Insights/diagnosticSettings",
+              "apiVersion": "2021-05-01-preview",
+              "scope": "[resourceId('Microsoft.ApiManagement/service', parameters('apimName'))]",
+              "name": "send-to-log-analytics",
+              "properties": {
+                "logs": [
+                  {
+                    "categoryGroup": "allLogs",
+                    "enabled": true
+                  }
+                ],
+                "metrics": [
+                  {
+                    "category": "AllMetrics",
+                    "enabled": true
+                  }
+                ],
+                "workspaceId": "[parameters('logAnalyticsWorkspaceId')]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service', parameters('apimName'))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "apimId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.ApiManagement/service', parameters('apimName'))]"
+            },
+            "apimName": {
+              "type": "string",
+              "value": "[parameters('apimName')]"
+            },
+            "apimPrincipalId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.ApiManagement/service', parameters('apimName')), '2024-05-01', 'full').identity.principalId]"
+            },
+            "gatewayUrl": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.ApiManagement/service', parameters('apimName')), '2024-05-01').gatewayUrl]"
+            },
+            "appInsightsLoggerId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.ApiManagement/service/loggers', parameters('apimName'), 'application-insights')]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "monitoring",
+        "resourceGroup"
+      ]
+    },
+    "handlerHosting": {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "[format('hub-handler-hosting-{0}', variables('suffix'))]",
+      "resourceGroup": "[parameters('resourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "environmentName": {
+            "value": "[parameters('environmentName')]"
+          },
+          "appServicePlanName": {
+            "value": "[format('plan-fca2a-hub-{0}-{1}', parameters('environmentName'), variables('suffix'))]"
+          },
+          "webAppName": {
+            "value": "[format('app-fca2a-handler-{0}-{1}', parameters('environmentName'), variables('suffix'))]"
+          },
+          "identityId": {
+            "value": "[reference('handlerFoundation').outputs.identityId.value]"
+          },
+          "identityClientId": {
+            "value": "[reference('handlerFoundation').outputs.identityClientId.value]"
+          },
+          "keyVaultName": {
+            "value": "[reference('handlerFoundation').outputs.keyVaultName.value]"
+          },
+          "handlerClientId": {
+            "value": "[parameters('handlerClientId')]"
+          },
+          "tenantId": {
+            "value": "[parameters('tenantId')]"
+          },
+          "publicBaseUrl": {
+            "value": "[variables('gatewayBaseUrl')]"
+          },
+          "allowedOrigins": {
+            "value": "[parameters('allowedOrigins')]"
+          },
+          "appServicePlanSku": {
+            "value": "[parameters('appServicePlanSku')]"
+          },
+          "linuxFxVersion": {
+            "value": "[parameters('linuxFxVersion')]"
+          },
+          "appInsightsConnectionString": {
+            "value": "[listOutputsWithSecureValues('monitoring', '2025-04-01').appInsightsConnectionString]"
+          },
+          "tags": {
+            "value": "[variables('commonTags')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.46.1.21595",
+              "templateHash": "4831281550196556656"
+            },
+            "name": "API Hub standby handler hosting",
+            "description": "Deploys an authenticated .NET handler in mock standby mode until Copilot Studio secrets are populated."
+          },
+          "parameters": {
+            "location": {
+              "type": "string"
+            },
+            "environmentName": {
+              "type": "string"
+            },
+            "appServicePlanName": {
+              "type": "string"
+            },
+            "webAppName": {
+              "type": "string"
+            },
+            "identityId": {
+              "type": "string"
+            },
+            "identityClientId": {
+              "type": "string"
+            },
+            "keyVaultName": {
+              "type": "string"
+            },
+            "handlerClientId": {
+              "type": "string"
+            },
+            "tenantId": {
+              "type": "string"
+            },
+            "publicBaseUrl": {
+              "type": "string"
+            },
+            "allowedOrigins": {
+              "type": "array",
+              "minLength": 1
+            },
+            "appServicePlanSku": {
+              "type": "string",
+              "defaultValue": "B1",
+              "metadata": {
+                "description": "App Service Plan SKU. Basic B1 is the intended single-instance dev tier."
+              }
+            },
+            "linuxFxVersion": {
+              "type": "string",
+              "defaultValue": "DOTNETCORE|10.0",
+              "metadata": {
+                "description": "Linux runtime stack for the Web App."
+              }
+            },
+            "appInsightsConnectionString": {
+              "type": "securestring"
+            },
+            "tags": {
+              "type": "object"
+            }
+          },
+          "variables": {
+            "keyVaultSecretBaseUrl": "[format('https://{0}{1}/secrets', parameters('keyVaultName'), environment().suffixes.keyvaultDns)]",
+            "originAppSettings": "[toObject(map(range(0, length(parameters('allowedOrigins'))), lambda('i', createObject('name', format('Adapter__AllowedOrigins__{0}', lambdaVariables('i')), 'value', parameters('allowedOrigins')[lambdaVariables('i')]))), lambda('entry', lambdaVariables('entry').name), lambda('entry', lambdaVariables('entry').value))]",
+            "baseAppSettings": {
+              "APPLICATIONINSIGHTS_CONNECTION_STRING": "[parameters('appInsightsConnectionString')]",
+              "ApplicationInsightsAgent_EXTENSION_VERSION": "~3",
+              "XDT_MicrosoftApplicationInsights_Mode": "recommended",
+              "WEBSITES_ENABLE_APP_SERVICE_STORAGE": "false",
+              "ASPNETCORE_ENVIRONMENT": "Production",
+              "AZURE_CLIENT_ID": "[parameters('identityClientId')]",
+              "Adapter__Backend": "Mock",
+              "Adapter__PublicBaseUrl": "[parameters('publicBaseUrl')]",
+              "Authentication__Enabled": "true",
+              "Authentication__Authority": "[format('{0}{1}/v2.0', environment().authentication.loginEndpoint, parameters('tenantId'))]",
+              "Authentication__Audience": "[format('api://{0}', parameters('handlerClientId'))]",
+              "CopilotStudio__TenantId": "[parameters('tenantId')]",
+              "CopilotStudio__ClientId": "[parameters('handlerClientId')]",
+              "CopilotStudio__ManagedIdentityClientId": "[parameters('identityClientId')]",
+              "CopilotStudio__Cloud": "Prod",
+              "CopilotStudio__DefaultAgent": "orchestrator",
+              "CopilotStudio__Agents__orchestrator__DisplayName": "Orchestrator",
+              "CopilotStudio__Agents__orchestrator__DirectConnectUrl": "[format('@Microsoft.KeyVault(SecretUri={0}/orchestrator-direct-connect-url)', variables('keyVaultSecretBaseUrl'))]",
+              "CopilotStudio__Agents__tweede_kamer_classic__Id": "tweede-kamer-classic",
+              "CopilotStudio__Agents__tweede_kamer_classic__DisplayName": "Tweede Kamer Classic",
+              "CopilotStudio__Agents__tweede_kamer_classic__DirectConnectUrl": "[format('@Microsoft.KeyVault(SecretUri={0}/tweede-kamer-classic-direct-connect-url)', variables('keyVaultSecretBaseUrl'))]",
+              "OTEL_SERVICE_NAME": "[parameters('webAppName')]",
+              "OTEL_RESOURCE_ATTRIBUTES": "[format('deployment.environment={0},service.namespace=foundry-copilot-a2a', parameters('environmentName'))]"
+            },
+            "appSettings": "[union(variables('baseAppSettings'), variables('originAppSettings'))]"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Web/serverfarms",
+              "apiVersion": "2024-04-01",
+              "name": "[parameters('appServicePlanName')]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "sku": {
+                "name": "[parameters('appServicePlanSku')]"
+              },
+              "kind": "linux",
+              "properties": {
+                "reserved": true
+              }
+            },
+            {
+              "type": "Microsoft.Web/sites",
+              "apiVersion": "2024-04-01",
+              "name": "[parameters('webAppName')]",
+              "location": "[parameters('location')]",
+              "tags": "[union(parameters('tags'), createObject('azd-service-name', 'handler'))]",
+              "kind": "app,linux",
+              "identity": {
+                "type": "UserAssigned",
+                "userAssignedIdentities": {
+                  "[format('{0}', parameters('identityId'))]": {}
+                }
+              },
+              "properties": {
+                "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', parameters('appServicePlanName'))]",
+                "httpsOnly": true,
+                "keyVaultReferenceIdentity": "[parameters('identityId')]",
+                "clientAffinityEnabled": false,
+                "siteConfig": {
+                  "copy": [
+                    {
+                      "name": "appSettings",
+                      "count": "[length(items(variables('appSettings')))]",
+                      "input": {
+                        "name": "[items(variables('appSettings'))[copyIndex('appSettings')].key]",
+                        "value": "[items(variables('appSettings'))[copyIndex('appSettings')].value]"
+                      }
+                    }
+                  ],
+                  "linuxFxVersion": "[parameters('linuxFxVersion')]",
+                  "alwaysOn": true,
+                  "http20Enabled": true,
+                  "minTlsVersion": "1.2",
+                  "ftpsState": "Disabled",
+                  "healthCheckPath": "/health"
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Web/serverfarms', parameters('appServicePlanName'))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "webAppId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.Web/sites', parameters('webAppName'))]"
+            },
+            "webAppName": {
+              "type": "string",
+              "value": "[parameters('webAppName')]"
+            },
+            "webAppDefaultHostName": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.Web/sites', parameters('webAppName')), '2024-04-01').defaultHostName]"
+            },
+            "handlerBackendUrl": {
+              "type": "string",
+              "value": "[format('https://{0}', reference(resourceId('Microsoft.Web/sites', parameters('webAppName')), '2024-04-01').defaultHostName)]"
+            },
+            "appServicePlanId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.Web/serverfarms', parameters('appServicePlanName'))]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "handlerFoundation",
+        "monitoring",
+        "resourceGroup"
+      ]
+    }
+  },
+  "outputs": {
+    "resourceGroupName": {
+      "type": "string",
+      "value": "[parameters('resourceGroupName')]"
+    },
+    "apimName": {
+      "type": "string",
+      "value": "[reference('hubFoundation').outputs.apimName.value]"
+    },
+    "apimId": {
+      "type": "string",
+      "value": "[reference('hubFoundation').outputs.apimId.value]"
+    },
+    "apimPrincipalId": {
+      "type": "string",
+      "value": "[reference('hubFoundation').outputs.apimPrincipalId.value]"
+    },
+    "apimGatewayUrl": {
+      "type": "string",
+      "value": "[reference('hubFoundation').outputs.gatewayUrl.value]"
+    },
+    "hubApiBaseUrl": {
+      "type": "string",
+      "value": "[variables('gatewayBaseUrl')]"
+    },
+    "handlerBackendUrl": {
+      "type": "string",
+      "value": "[reference('handlerHosting').outputs.handlerBackendUrl.value]"
+    },
+    "handlerWebAppName": {
+      "type": "string",
+      "value": "[reference('handlerHosting').outputs.webAppName.value]"
+    },
+    "handlerIdentityClientId": {
+      "type": "string",
+      "value": "[reference('handlerFoundation').outputs.identityClientId.value]"
+    },
+    "handlerIdentityPrincipalId": {
+      "type": "string",
+      "value": "[reference('handlerFoundation').outputs.identityPrincipalId.value]"
+    },
+    "keyVaultName": {
+      "type": "string",
+      "value": "[reference('handlerFoundation').outputs.keyVaultName.value]"
+    },
+    "applicationInsightsResourceId": {
+      "type": "string",
+      "value": "[reference('monitoring').outputs.appInsightsId.value]"
+    }
+  }
+}

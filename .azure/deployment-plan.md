@@ -1,539 +1,537 @@
-# Citadel Gateway and Microsoft Foundry Deployment Plan
+# Foundry Copilot A2A Hub Deployment Plan
 
-> Status: Validated (2026-08-31) - West US 2 adapter hosting with App Service-safe agent aliases
-> Path: Add components to an existing application
-> Scope: Provision the validated infrastructure, publish the adapter, and verify endpoints
+> Status: Deployed - manual Copilot Studio completion pending
+> Mode: MODIFY - add a separate deployment without changing the existing Citadel stack
+> Scope: New development resource group, APIM OBO hub, isolated Entra applications, and standby handler hosting
 
 ## 1. Summary
 
-Add a modular `infra/` Bicep deployment for the first, deployable layer of the
-Microsoft Foundry Citadel pattern:
+Create a new, self-contained development deployment for the API Hub pattern. The
+deployment is separate from the existing `rg-fca2a-dev-fysujtwxarfsq` stack and
+does not modify or reuse its APIM, App Service, Key Vault, managed identity, or
+app registrations.
 
-- Azure API Management as the governed A2A ingress.
-- A public agent-card route and an OAuth-protected A2A JSON-RPC route.
-- Microsoft Foundry account and project with managed identity and local
-  authentication disabled.
-- Log Analytics and workspace-based Application Insights.
-- Azure Monitor diagnostic settings for the gateway.
-- The .NET A2A adapter hosted on a Linux App Service (B1) Web App, with a
-  user-assigned managed identity and Key Vault-backed runtime secrets exposed
-  through Key Vault app-setting references.
+The new APIM instance is the OAuth audience presented to browser and agent
+clients. APIM validates a hub token and performs OBO for a handler-audience token.
+The handler validates that token and can perform a second OBO exchange for Power
+Platform as the same user.
 
-The existing A2A adapter remains the identity bridge. API Management validates
-the delegated adapter token and forwards it unchanged; the adapter performs OBO
-for Copilot Studio. Managed identity secures the Foundry resource itself,
-future Azure dependencies, and the adapter's Key Vault reads, but does not
-replace the delegated user assertion.
+The `/hub` API initially forwards to the confirmed development tunnel
+`https://xf14hllk-5099.euw.devtunnels.ms`. A repository CLI command will switch
+the same API between that tunnel and the new App Service backend without
+republishing the API or weakening authentication.
 
-## 2. Requirements
+## 2. Confirmed Requirements
 
 | Area | Decision |
 | --- | --- |
-| Environment | Development / proof of concept |
-| Scale | Small |
+| Classification | Development / proof of concept |
+| Scale | Small, fewer than 1,000 users |
 | Cost posture | Cost optimized |
+| Compliance | No additional compliance or private-network requirement |
 | Tenant | `63645c73-a00c-4659-b911-eb6c4c2d4a8f` |
 | Subscription | `ME-MngEnvMCAP935538-rmeure-1` (`17254a3c-2e67-4fec-9e2c-cfe17cfb579d`) |
-| Shared-resource region | East US |
-| Adapter hosting region | West US 2, independently parameterized |
-| APIM tier | Developer for development, parameterized for production tiers |
-| Adapter hosting | Linux App Service (B1) with `dotnet publish` zip deployment |
-| Container registry | None; there is no image build in this pipeline |
-| Model deployment | Out of scope until model, version, capacity, and quota are selected |
-| Deployment | Out of scope; generate and validate only |
+| Region | West US 2 |
+| Resource group | New: `rg-fca2a-hub-dev-wus2` |
+| APIM tier | Developer, capacity 1 |
+| Handler hosting | New Linux App Service B1 in the same resource group |
+| Initial APIM backend | `https://xf14hllk-5099.euw.devtunnels.ms` |
+| Alternate APIM backend | The newly deployed handler App Service |
+| Frontend origin and redirect | `http://localhost:5173` |
+| Configured agents | `orchestrator` and `tweede-kamer-classic` only |
+| Default handler agent | `orchestrator` |
+| APIM publisher | Foundry Copilot A2A / `admin@mngenvmcap935538.onmicrosoft.com` |
+| Deployment intent | Generate, validate, deploy, publish, and verify |
 
-Existing Foundry, APIM, Key Vault, identity, and monitoring resources remain in
-East US. The App Service Plan and Web App use the independent
-`adapterLocation` parameter. After Central US repeatedly returned regional
-capacity conflict `03029`, the user selected West US 2 for hosting.
+## 3. Existing Resource Boundary
 
-## 3. Existing Resource Inventory
+The following existing resources are read-only context and remain untouched:
 
-Read-only discovery in the requested tenant and subscription found:
+- Resource group `rg-fca2a-dev-fysujtwxarfsq`.
+- API Management service `apim-fca2a-dev-mignfln6vyhra`.
+- App Service `app-fca2a-dev-mignfln6vyhra`.
+- Key Vault `kvfca2adevmignfln6vyhra`.
+- Existing unscoped app registrations such as `foundry-copilot-a2a-hub` and
+  `foundry-copilot-a2a-web`.
 
-| Resource group | Region | Relevant resources |
-| --- | --- | --- |
-| `Default-ActivityLogAlerts` | East US | None |
-| `McapsGovernance` | West US 2 | Governance storage/event resources unrelated to this application |
+No resource move, replacement, update, or deletion is part of this deployment.
+Cleanup of the new stack, if ever requested, is a separate destructive operation.
 
-No existing API Management, Microsoft Foundry/Azure AI Services, Log Analytics,
-or Application Insights resources were found. Existing resources will not be
-modified.
+## 4. Naming Convention
 
-## 4. Proposed Resource Inventory
+### Microsoft Entra app registrations
 
-| Resource | Type | Quantity | Purpose |
-| --- | --- | ---: | --- |
-| Resource group | `Microsoft.Resources/resourceGroups` | 2 | Separate shared East US resources from Central US adapter hosting |
-| Log Analytics workspace | `Microsoft.OperationalInsights/workspaces` | 1 | Central telemetry store |
-| Application Insights | `Microsoft.Insights/components` | 1 | Workspace-based application telemetry |
-| API Management | `Microsoft.ApiManagement/service` | 1 | Citadel Layer 1 A2A governance gateway |
-| APIM API and operations | `Microsoft.ApiManagement/service/apis/*` | 1 API | Publish agent card and A2A runtime |
-| APIM logger and diagnostics | `Microsoft.ApiManagement/service/loggers`, diagnostics | 1 each | Correlated request telemetry |
-| Microsoft Foundry account | `Microsoft.CognitiveServices/accounts` | 1 | Foundry project parent with system identity |
-| Microsoft Foundry project | `Microsoft.CognitiveServices/accounts/projects` | 1 | Agent development and connections |
-| User-assigned identity | `Microsoft.ManagedIdentity/userAssignedIdentities` | 1 | Key Vault access for the adapter Web App |
-| Key Vault and secrets | `Microsoft.KeyVault/vaults`, secrets | 1 vault / 4 secrets | Store the Copilot Studio client secret and direct-connect URLs |
-| App Service Plan | `Microsoft.Web/serverfarms` | 1 | Linux B1 plan hosting the adapter |
-| Web App | `Microsoft.Web/sites` | 1 | Run the .NET 10 A2A adapter as a single instance |
-| Role assignments | `Microsoft.Authorization/roleAssignments` | 3 | Adapter `Key Vault Secrets User`; operator `Foundry User`; operator `API Management Service Contributor` |
+Pattern:
 
-### Quota and service-limit check
+```text
+<workload>-<environment>-<component>-<identity-role>
+```
 
-| Resource | Current | Planned | Limit / result | Status |
-| --- | ---: | ---: | --- | --- |
-| Resource groups | 2 | 1 | 980 per subscription | Within limit |
-| API Management services | 0 | 1 | `Microsoft.Quota` exposes no adjustable APIM quota; Developer tier supports 3,000 operations, 5,000 named values, and 100 loggers | Within service limits |
-| Azure AI Services / Foundry accounts | 0 | 1 | Maximum 200 mixed Azure AI Services resources per region and 100 of one resource type per region | Within limit |
-| Log Analytics workspaces | 0 | 1 | No adjustable creation quota returned by `Microsoft.Quota`; one workspace is planned | No quota blocker identified |
-| Application Insights resources | 0 | 1 | No adjustable creation quota returned by `Microsoft.Quota`; one component is planned | No quota blocker identified |
-| App Service Plans (Linux) | 0 | 1 | West US 2 ARM preflight accepted one B1 plan; East US quota is 0 | West US 2 validation pending |
-| Web Apps | 0 | 1 | Bound by the plan; one Web App on the B1 plan is planned | No quota blocker identified |
+Rules:
 
-Regional SKU availability is still evaluated by Azure Resource Manager at
-deployment time. No model capacity is requested by this deployment.
+- Lowercase kebab-case.
+- Stable workload prefix `fca2a`.
+- Environment is always explicit because display names are tenant-scoped.
+- The suffix describes OAuth behavior (`api`, `spa`, or `oauth-client`), not the
+  hosting technology or a person.
+- Agent names use their canonical IDs with word boundaries preserved.
+
+| Purpose | Display name |
+| --- | --- |
+| Handler API and downstream OBO client | `fca2a-dev-handler-api` |
+| APIM hub API and middle-tier OBO client | `fca2a-dev-hub-api` |
+| Browser public client | `fca2a-dev-frontend-spa` |
+| Copilot Studio orchestrator OAuth client | `fca2a-dev-orchestrator-oauth-client` |
+| Copilot Studio specialist OAuth client | `fca2a-dev-tweede-kamer-classic-oauth-client` |
+
+The proposed names do not currently exist in the selected tenant.
+
+### Azure resources
+
+Pattern:
+
+```text
+<resource-prefix>-fca2a-hub-dev-<location-or-unique-suffix>
+```
+
+Planned examples:
+
+- Resource group: `rg-fca2a-hub-dev-wus2`
+- API Management: `apim-fca2a-hub-dev-<unique>`
+- App Service plan: `plan-fca2a-hub-dev-<unique>`
+- Web App: `app-fca2a-handler-dev-<unique>`
+- User-assigned identity: `id-fca2a-handler-dev-<unique>`
+- Key Vault: `kv-fca2a-hub-dev-<unique>` within Key Vault length rules
+- Log Analytics: `log-fca2a-hub-dev-<unique>`
+- Application Insights: `appi-fca2a-hub-dev-<unique>`
+
+Globally unique resource names use a deterministic `uniqueString` suffix.
 
 ## 5. Architecture
 
 ```text
-Foundry agent
-  |
-  | A2A + delegated OAuth token
+Browser SPA
+  | token A: aud = api://<hub-client-id>, scp = access_as_user
   v
-Azure API Management (Citadel Layer 1)
-  |-- GET  /.well-known/agent-card.json  (public)
-  |-- POST /a2a/copilot-studio          (validate JWT + scope, rate limit)
-  |
-  | Authorization header forwarded unchanged
+New APIM /hub
+  | validate token A
+  | APIM managed identity -> federated assertion for hub registration
+  | OBO token B: aud = api://<handler-client-id>, same tid/oid
   v
-Azure App Service (Linux, B1, .NET 10)
-  |-- .NET A2A adapter (single instance, always-on)
-  |-- user-assigned identity
-  |-- Key Vault references resolved into app settings
-  |
-  | OAuth OBO for Power Platform
-  v
-Standard-harness Copilot Studio agent
+Active backend selected by APIM named value
+  |-- initial: local Dev Tunnel -> local handler
+  `-- alternate: new Linux App Service -> deployed handler
+          |
+          | handler managed identity -> federated assertion for handler registration
+          | OBO token C: Power Platform delegated audience, same tid/oid
+          v
+      Copilot Studio orchestrator or tweede-kamer-classic
 
-APIM ---- diagnostics ----> Application Insights ----> Log Analytics
-Web App -- classic App Service auto-instrumentation --> Application Insights
-Foundry account/project: system-assigned managed identity, key access disabled
+Copilot Studio orchestrator OAuth client -----\
+                                               +--> requests hub access_as_user
+Copilot Studio specialist OAuth client -------/
 ```
 
-## 6. Authentication and Identity Boundary
+The frontend never receives a handler-audience or Power Platform token. APIM
+never forwards a Power Platform token to the handler. Each middle tier receives a
+token minted for its own audience.
 
-1. The caller obtains a delegated token for
-   `api://<adapter-client-id>/access_as_user`.
-2. API Management validates:
-   - The requested tenant issuer.
-   - The adapter API audience.
-   - The `access_as_user` delegated scope.
-   - The `Bearer` scheme.
-3. API Management forwards `Authorization` without replacing it.
-4. The adapter repeats JWT validation and performs OBO for the Copilot Studio
-   downstream scope.
-5. The Foundry account and project use managed identity for Azure-resource
-   access. Any future data-plane permissions must be granted explicitly at the
-   narrowest resource scope.
-6. The adapter Web App uses its user-assigned identity (`keyVaultReferenceIdentity`)
-   to resolve Key Vault app-setting references with `Key Vault Secrets User`
-   on the vault. It has no other Azure role assignments.
+## 6. App Registration Contract
 
-The agent card remains anonymous because Foundry must discover the A2A endpoint
-before invoking it. The JSON-RPC runtime is protected.
+### `fca2a-dev-handler-api`
 
-## 7. Security Controls
+- Single tenant (`AzureADMyOrg`).
+- Identifier URI `api://<handler-client-id>`.
+- Exposes delegated `access_as_user`.
+- Has delegated `CopilotStudio.Copilots.Invoke` permission.
+- Preauthorizes only the hub application for `access_as_user`.
+- Uses the handler user-assigned managed identity as a federated credential in
+  Azure.
+- Keeps client-secret support only as the existing local-development fallback;
+  no handler secret is created for the Azure deployment.
 
-- TLS 1.2 minimum on API Management and the Web App.
-- HTTPS-only enforced on the Web App.
-- API subscription keys disabled for this OAuth passthrough API.
-- JWT validation at both APIM and the adapter.
-- Per-user rate limiting based on validated tenant/object identity.
-- Request-size limit suitable for A2A JSON-RPC messages.
-- Backend URL restricted to HTTPS.
-- APIM system-assigned managed identity enabled.
-- Foundry system-assigned managed identity enabled.
-- Foundry local/key authentication disabled.
-- Key Vault RBAC enabled with purge protection; no secret values are committed.
-- Web App app-setting references use versionless Key Vault URIs so rotation
-  does not require a Bicep change; they resolve through the adapter's
-  user-assigned identity, not a system-assigned one.
-- FTP/FTPS is disabled and the health check path is `/health`.
-- Web App runs as a single instance because conversation continuity, replay
-  protection, and trace visualization currently use in-memory state.
-- Public network access retained for this POC because Foundry must reach the A2A
-  endpoint and the existing adapter is externally hosted.
-- Diagnostic logs and metrics sent to Log Analytics.
-- Application Insights connected on the Web App by `APPLICATIONINSIGHTS_CONNECTION_STRING`
-  plus the classic App Service auto-instrumentation extension; no OpenTelemetry
-  collector is provisioned by this deployment.
-- No Copilot Studio connection strings, client secrets, tokens, or tunnel
-  credentials in Bicep or parameter files.
-- No semantic response cache for delegated, user-scoped conversations.
+### `fca2a-dev-hub-api`
 
-## 8. Reliability and Observability
+- Single tenant.
+- Identifier URI `api://<hub-client-id>`.
+- Exposes delegated `access_as_user`.
+- Has delegated permission to the handler's `access_as_user` scope.
+- Preauthorizes the frontend, orchestrator, and specialist clients.
+- Uses the APIM system-assigned managed identity as a federated credential.
+- Has no client secret.
 
-- APIM provides a stable public hostname in front of the adapter.
-- Correlation headers, including `traceparent`, are preserved.
-- APIM diagnostics capture request timing and failures while avoiding
-  Authorization header/body logging.
-- Existing adapter OpenTelemetry continues to capture the downstream
-  Copilot Studio call and method spans; those spans are exported to
-  Application Insights through the App Service auto-instrumentation
-  extension.
-- Application Insights uses Log Analytics workspace mode.
-- The B1 plan has no production SLA and does not support slots. Move to at
-  least Premium v3 with slots and health-check-driven autohealing before
-  production traffic.
-- Development APIM has no production SLA; use Standard v2 or Premium v2 and
-  zone/multi-region features after a production architecture review.
+### `fca2a-dev-frontend-spa`
 
-## 9. Cost Considerations
+- Single-tenant public SPA client using authorization code with PKCE.
+- Redirect URI `http://localhost:5173`.
+- Delegated permission only to the hub's `access_as_user` scope.
+- Has no client secret.
 
-- Developer APIM is selected for development to reduce fixed gateway cost.
-- Log Analytics retention is kept at the minimum practical development value.
-- Daily workspace ingestion is capped with a parameter.
-- No model deployment, private endpoints, VNet integration, Defender plans, or
-  Purview resources are included.
-- App Service B1 (single instance) replaces the previous Container Apps
-  environment plus ACR combination, eliminating registry cost and the always-on
-  minimum-replica premium of Container Apps. B1 has a fixed monthly cost and no
-  scale-to-zero; this is acceptable because the adapter is a small always-on
-  HTTP service.
-- A production deployment should change the APIM SKU, move to at least Premium
-  v3 App Service, and separately assess capacity, availability zones,
-  networking, and telemetry volume.
+### Copilot Studio OAuth clients
 
-## 10. Planned Files
+- Separate single-tenant confidential clients for `orchestrator` and
+  `tweede-kamer-classic`.
+- Delegated permission only to the hub's `access_as_user` scope.
+- Separate credentials; no credential sharing between agents.
+- Callback URLs are intentionally deferred until Copilot Studio generates them.
+- Credential creation and Key Vault population are a manual post-deployment
+  operation performed by a separately authorized secret operator. The main
+  deployment does not grant the signed-in operator a Key Vault data-plane role.
+- Client secret values must never be printed, committed, passed on a command
+  line, or stored in App Service settings.
+
+The signed-in operator is assigned as owner of each new app registration to
+avoid orphaned tenant objects.
+
+## 7. Azure Resource Inventory
+
+| Resource | Quantity | Configuration |
+| --- | ---: | --- |
+| Resource group | 1 | New, West US 2 |
+| API Management | 1 | Developer, capacity 1, system-assigned identity |
+| APIM API/operations | 1 API | Public discovery, protected runtime, traces |
+| APIM named values | 3 | App Service URL, Dev Tunnel URL, active backend mode |
+| Log Analytics workspace | 1 | 30-day retention, 1 GB/day development cap |
+| Application Insights | 1 | Workspace based |
+| User-assigned managed identity | 1 | Handler workload and federated assertion |
+| Key Vault | 1 | RBAC, purge protection, soft delete; initially no agent secrets |
+| App Service plan | 1 | Linux B1 |
+| Web App | 1 | .NET 10, HTTPS only, TLS 1.2+, always on |
+| Role assignments | Minimum required | Handler Key Vault read; APIM/monitoring scopes as needed |
+| App registrations/service principals | 5 each | Tenant-scoped; not Azure resource-group resources |
+
+The Web App is deployed in safe standby/mock mode until its two direct-connect
+URLs and the two agent OAuth credentials have been populated by an authorized
+operator. APIM initially targets the local Dev Tunnel, so the active development
+path remains usable.
+
+## 8. APIM Hub and Dev Tunnel Design
+
+- API path: `/hub`.
+- Discovery operations stay anonymous.
+- Runtime and trace operations require a hub-audience delegated token with
+  `access_as_user`.
+- APIM obtains `api://AzureADTokenExchange/.default` with its managed identity
+  and uses that token as the hub app's federated client assertion.
+- OBO cache keys include tenant ID, user object ID, and target audience.
+- Cache entries expire before the access token and never contain refresh tokens.
+- OBO and Conditional Access failures return explicit 401/403 responses and
+  preserve `WWW-Authenticate` challenges.
+- Streaming remains unbuffered.
+- Tokens are never logged.
+- Backend URLs are stored as non-secret APIM named values.
+- `hub-backend-mode` is initially `devtunnel`; a CLI command changes only this
+  named value after verifying that the API carries the repository ownership
+  marker.
+- Dev Tunnel mode requires an HTTPS `*.devtunnels.ms` URL and adds
+  `X-Tunnel-Skip-AntiPhishing-Page: true` to backend requests.
+- App Service mode uses the deterministic deployment output.
+- The supplied tunnel's `/health` endpoint currently returns HTTP 200.
+
+## 9. Handler Runtime Changes
+
+Extend the existing `OboTokenBroker` without removing local development:
+
+- If `CopilotStudio:ClientSecret` is configured, retain the current
+  `WithClientSecret` behavior.
+- Otherwise, require managed-identity federation configuration.
+- Acquire `api://AzureADTokenExchange/.default` through the configured
+  user-assigned managed identity.
+- Supply that cached token through MSAL `WithClientAssertion`.
+- Continue using the existing MSAL token cache for OBO and app-only fallback.
+- Fail startup if neither credential mode is valid.
+- Do not make the mock backend or local AppHost depend on Azure.
+
+Only `orchestrator` and `tweede-kamer-classic` are configured in the new
+deployment, and `orchestrator` is the default.
+
+## 10. Recipe and Planned Repository Changes
+
+### Recipe
+
+Use the repository's existing subscription-scoped Bicep plus
+`src/FoundryCopilotA2A.Cli` operational model.
+
+Rationale:
+
+- The workspace already has reviewed Bicep and Graph/APIM CLI workflows.
+- App registrations are tenant-scoped and are not ARM resource-group resources.
+- APIM hub configuration has ownership and safe-replacement checks in the CLI.
+- A separate `azd` or shell-script workflow would duplicate the current
+  operational model.
+- The AppHost remains the local orchestration path; this infrastructure workflow
+  does not replace local Aspire behavior.
+
+### Planned files
 
 ```text
+.azure/
+  deployment-plan.md
+  deployment-plan.citadel-2026-08-31.md
 infra/
-  bootstrap.bicep
-  main.bicep
-  main.dev.bicepparam
-  README.md
+  hub.bicep
+  hub.dev.bicepparam
   modules/
-    adapter-foundation.bicep
-    adapter-hosting.bicep
-    monitoring.bicep
-    foundry.bicep
-    citadel.bicep
+    hub-foundation.bicep
+    hub-handler-hosting.bicep
+src/FoundryCopilotA2A.Adapter/
+  AdapterOptions.cs
+  CopilotStudioInvoker.cs
+src/FoundryCopilotA2A.Cli/
+  CliApplication.cs
+  EntraCommands.cs
+  HubCommands.cs
+tests/
+  FoundryCopilotA2A.Adapter.Tests/
+  FoundryCopilotA2A.Cli.Tests/
+docs/
+  authentication-and-agent-scaling.md
+  citadel-local.md
+infra/README.md
 ```
 
-`main.bicep` is subscription-scoped and creates the resource group. Modules are
-resource-group scoped. Names use a stable `uniqueString` suffix and tags are
-applied consistently. There is no `Dockerfile` and no `.dockerignore` used by
-this deployment.
+Exact test filenames may reuse existing focused test files instead of adding new
+ones. No shell scripts will be introduced.
 
-## 11. Inputs
+## 11. Deployment Sequence
 
-| Parameter | Source | Secret |
-| --- | --- | --- |
-| `tenantId` | Fixed requested tenant by default | No |
-| `accessPrincipalId` | Existing Entra user object ID supplied through `ACCESS_PRINCIPAL_OBJECT_ID` | No |
-| `location` | East US by default | No |
-| `adapterLocation` | West US 2 in the dev parameter file; defaults to `location` | No |
-| `adapterResourceGroupName` | Defaults to `<resourceGroupName>-adapter-<adapterLocation>` | No |
-| `environmentName` | Dev parameter file | No |
-| `adapterApiAudience` | Deployment operator (`api://<client-id>`) | No |
-| `adapterDelegatedScope` | `access_as_user` | No |
-| `adapterAllowedOrigins` | Deployment operator | No |
-| `appServicePlanSku` | Dev default `B1` | No |
-| `linuxFxVersion` | Dev default `DOTNETCORE|10.0` | No |
-| `copilotStudioClientId` | Existing backend app registration | No |
-| `copilotStudioClientSecret` | Environment variable or secure deployment input | Yes |
-| Three Copilot Studio direct-connect URLs | Environment variables or secure deployment inputs | Yes |
-| `publisherEmail` / `publisherName` | Deployment operator | No |
-| APIM SKU/capacity | Dev defaults; production override | No |
-| Log retention/daily cap | Dev defaults | No |
+1. Implement and test managed-identity client assertions in the handler.
+2. Add the separate hub Bicep stack and development parameter file.
+3. Add idempotent CLI support for:
+   - Creating/verifying the five named app registrations and service principals.
+   - Applying scopes, preauthorization, owners, and federated credentials.
+   - Configuring APIM with both backend URLs and the initial mode.
+   - Safely switching the active backend.
+   - Adding generated Copilot Studio Web callback URLs later.
+4. Validate Bicep compilation, lint, ARM validation, and subscription what-if.
+5. Run focused .NET build and tests.
+6. Invoke the Azure validation workflow.
+7. Create the secretless handler app registration.
+8. Deploy the new resource group and foundation resources.
+9. Create the remaining tenant app registrations and bind both managed identities.
+10. Configure the App Service in standby/mock mode and publish the handler.
+11. Publish the `/hub` API with the Dev Tunnel as the active backend.
+12. Verify resource state, App Service health, hub discovery, CORS, and
+    unauthenticated runtime rejection.
+13. Manual post-deployment:
+    - An authorized secret operator creates the two agent client credentials and
+      stores them in the new Key Vault.
+    - Store the existing local user-secret values for the orchestrator and
+      tweede-kamer-classic direct-connect URLs in the new Key Vault.
+    - Configure both Copilot Studio OAuth connections.
+    - Add each generated HTTPS Web callback URI through the repository CLI.
+    - Activate the live App Service handler and run same-user OBO smoke tests.
+    - Switch `/hub` to App Service when desired.
 
-Secret parameters are accepted only as `@secure()` inputs and written to Key
-Vault. The checked-in development parameter file reads them from process
-environment variables and contains no secret values. There is no
-`adapterImageTag` parameter because no image is built.
+No deployment step deletes or modifies the existing stack.
 
-## 12. Outputs
+## 12. Security Controls
 
-- Resource group name.
-- APIM gateway URL.
-- Public agent-card URL.
-- Protected A2A runtime URL.
-- Foundry account endpoint.
-- Foundry project endpoint/resource ID.
-- Foundry principal ID.
-- Application Insights resource ID.
-- Adapter Web App name and default host name.
-- Adapter backend URL.
-- Adapter managed identity principal ID.
-- Key Vault name.
+- Single-tenant app registrations.
+- Least-privilege delegated scopes; no application permissions on the user path.
+- Separate audiences for frontend/hub and handler.
+- Secretless APIM and Azure-hosted handler credentials through federation.
+- No secret on the SPA or hub registrations.
+- Separate agent credentials and callbacks.
+- Key Vault RBAC, purge protection, and soft delete.
+- No automatic Key Vault data-plane grant to the signed-in operator.
+- HTTPS-only, TLS 1.2 minimum, FTPS disabled.
+- APIM and handler both validate issuer, audience, lifetime, and delegated scope.
+- Per-user OBO caching only.
+- No token, direct-connect URL, client secret, tunnel credential, or
+  environment-specific identifier committed to source.
+- Existing mock backend remains runnable without Azure.
 
-The adapter must set its public base URL to the APIM API base so the served
-agent card advertises the governed runtime URL. Bicep sets this automatically
-through the `Adapter__PublicBaseUrl` app setting.
+## 13. Policy and Provisioning Checks
 
-## 13. Validation Plan
+Subscription policies currently target SQL, open-source databases, data
+protection, and container protection. None applies a deny policy to APIM, App
+Service, Key Vault, managed identity, Log Analytics, or Application Insights.
 
-Before any deployment:
+The quota API returned no adjustable quota records for `Microsoft.ApiManagement`
+or `Microsoft.Web` in West US 2. Azure Resource Graph currently shows:
 
-### All validation checks pass
+| Type in West US 2 | Current | Planned | After deployment |
+| --- | ---: | ---: | ---: |
+| API Management service | 0 | 1 | 1 |
+| App Service plan | 1 | 1 | 2 |
+| Web App | 1 | 1 | 2 |
 
-- [x] 1. Core Validation (CLI, auth, build, validate, what-if).
-- [x] 2. Linting (optional).
-- [x] 3. Azure Policy Validation.
-- [x] Azure CLI is installed and authenticated to the confirmed tenant and subscription.
-- [x] `bootstrap.bicep`, `main.bicep`, and `main.dev.bicepparam` compile cleanly.
-- [x] The subscription-scoped template passes Azure Resource Manager validation.
-- [x] Subscription-scoped `what-if` completes with no deletes.
-- [x] The .NET solution builds and its existing tests pass.
-- [x] Static RBAC review confirms `Key Vault Secrets User` is scoped to the adapter vault.
-- [x] Subscription policies show no deployment blocker; West US 2 App Service B1 preflight succeeds.
-- [x] No secret values are written to source or deployment evidence.
+The final ARM validation and what-if are the authoritative regional provisioning
+checks. No model capacity or compute quota is requested.
 
-Additional behavioral checks:
+## 14. Validation and Verification
 
-1. Verify API policy behavior:
-   - Agent card route is anonymous.
-   - Missing/invalid runtime token is rejected.
-   - Wrong audience, issuer, or scope is rejected.
-   - Valid delegated token is forwarded unchanged.
-2. Validate the template against the intended subscription after explicitly
-   switching Azure authentication to tenant
-   `63645c73-a00c-4659-b911-eb6c4c2d4a8f`.
-3. After the Web App is provisioned, publish the adapter with `dotnet publish`
-   and `az webapp deploy --type zip`, then confirm `/health` returns 200 through
-   both the Web App default host name and the APIM gateway.
+### Repository validation
 
-Deployment remains a separate, explicitly approved operation.
+- Bicep build and lint for every new or changed template.
+- ARM template validation at subscription scope.
+- What-if must report no deletes and no changes outside
+  `rg-fca2a-hub-dev-wus2`.
+- Focused adapter tests for secret and managed-identity credential selection.
+- Focused CLI tests for registration idempotency, drift rejection, URL
+  validation, backend switching, and ownership checks.
+- Release build and existing test suites covering changed projects.
+- Secret scan of generated output and Git changes.
 
-### App Service pivot validation proof
+### Deployment verification
 
-Validation completed at `2026-08-30T14:58:54+02:00` against subscription
-`17254a3c-2e67-4fec-9e2c-cfe17cfb579d` in `eastus`.
+- All Azure resources reach `Succeeded`.
+- Five exact app registration names exist once each with one service principal.
+- Federated credentials reference the exact APIM and handler principal IDs.
+- Scope/preauthorization relationships match Section 6.
+- App Service `/health` returns 200 in standby mode.
+- Dev Tunnel `/health` returns 200.
+- APIM discovery succeeds through `/hub`.
+- APIM runtime without a token returns 401.
+- Wrong audience and wrong scope are rejected.
+- CORS permits `http://localhost:5173` only.
+- Backend mode reports `devtunnel` immediately after deployment.
+- No secret values appear in command output, deployment outputs, source files,
+  logs, or telemetry.
 
-- Azure validation workflow:
-  `validate-deployment.ps1 -Scope sub -Location eastus` reported
-  `OVERALL: PASS`; Azure Resource Manager validation passed and `what-if`
-  reported 27 creates, 0 modifications, and 0 deletes.
-- Bicep: `bootstrap.bicep`, `main.bicep`, all remaining modules, and
-  `main.dev.bicepparam` compile with zero errors and zero warnings under
-  `az bicep build` / `az bicep build-params`.
-- Build: `dotnet build .\FoundryCopilotA2A.slnx --configuration Release
-  --no-restore` succeeded with 0 warnings and 0 errors.
-- Tests: the existing adapter and CLI test projects passed 65 of 65 tests.
-- Runtime: `az webapp list-runtimes --os linux` advertises
-  `DOTNETCORE:10.0`.
-- Subscription policy assignments target SQL, open-source database, data
-  protection, and container protection scenarios; none blocks the planned
-  resource types.
-- Quota: Azure quota checks reported no limit for Web Apps, App Service
-  Plans, API Management, Log Analytics, and Application Insights. The
-  Cognitive Services quota endpoint did not expose a numeric result, while
-  ARM validation and `what-if` both accepted the Foundry account in East US.
-- Secret handling: deployment values are loaded transiently from the local
-  .NET user-secrets store. No secret values are written to this plan or the
-  repository.
-- Removed modules: `container-registry.bicep` and all Container Apps and ACR
-  references in `adapter-foundation.bicep`, `adapter-hosting.bicep`,
-  `bootstrap.bicep`, and `main.bicep`.
-- New adapter hosting: Linux App Service Plan (`Microsoft.Web/serverfarms`,
-  `reserved: true`, SKU `B1`) plus Linux Web App (`Microsoft.Web/sites`,
-  `linuxFxVersion: DOTNETCORE|10.0`, `httpsOnly: true`, `alwaysOn: true`,
-  `keyVaultReferenceIdentity` pointing at the adapter user-assigned identity).
-- Key Vault secrets: unchanged names and contents; the Web App references them
-  with `@Microsoft.KeyVault(SecretUri=...)` app settings using versionless URIs.
+Authenticated end-to-end OBO and callback verification are completed after the
+manual secret/callback step.
 
-### Central US App Service placement validation proof
+## 15. Cost and Reliability
 
-Validation completed at `2026-08-30T21:26:22+02:00` against subscription
-`17254a3c-2e67-4fec-9e2c-cfe17cfb579d`. The subscription deployment scope and
-existing shared resources remain in East US; `adapterLocation` is `centralus`.
+- Developer APIM is the lowest-cost tier suitable for this development policy
+  surface and has no production SLA.
+- Linux B1 is a single-instance development plan.
+- Log retention is 30 days with a 1 GB/day cap.
+- The deployment is single-region and has no private endpoints or zone
+  redundancy.
+- A production promotion requires a separate review for APIM v2 tier, App
+  Service redundancy, private networking, credential policy, monitoring volume,
+  and disaster recovery.
 
-- `validate-deployment.ps1 -Scope sub -Location eastus` reported
-  `OVERALL: PASS`: Azure CLI authentication, Bicep compilation, ARM template
-  validation, and subscription what-if all succeeded.
-- The helper's textual change counter misclassified nested deployment output.
-  A direct `az deployment sub what-if --result-format ResourceIdOnly` confirmed
-  exactly two creates (the B1 App Service Plan and Web App), existing resources
-  as `Deploy`, one generated smart-detection action group as `Ignore`, and no
-  deletes.
-- `az bicep lint --file .\infra\main.bicep` completed with no diagnostics.
-- Subscription policy assignments target SQL, open-source databases, data
-  protection, and container protection; none applies a blocking policy to the
-  App Service resources.
-- `dotnet build .\FoundryCopilotA2A.slnx --configuration Release --no-restore`
-  succeeded with zero warnings and errors.
-- `dotnet test .\FoundryCopilotA2A.slnx --configuration Release --no-build
-  --no-restore` passed all 65 tests.
-- Static RBAC review reconfirmed `Key Vault Secrets User` at the vault scope and
-  the requested user roles at the exact Foundry project and APIM scopes.
-- Editor diagnostics report no errors in `main.bicep` or
-  `main.dev.bicepparam`.
+## 16. Functional Verification
 
-### Dedicated Central US hosting resource group validation proof
+- Status: Verified.
+- Adapter tests: 234 passed.
+- CLI tests: 157 passed.
+- Bicep: lint, template build, and parameter build passed.
+- Repository whitespace check: passed.
+- Local runtime: Aspire started the explicit mock configuration and reported the
+  adapter healthy.
+- Health: `GET /health` returned HTTP 200.
+- A2A: the operational CLI completed a mock `SendMessage` request and matched
+  `mock-copilot-studio`.
+- Cleanup: the project AppHost was stopped successfully after verification.
 
-Validation completed at `2026-08-30T21:36:03+02:00` after Central US returned
-App Service capacity conflict `03029` twice in the existing East US resource
-group. Azure's error recommended placing the plan in a new resource group.
+## 17. Approval Gate
 
-- The App Service Plan and Web App now deploy to
-  `rg-fca2a-dev-fysujtwxarfsq-adapter` in Central US.
-- The existing user-assigned identity, Key Vault, Foundry, APIM, Log Analytics,
-  and Application Insights remain in `rg-fca2a-dev-fysujtwxarfsq` in East US.
-- Key Vault secret writes remain in the East US resource group through the
-  dedicated `adapter-secrets.bicep` module. The hosting module references the
-  existing identity by full resource ID and resolves the existing Key Vault by
-  DNS name.
-- `validate-deployment.ps1 -Scope sub -Location eastus` reported
+Execution starts only after explicit approval of this plan. Approval authorizes
+creation of the new resource group, billable Developer APIM and B1 App Service,
+five app registrations/service principals, the documented federated
+credentials, and narrowly scoped role assignments. It does not authorize
+deletion, modification of the existing stack, tenant-wide admin consent, or
+automatic Key Vault access for the signed-in operator.
+
+## 18. Azure Validation Workflow
+
+- [x] All validation checks pass
+  - [x] 1. Core Validation (CLI, auth, build, validate, what-if).
+  - [x] 2. Bicep linting.
+  - [x] 3. Azure Policy validation.
+  - [x] 4. Static role-assignment verification.
+
+### Validation evidence
+
+- Official core helper: `OVERALL: PASS`.
+- ARM validation: passed in subscription
+  `17254a3c-2e67-4fec-9e2c-cfe17cfb579d`.
+- What-if: 12 creates, 0 modifications, 0 deletes.
+- Full solution build: succeeded with 0 warnings and 0 errors.
+- Subscription policy assignments do not target or deny the planned resource
+  types, region, tags, or SKUs.
+
+### Static role-assignment verification
+
+- Handler user-assigned identity -> `Key Vault Secrets User` on the new vault
+  only. This matches App Service Key Vault reference reads.
+- APIM system-assigned identity -> no Azure RBAC role. It uses its identity only
+  to obtain `api://AzureADTokenExchange` and is trusted by the hub app's
+  federated credential; no Azure resource data operation requires an RBAC grant.
+- No subscription- or resource-group-scoped application role is introduced.
+- The deployment intentionally grants no Key Vault data-plane role to the
+  signed-in operator.
+
+## 19. Validation Proof
+
+Validation completed on 2026-09-25 against
+`ME-MngEnvMCAP935538-rmeure-1`
+(`17254a3c-2e67-4fec-9e2c-cfe17cfb579d`) in West US 2.
+
+- `validate-deployment.ps1 -Scope sub -Location westus2 -Template
+  .\infra\hub.bicep -Parameters .\infra\hub.dev.bicepparam` reported
   `OVERALL: PASS`.
-- Direct ResourceIdOnly what-if confirmed three creates (the hosting resource
-  group, B1 plan, and Web App) and zero deletes.
-- Bicep lint and editor diagnostics completed without errors.
-- The Release solution build completed with zero warnings and errors.
-- Static RBAC verification is unchanged and remains least privilege.
+- Azure CLI authentication resolved the approved subscription.
+- Bicep compilation and subscription-scope ARM validation passed.
+- Subscription what-if reported 12 creates, 0 modifications, and 0 deletes.
+- `az bicep lint --file .\infra\hub.bicep` completed without diagnostics.
+- `dotnet build .\FoundryCopilotA2A.slnx --configuration Release
+  --no-restore` succeeded with 0 warnings and 0 errors.
+- Adapter tests passed 234 of 234.
+- CLI tests passed 168 of 168.
+- Local Aspire verification reported the mock adapter healthy; `/health`
+  returned 200 and the CLI A2A smoke test passed.
+- Policy and static RBAC reviews found no deployment blocker or over-broad
+  assignment.
+- No secret values were written to source, validation output, or deployment
+  parameters.
 
-### West US 2 hosting validation proof
+## 20. Deployment Proof
 
-Validation completed at `2026-08-31T08:03:38+02:00` after the user selected
-West US 2 as the fallback for the unavailable Central US B1 capacity.
+Deployment completed on 2026-09-25 in the approved subscription and West US 2.
 
-- Full Bicep compilation, ARM validation, subscription what-if, Bicep lint, and
-  Release solution build passed.
-- Direct ResourceIdOnly what-if confirmed three creates: the region-qualified
-  hosting resource group `rg-fca2a-dev-fysujtwxarfsq-adapter-westus2`, the B1
-  App Service Plan, and the Web App. It confirmed zero deletes.
-- Editor diagnostics report no errors in the changed Bicep or parameter files.
-- Static RBAC verification remains unchanged and least privilege.
+- Subscription deployment `foundry-copilot-a2a-hub-dev` completed with
+  `Succeeded` at `2026-09-25T10:03:18Z`.
+- New resource group: `rg-fca2a-hub-dev-wus2`.
+- Seven Azure resources were created: APIM, App Service plan, Web App,
+  user-assigned identity, Key Vault, Log Analytics, and Application Insights.
+- The handler was published to the new Web App. Its `/health` and public agent
+  card both returned HTTP 200.
+- All five planned single-tenant app registrations exist with exactly one
+  service principal and the selected owner.
+- The handler and hub registrations expose only `access_as_user`, have no
+  password credentials, and trust the exact handler and APIM managed-identity
+  principal IDs through `api://AzureADTokenExchange`.
+- The handler preauthorizes only the hub. The hub preauthorizes the frontend,
+  orchestrator, and `tweede-kamer-classic` clients.
+- Live RBAC verification found exactly `Key Vault Secrets User` for the handler
+  identity at the new vault scope.
+- The `/hub` API was published with both App Service and Dev Tunnel named
+  values. Backend switching was exercised in both directions.
+- Through App Service, APIM discovery returned HTTP 200 and runtime without a
+  token returned 401.
+- Through the requested persistent Dev Tunnel, APIM discovery returned HTTP 200
+  and runtime without a token returned 401 while the local host was running.
+- Allowed-origin CORS for `http://localhost:5173` returned the expected response,
+  and an ARM-audience token was rejected with 401.
+- Final APIM backend mode is `devtunnel`. Local Aspire and Dev Tunnel processes
+  were stopped after verification; start the adapter and run
+  `start-tunnel --port 5099 --tunnel-id fca2a-adapter-hub.euw` to make that
+  backend active.
+- After successful verification, the Developer-tier APIM management/gateway
+  endpoint entered a documented transient platform-maintenance outage. ARM
+  still reports the deployment and service as succeeded. Developer tier has no
+  SLA; use a production tier when continuous availability is required.
 
-### App Service-safe agent ID validation proof
+### Manual completion still required
 
-Validation completed at `2026-08-31T08:11:47+02:00` after replacing
-hyphenated App Service configuration keys with underscore aliases while
-preserving the public agent IDs.
+As approved, the deployment did not grant the operator Key Vault data-plane
+access and did not create or print agent client secrets. An authorized secret
+operator must:
 
-- `validate-deployment.ps1 -Scope sub -Location eastus` reported
-  `OVERALL: PASS`: Azure CLI authentication, Bicep compilation, ARM validation,
-  and subscription what-if all succeeded.
-- The helper's textual counter again misclassified nested deployment output.
-  Direct `ResourceIdOnly` what-if confirmed one create (the Web App), 28
-  idempotent deployments, one ignored smart-detection action group, and zero
-  deletes.
-- `az bicep lint --file .\infra\main.bicep` completed with no diagnostics.
-- `dotnet build .\FoundryCopilotA2A.slnx --configuration Release --no-restore`
-  succeeded with zero warnings and errors.
-- All 66 tests passed, including the new configuration-alias coverage.
-- Subscription and inherited policy assignments were reviewed. ARM validation
-  confirms the applicable baseline, governance, regional, data-protection, and
-  container policies do not block this deployment.
-- Static RBAC remains least privilege: `Key Vault Secrets User` at the vault,
-  `Foundry User` at the project, and `API Management Service Contributor` at
-  APIM.
-- Editor diagnostics report no errors in the changed C#, test, or Bicep files.
-
-### Role assignment verification
-
-- Identities: adapter user-assigned identity, APIM system identity, Foundry
-  account system identity, and Foundry project system identity.
-- Roles added for the adapter identity: `Key Vault Secrets User` scoped to the
-  adapter vault. The previous `AcrPull` role assignment is removed together
-  with ACR.
-- Rationale: APIM validates and forwards the caller's delegated bearer token;
-  it does not use its identity to call the adapter. The Foundry account/project
-  have no model, connection, storage, search, or other data-plane dependency in
-  this deployment. Assigning a broad or unused role would violate least
-  privilege.
-- Follow-up: add resource-scoped data-plane roles only when a concrete Foundry
-  connection, model, or managed-identity-authenticated APIM backend is
-  introduced.
-
-## 14. Citadel Scope Boundary
-
-This task implements only the gateway/governance entry layer that can be
-expressed directly in this repository. It does not claim to deploy the entire
-Citadel reference architecture. The following remain future phases:
-
-- Defender for Cloud and Defender for AI workload protections.
-- Microsoft Purview governance.
-- Agent 365 control-plane integration.
-- Organization-wide Azure Policy initiatives.
-- Private networking and enterprise DNS.
-- Production multi-region APIM.
-- Foundry model deployments and evaluation pipelines.
-
-## 15. Decision Record
-
-- Reuse existing project: **Yes**.
-- Modify existing Azure resources: **No**.
-- Host the adapter in this task: **Yes, on Linux App Service (B1) with a
-  direct `dotnet publish` deployment**.
-- Preserve delegated user identity through APIM: **Yes**.
-- Use managed identity for the Foundry account/project: **Yes**.
-- Replace delegated OBO with managed identity: **No; incompatible with the
-  user-assertion requirement**.
-- Deploy Azure resources now: **No**.
-- Build/push sequencing: **Deploy `bootstrap.bicep` so the adapter identity
-  and its Key Vault role assignment can propagate, then deploy `main.bicep`;
-  publish the adapter code with `az webapp deploy` after the Web App exists**.
-- Trade-off accepted: **B1 App Service has a fixed monthly cost and no
-  scale-to-zero, but this small always-on HTTP adapter does not need Container
-  Apps features such as revisions, KEDA scaling, or workload profiles, so a
-  direct `dotnet publish` to App Service is materially simpler than the
-  previous ACR + Container Apps + managed OpenTelemetry design**.
-- Approval: **The user's explicit request to pivot adapter hosting to Linux
-  App Service approves this change; provisioning remains separately gated**.
-
-## 16. Deployment Log
-
-### 2026-08-30
-
-- Target: subscription `17254a3c-2e67-4fec-9e2c-cfe17cfb579d`,
-  region `eastus`, environment `dev`.
-- Bootstrap deployment `foundry-copilot-a2a-bootstrap-dev`: succeeded.
-- Live RBAC: adapter identity `82ba78e0-4d21-4eb6-867a-0033e4076ccb`
-  has `Key Vault Secrets User` at the exact Key Vault scope.
-- Main deployment `foundry-copilot-a2a-dev`: partially succeeded.
-- Provisioned: resource group, adapter user-assigned identity, Key Vault,
-  Log Analytics, Application Insights, Microsoft Foundry account, and Foundry
-  project.
-- Blocked resource: App Service Plan `plan-fca2a-dev-mignfln6vyhra`.
-- Azure error: dedicated App Service `Total VMs` limit is 0; B1 requires 1
-  (`Unauthorized`, extended code `70002`).
-- Not provisioned because of the dependency failure: Web App and API
-  Management.
-- Adapter code was not published because the Web App does not yet exist.
-- Recovery: in Azure portal, open **Quotas > App Service (Public Preview)**,
-  select East US, request a B1 quota of at least 1, wait until the updated
-  limit is visible, then rerun the idempotent main deployment and publish the
-  adapter.
-- Operator RBAC requested after the partial deployment: user object
-  `62014bb7-28ce-4eeb-9cd4-348d3879ac2f` is a user principal, not a managed
-  identity. The existing resource managed identities remain unchanged.
-  Bicep now grants this user `Foundry User` at project scope and
-  `API Management Service Contributor` at APIM resource scope. The object ID
-  is supplied through `ACCESS_PRINCIPAL_OBJECT_ID` rather than stored in the
-  checked-in parameter file.
-- RBAC change validation: Bicep compilation and editor diagnostics completed
-  without errors. Full subscription template validation succeeded. Targeted
-  Foundry and APIM module `what-if` previews succeeded; the Foundry preview
-  reported one role assignment create and no deletes. A subsequent full
-  subscription `what-if` returned a transient Azure
-  `InternalServerError`, so the successful targeted previews are the
-  deployment evidence for these isolated RBAC changes.
-- Foundry RBAC deployment `foundry-user-access`: succeeded. Live verification
-  confirms user `62014bb7-28ce-4eeb-9cd4-348d3879ac2f` has `Foundry User`
-  at the `fca2a-dev` project scope.
-- The initial main deployment did not provision APIM because the App Service
-  B1 quota blocker prevented the dependent Citadel module from running.
-- Targeted APIM deployment `apim-user-access`: succeeded after the main
-  deployment remained blocked by App Service quota. API Management
-  `apim-fca2a-dev-mignfln6vyhra` is provisioned on the Developer SKU, and live
-  verification confirms user `62014bb7-28ce-4eeb-9cd4-348d3879ac2f` has
-  `API Management Service Contributor` at the exact APIM resource scope.
-  The APIM backend targets the deterministic future Web App hostname and will
-  not serve adapter traffic until that quota-blocked Web App is provisioned.
-- Central US deployment attempts passed quota and ARM validation but failed
-  three times with App Service capacity conflict `03029` ("No available
-  instances"), including after moving the plan to the dedicated Central US
-  resource group `rg-fca2a-dev-fysujtwxarfsq-adapter`. The hosting resource
-  group now exists, but the B1 plan and Web App were not created. This is a
-  transient regional capacity constraint rather than a subscription quota
-  failure.
+1. Create separate credentials for the orchestrator and
+   `tweede-kamer-classic` OAuth clients and store them in the new Key Vault.
+2. Store the two Copilot Studio direct-connect URLs in the new Key Vault.
+3. Configure the two Copilot Studio OAuth connections against the hub scope.
+4. Add the generated HTTPS callbacks with `register-web-redirect`.
+5. Change the Web App from standby `Mock` to `CopilotStudio`, then run the
+   same-user OBO smoke test.
+6. If live Copilot Studio calls are also required from a local handler, create a
+   separate local-development credential on the handler registration and keep
+   its value only in AppHost user secrets. Azure hosting continues to use the
+   federated managed identity.

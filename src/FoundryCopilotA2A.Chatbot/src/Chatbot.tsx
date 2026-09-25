@@ -1,4 +1,5 @@
 import { type FormEvent, useEffect, useState, useSyncExternalStore } from 'react'
+import { parseConnectionRepairRequest } from '../../FoundryCopilotA2A.BrowserShared/connectionRepair.ts'
 import { parseConsentRequest } from '../../FoundryCopilotA2A.BrowserShared/consent.ts'
 import type { ChatAuthentication } from './auth.tsx'
 import type { ChatbotConfig } from './config.ts'
@@ -115,19 +116,22 @@ export default function Chatbot({ config, auth }: { config: ChatbotConfig; auth:
           <div className="messages">
             {turns.map((turn) => {
               const consent = parseConsentRequest(turn.answer)
+              const connectionRepair = parseConnectionRepairRequest(turn.answer)
               return (
                 <section className="turn" key={turn.id} aria-label="Conversation turn">
                   <div className="user-message"><span className="speaker">You</span><p>{turn.prompt}</p></div>
                   <div className="assistant-message" aria-busy={turn.status === 'sending'}>
                     <div className="assistant-content">
                       <ReplyBody turn={turn} agentName={config.agentName}>
+                      <ActivityUpdates updates={turn.activityUpdates} />
                       {turn.status === 'sending' && activity && (
                         <div className="reply-activity">
                           <p className="progress"><span className="pulse" aria-hidden="true" />
                             <span>{activity.label}</span>
                             <span className="activity-time" aria-hidden="true">{activity.elapsedSeconds}s</span>
                           </p>
-                          {turn.progress && <p className="activity-detail">{turn.progress}</p>}
+                          {turn.progress && turn.progress !== turn.activityUpdates?.at(-1) &&
+                            <p className="activity-detail">{turn.progress}</p>}
                           {activity.detail && <p className="activity-detail">{activity.detail}</p>}
                         </div>
                       )}
@@ -135,6 +139,14 @@ export default function Chatbot({ config, auth }: { config: ChatbotConfig; auth:
                         <div className="consent">
                           <a href={consent.url} target="_blank" rel="noopener noreferrer">Authorize specialist access</a>
                           <p>Complete authorization in the new tab, then send your request again.</p>
+                        </div>
+                      )}
+                      {connectionRepair && (
+                        <div className="consent connection-repair">
+                          <a href={connectionRepair.url} target="_blank" rel="noopener noreferrer">
+                            Open connection settings for {connectionRepair.agentName}
+                          </a>
+                          <p>Revalidate the end-user connection, then send your request again.</p>
                         </div>
                       )}
                       {turn.error && <p role="alert" className="turn-error">{turn.error}</p>}
@@ -201,5 +213,18 @@ export default function Chatbot({ config, auth }: { config: ChatbotConfig; auth:
         </div>
       </div>
     </div>
+  )
+}
+
+function ActivityUpdates({ updates }: { updates?: readonly string[] }) {
+  if (!updates?.length) return null
+
+  return (
+    <section className="agent-updates" aria-label="Agent updates">
+      <p className="agent-updates-title">Agent updates</p>
+      <ol>
+        {updates.map((update, index) => <li key={`${index}:${update}`}>{update}</li>)}
+      </ol>
+    </section>
   )
 }

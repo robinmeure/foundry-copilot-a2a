@@ -361,6 +361,57 @@ public class CliApplicationTests
     }
 
     [Fact]
+    public async Task RegisterOAuthClientRejectsANonGuidApiClientId()
+    {
+        var (application, _, error) = CreateApplication();
+
+        var exitCode = await application.RunAsync(
+            [
+                "register-oauth-client",
+                "--api-client-id", "not-a-guid",
+                "--display-name", "fca2a-dev-agent-oauth-client"
+            ],
+            CancellationToken.None);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("must be an application (client) ID", error.ToString());
+    }
+
+    [Fact]
+    public async Task AddFederatedCredentialRejectsANonGuidPrincipal()
+    {
+        var (application, _, error) = CreateApplication();
+
+        var exitCode = await application.RunAsync(
+            [
+                "add-federated-credential",
+                "--client-id", "11111111-1111-1111-1111-111111111111",
+                "--principal-id", "not-a-guid"
+            ],
+            CancellationToken.None);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("must be an application (client) ID", error.ToString());
+    }
+
+    [Fact]
+    public async Task RegisterWebRedirectRejectsHttpCallbacks()
+    {
+        var (application, _, error) = CreateApplication();
+
+        var exitCode = await application.RunAsync(
+            [
+                "register-web-redirect",
+                "--client-id", "11111111-1111-1111-1111-111111111111",
+                "--redirect-uri", "http://callback.example/redirect"
+            ],
+            CancellationToken.None);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("must be an HTTPS URL", error.ToString());
+    }
+
+    [Fact]
     public async Task RegisterHubDoesNotAcceptAClientSecret()
     {
         var (application, _, error) = CreateApplication();
@@ -442,6 +493,74 @@ public class CliApplicationTests
     }
 
     [Fact]
+    public async Task ConfigureHubRequiresEverySwitchableBackendOption()
+    {
+        var (application, _, error) = CreateApplication();
+
+        var exitCode = await application.RunAsync(
+            [
+                "configure-hub",
+                "--subscription-id", "00000000-0000-0000-0000-000000000000",
+                "--resource-group", "rg",
+                "--service-name", "apim",
+                "--app-service-backend-url", "https://handler.azurewebsites.net",
+                "--dev-tunnel-backend-url", "https://handler-5099.euw.devtunnels.ms",
+                "--tenant-id", "tenant",
+                "--hub-client-id", "11111111-1111-1111-1111-111111111111",
+                "--adapter-client-id", "22222222-2222-2222-2222-222222222222"
+            ],
+            CancellationToken.None);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("require", error.ToString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("--backend-mode", error.ToString());
+    }
+
+    [Fact]
+    public async Task ConfigureHubRejectsANonDevTunnelBackend()
+    {
+        var (application, _, error) = CreateApplication();
+
+        var exitCode = await application.RunAsync(
+            [
+                "configure-hub",
+                "--subscription-id", "00000000-0000-0000-0000-000000000000",
+                "--resource-group", "rg",
+                "--service-name", "apim",
+                "--app-service-backend-url", "https://handler.azurewebsites.net",
+                "--dev-tunnel-backend-url", "https://not-a-tunnel.example",
+                "--backend-mode", "devtunnel",
+                "--tenant-id", "tenant",
+                "--hub-client-id", "11111111-1111-1111-1111-111111111111",
+                "--adapter-client-id", "22222222-2222-2222-2222-222222222222"
+            ],
+            CancellationToken.None);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("devtunnels.ms", error.ToString());
+    }
+
+    [Fact]
+    public async Task SetHubBackendRejectsAnUnknownMode()
+    {
+        var (application, _, error) = CreateApplication();
+
+        var exitCode = await application.RunAsync(
+            [
+                "set-hub-backend",
+                "--subscription-id", "00000000-0000-0000-0000-000000000000",
+                "--resource-group", "rg",
+                "--service-name", "apim",
+                "--backend-mode", "random"
+            ],
+            CancellationToken.None);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("appservice", error.ToString());
+        Assert.Contains("devtunnel", error.ToString());
+    }
+
+    [Fact]
     public void HubExchangePolicyIsolatesTheCacheByCallerAndTargetsTheAdapterScope()
     {
         var policy = HubCommands.BuildExchangePolicy(
@@ -479,6 +598,21 @@ public class CliApplicationTests
     }
 
     [Fact]
+    public void SwitchableHubPolicyUsesNamedValuesAndTunnelProtection()
+    {
+        var policy = HubCommands.BuildSwitchableApiPolicy(
+            "copilot-studio-hub",
+            ["http://localhost:5173"]);
+
+        Assert.Contains("{{copilot-studio-hub-backend-mode}}", policy);
+        Assert.Contains("{{copilot-studio-hub-app-service-backend-url}}", policy);
+        Assert.Contains("{{copilot-studio-hub-dev-tunnel-backend-url}}", policy);
+        Assert.Contains("X-Tunnel-Skip-AntiPhishing-Page", policy);
+        Assert.Contains("<origin>http://localhost:5173</origin>", policy);
+        Assert.DoesNotContain("__BACKEND_HEADERS__", policy);
+    }
+
+    [Fact]
     public async Task RunAdapterDoesNotAcceptASecretOnTheCommandLine()
     {
         var (application, _, error) = CreateApplication();
@@ -496,6 +630,44 @@ public class CliApplicationTests
         Assert.Equal(2, exitCode);
         Assert.Contains("Unknown option '--client-secret'", error.ToString());
         Assert.DoesNotContain("observable-secret", error.ToString());
+    }
+
+    [Theory]
+    [InlineData("bad id")]
+    [InlineData("-bad")]
+    [InlineData("bad-")]
+    [InlineData(".bad")]
+    [InlineData("bad.")]
+    [InlineData("bad..euw")]
+    [InlineData("xy")]
+    public async Task StartTunnelRejectsInvalidPersistentTunnelIds(string tunnelId)
+    {
+        var (application, _, error) = CreateApplication();
+
+        var exitCode = await application.RunAsync(
+            ["start-tunnel", "--port", "5099", "--tunnel-id", tunnelId],
+            CancellationToken.None);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("--tunnel-id", error.ToString());
+    }
+
+    [Theory]
+    [InlineData("""{"ports":[{"portNumber":5099,"protocol":"http"}]}""", true)]
+    [InlineData("""{"ports":[{"portNumber":5173,"protocol":"http"}]}""", false)]
+    [InlineData("""{"ports":[]}""", false)]
+    public void PersistentTunnelPortListIsParsed(string json, bool expected)
+    {
+        Assert.Equal(expected, RuntimeCommands.ContainsTunnelPort(json, 5099));
+    }
+
+    [Fact]
+    public void InvalidPersistentTunnelPortListIsRejected()
+    {
+        var exception = Assert.Throws<CliException>(
+            () => RuntimeCommands.ContainsTunnelPort("""{"unexpected":[]}""", 5099));
+
+        Assert.Contains("invalid port-list", exception.Message);
     }
 
     [Fact]

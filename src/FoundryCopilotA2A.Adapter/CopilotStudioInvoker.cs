@@ -2,6 +2,8 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using Azure.Core;
+using Azure.Identity;
 using ActivityStatusCode = System.Diagnostics.ActivityStatusCode;
 using Microsoft.Agents.Core.Models;
 using Microsoft.Agents.CopilotStudio.Client;
@@ -617,6 +619,7 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
                         ? connectionManagerText
                         : activity.Text
                     : null;
+                var planThought = CopilotStudioPlanThought.Read(activity);
 
                 // A suppressed final message is still observed, so a fully streamed turn is never
                 // misreported as an empty response.
@@ -625,16 +628,24 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
                     card is not null,
                     messageText,
                     connectionManagerText is not null);
+                if (messageText is not null)
+                {
+                    messageText = collectionSummary.EnrichFailureResponse(messageText);
+                }
                 if (card is not null)
                 {
                     yield return new AnswerStreamItem(null, card);
                 }
 
-                if (answerStream.NextUpdate(
+                var update = planThought?.ToUpdate(
+                    conversationId,
+                    activity.Id) ??
+                    answerStream.NextUpdate(
                         activity,
                         messageText,
                         conversationId,
-                        responder) is not { } update)
+                        responder);
+                if (update is null)
                 {
                     continue;
                 }
@@ -824,9 +835,212 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
 /// </summary>
 public sealed class CopilotStudioResponseException(string message) : Exception(message);
 
+internal sealed class CopilotStudioPlanFailureException(string message) : Exception(message);
+
+internal sealed record CopilotStudioPlanThought(string Text)
+{
+    private const int MaximumThoughtCharacters = 1_000;
+
+    public CopilotInvocationUpdate ToUpdate(string conversationId, string? responseId) =>
+        new($"Thought: {Text}", conversationId, responseId, IsInformative: true);
+
+    public static CopilotStudioPlanThought? Read(IActivity activity)
+    {
+        if (!CopilotStudioDynamicPlan.IsDynamicPlanEvent(activity) ||
+            !CopilotStudioDynamicPlan.TryReadValue(activity.Value, out var value) ||
+            value.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var thought = CopilotStudioDynamicPlan.ReadString(
+            value,
+            "thought",
+            MaximumThoughtCharacters);
+        return thought is null ? null : new CopilotStudioPlanThought(thought);
+    }
+}
+
+internal sealed record CopilotStudioPlanFailure(
+    string? Code,
+    string? Message,
+    string? TaskDialogId,
+    string? ConnectionSettingsUrl)
+{
+    private const string FinishedValueType = "DynamicPlanStepFinished";
+    private const int MaximumCodeCharacters = 128;
+    private const int MaximumMessageCharacters = 1_000;
+    private const int MaximumTaskDialogIdCharacters = 512;
+
+    public string DiagnosticMessage =>
+        Message ?? $"Copilot Studio reported plan-step failure '{Code}'.";
+
+    public bool Matches(string response) =>
+        (!string.IsNullOrWhiteSpace(Code) &&
+         response.Contains(Code, StringComparison.OrdinalIgnoreCase)) ||
+        (Message is not null &&
+         response.Contains(Message, StringComparison.Ordinal)) ||
+        response.Contains("An error has occurred", StringComparison.OrdinalIgnoreCase);
+
+    public static CopilotStudioPlanFailure? Read(IActivity activity)
+    {
+        if (!CopilotStudioDynamicPlan.IsEventType(activity, FinishedValueType) ||
+            !CopilotStudioDynamicPlan.TryReadValue(activity.Value, out var value) ||
+            value.ValueKind != JsonValueKind.Object ||
+            !value.TryGetProperty("error", out var error) ||
+            error.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var code = CopilotStudioDynamicPlan.ReadString(
+            error,
+            "userErrorCode",
+            MaximumCodeCharacters);
+        var message = CopilotStudioDynamicPlan.ReadString(
+            error,
+            "message",
+            MaximumMessageCharacters);
+        var taskDialogId = CopilotStudioDynamicPlan.ReadString(
+            value,
+            "taskDialogId",
+            MaximumTaskDialogIdCharacters);
+        return code is null && message is null
+            ? null
+            : new CopilotStudioPlanFailure(
+                code,
+                message,
+                taskDialogId,
+                CopilotStudioConnectionSettings.TryCreateUrl(activity));
+    }
+}
+
+internal static class CopilotStudioConnectionSettings
+{
+    private const string StudioBaseUrl = "https://copilotstudio.microsoft.com";
+
+    public static string? TryCreateUrl(IActivity activity)
+    {
+        var segments = activity.From?.Id?.Split(
+            '/',
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (segments is not { Length: 2 } ||
+            !Guid.TryParse(segments[0], out var environmentId) ||
+            !Guid.TryParse(segments[1], out var botId))
+        {
+            return null;
+        }
+
+        return $"{StudioBaseUrl}/environments/{environmentId:D}/bots/{botId:D}" +
+               "/settings/connections";
+    }
+}
+
+internal sealed record CopilotStudioPlanTool(string SchemaName, string DisplayName)
+{
+    private const string PlanReceivedValueType = "DynamicPlanReceived";
+    private const int MaximumToolNameCharacters = 256;
+
+    public static IReadOnlyList<CopilotStudioPlanTool> Read(IActivity activity)
+    {
+        if (!CopilotStudioDynamicPlan.IsEventType(activity, PlanReceivedValueType) ||
+            !CopilotStudioDynamicPlan.TryReadValue(activity.Value, out var value) ||
+            value.ValueKind != JsonValueKind.Object ||
+            !value.TryGetProperty("toolDefinitions", out var definitions) ||
+            definitions.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        var tools = new List<CopilotStudioPlanTool>();
+        foreach (var definition in definitions.EnumerateArray())
+        {
+            if (definition.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var schemaName = CopilotStudioDynamicPlan.ReadString(
+                definition,
+                "schemaName",
+                MaximumToolNameCharacters);
+            var displayName = CopilotStudioDynamicPlan.ReadString(
+                definition,
+                "displayName",
+                MaximumToolNameCharacters);
+            if (schemaName is not null && displayName is not null)
+            {
+                tools.Add(new CopilotStudioPlanTool(
+                    NormalizeInline(schemaName),
+                    NormalizeInline(displayName)));
+            }
+        }
+
+        return tools;
+    }
+
+    private static string NormalizeInline(string value) =>
+        value.Replace('\r', ' ').Replace('\n', ' ');
+}
+
+internal static class CopilotStudioDynamicPlan
+{
+    private const string ValueTypePrefix = "DynamicPlan";
+
+    public static bool IsDynamicPlanEvent(IActivity activity) =>
+        string.Equals(activity.Type, "event", StringComparison.OrdinalIgnoreCase) &&
+        (StartsWithValueTypePrefix(activity.ValueType) ||
+         StartsWithValueTypePrefix(activity.Name));
+
+    public static bool IsEventType(IActivity activity, string expectedType) =>
+        string.Equals(activity.Type, "event", StringComparison.OrdinalIgnoreCase) &&
+        (string.Equals(activity.ValueType, expectedType, StringComparison.OrdinalIgnoreCase) ||
+         string.Equals(activity.Name, expectedType, StringComparison.OrdinalIgnoreCase));
+
+    public static bool TryReadValue(object? value, out JsonElement element)
+    {
+        switch (value)
+        {
+            case JsonElement jsonElement:
+                element = jsonElement;
+                return true;
+            case JsonDocument document:
+                element = document.RootElement;
+                return true;
+            default:
+                element = default;
+                return false;
+        }
+    }
+
+    public static string? ReadString(
+        JsonElement parent,
+        string propertyName,
+        int maximumLength)
+    {
+        if (!parent.TryGetProperty(propertyName, out var property) ||
+            property.ValueKind != JsonValueKind.String ||
+            string.IsNullOrWhiteSpace(property.GetString()))
+        {
+            return null;
+        }
+
+        var value = property.GetString()!.Trim();
+        return value.Length <= maximumLength
+            ? value
+            : value[..maximumLength] + "...";
+    }
+
+    private static bool StartsWithValueTypePrefix(string? value) =>
+        value?.StartsWith(ValueTypePrefix, StringComparison.OrdinalIgnoreCase) == true;
+}
+
 internal sealed class CopilotStudioActivitySummary
 {
     private readonly HashSet<string> _activityTypes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _planToolDisplayNames =
+        new(StringComparer.OrdinalIgnoreCase);
+    private CopilotStudioPlanFailure? _latestPlanFailure;
 
     public int ActivityCount { get; private set; }
 
@@ -839,6 +1053,10 @@ internal sealed class CopilotStudioActivitySummary
     public int AttachmentCount { get; private set; }
 
     public bool OAuthCardPresent { get; private set; }
+
+    public int PlanFailureCount { get; private set; }
+
+    public int PlanThoughtCount { get; private set; }
 
     public bool HasTextResponse => TextMessageCount > 0;
 
@@ -857,6 +1075,19 @@ internal sealed class CopilotStudioActivitySummary
         _activityTypes.Add(NormalizeActivityType(activity.Type));
         AttachmentCount += activity.Attachments?.Count ?? 0;
         OAuthCardPresent |= oauthCardPresent;
+        foreach (var tool in CopilotStudioPlanTool.Read(activity))
+        {
+            _planToolDisplayNames[tool.SchemaName] = tool.DisplayName;
+        }
+        if (CopilotStudioPlanFailure.Read(activity) is { } planFailure)
+        {
+            PlanFailureCount++;
+            _latestPlanFailure = planFailure;
+        }
+        if (CopilotStudioPlanThought.Read(activity) is not null)
+        {
+            PlanThoughtCount++;
+        }
 
         if (!string.Equals(activity.Type, "message", StringComparison.OrdinalIgnoreCase))
         {
@@ -882,14 +1113,90 @@ internal sealed class CopilotStudioActivitySummary
         AdaptiveCardTextMessageCount += other.AdaptiveCardTextMessageCount;
         AttachmentCount += other.AttachmentCount;
         OAuthCardPresent |= other.OAuthCardPresent;
+        PlanFailureCount += other.PlanFailureCount;
+        PlanThoughtCount += other.PlanThoughtCount;
+        _latestPlanFailure = other._latestPlanFailure ?? _latestPlanFailure;
+        foreach (var (schemaName, displayName) in other._planToolDisplayNames)
+        {
+            _planToolDisplayNames[schemaName] = displayName;
+        }
         _activityTypes.UnionWith(other._activityTypes);
     }
+
+    public string EnrichFailureResponse(string response)
+    {
+        if (_latestPlanFailure is not { } failure || !failure.Matches(response))
+        {
+            return response;
+        }
+
+        var enriched = response.TrimEnd();
+        if (failure.Message is not null &&
+            !enriched.Contains(failure.Message, StringComparison.Ordinal))
+        {
+            enriched += Environment.NewLine + Environment.NewLine +
+                        $"Failure details: {failure.DiagnosticMessage}";
+        }
+
+        var repair = CreateConnectionRepairMessage(failure);
+        if (repair is not null &&
+            !enriched.Contains(repair.Url, StringComparison.OrdinalIgnoreCase))
+        {
+            enriched += Environment.NewLine + Environment.NewLine +
+                        "CONNECTION REPAIR REQUIRED" +
+                        Environment.NewLine +
+                        $"Connection: {repair.DisplayName}" +
+                        Environment.NewLine +
+                        $"Open connection settings: {repair.Url}";
+        }
+
+        return enriched;
+    }
+
+    private ConnectionRepair? CreateConnectionRepairMessage(CopilotStudioPlanFailure failure)
+    {
+        if (failure.ConnectionSettingsUrl is null)
+        {
+            return null;
+        }
+
+        var displayName =
+            failure.TaskDialogId is not null &&
+            _planToolDisplayNames.TryGetValue(failure.TaskDialogId, out var mappedName)
+                ? mappedName
+                : ExtractConnectorName(failure.Message) ??
+                  failure.TaskDialogId ??
+                  "the failed connector";
+        return new ConnectionRepair(displayName, failure.ConnectionSettingsUrl);
+    }
+
+    private static string? ExtractConnectorName(string? message)
+    {
+        const string prefix = "The connector '";
+        if (message is null ||
+            !message.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var end = message.IndexOf('\'', prefix.Length);
+        return end <= prefix.Length
+            ? null
+            : message[prefix.Length..end].Replace('\r', ' ').Replace('\n', ' ');
+    }
+
+    private sealed record ConnectionRepair(string DisplayName, string Url);
 
     public string CreateEmptyResponseMessage()
     {
         const string guidance =
             "The adapter requires at least one text message; make sure every published agent " +
             "route sends a final text response.";
+
+        if (_latestPlanFailure is not null)
+        {
+            return $"Copilot Studio reported a failed plan step: {_latestPlanFailure.DiagnosticMessage}";
+        }
 
         if (ActivityCount == 0)
         {
@@ -922,7 +1229,19 @@ internal sealed class CopilotStudioActivitySummary
             AdaptiveCardTextMessageCount);
         activity?.SetTag("copilot_studio.attachment.count", AttachmentCount);
         activity?.SetTag("copilot_studio.oauth_card.present", OAuthCardPresent);
+        activity?.SetTag("copilot_studio.plan.failure.count", PlanFailureCount);
+        activity?.SetTag("copilot_studio.plan.thought.count", PlanThoughtCount);
         activity?.SetTag("copilot_studio.response.present", HasTextResponse);
+
+        if (_latestPlanFailure is not null)
+        {
+            activity?.SetTag("copilot_studio.plan.failure.code", _latestPlanFailure.Code);
+            var planFailureException = new CopilotStudioPlanFailureException(
+                _latestPlanFailure.DiagnosticMessage);
+            AdapterTelemetry.RecordFailure(activity, planFailureException);
+            AdapterTelemetry.RecordFailureReason(activity, planFailureException.Message);
+            return;
+        }
 
         if (HasTextResponse || (allowOAuthChallenge && OAuthCardPresent))
         {
@@ -1284,6 +1603,7 @@ public interface IOboTokenBroker
 
 public sealed class OboTokenBroker : IOboTokenBroker
 {
+    private const string TokenExchangeScope = "api://AzureADTokenExchange/.default";
     private readonly CopilotStudioOptions _options;
     private readonly AuthenticationOptions _authenticationOptions;
     private readonly Lazy<IConfidentialClientApplication> _application;
@@ -1298,12 +1618,33 @@ public sealed class OboTokenBroker : IOboTokenBroker
         // Built once. A plain "??=" on a singleton races under concurrent first requests and
         // produces several applications, each with its own token cache.
         _application = new Lazy<IConfidentialClientApplication>(
-            () => ConfidentialClientApplicationBuilder
-                .Create(_options.ClientId)
-                .WithAuthority(AzureCloudInstance.AzurePublic, _options.TenantId)
-                .WithClientSecret(_options.ClientSecret)
-                .Build(),
+            BuildApplication,
             LazyThreadSafetyMode.ExecutionAndPublication);
+    }
+
+    private IConfidentialClientApplication BuildApplication()
+    {
+        var builder = ConfidentialClientApplicationBuilder
+            .Create(_options.ClientId)
+            .WithAuthority(AzureCloudInstance.AzurePublic, _options.TenantId);
+
+        if (!string.IsNullOrWhiteSpace(_options.ClientSecret))
+        {
+            return builder
+                .WithClientSecret(_options.ClientSecret)
+                .Build();
+        }
+
+        var credential = new ManagedIdentityCredential(
+            ManagedIdentityId.FromUserAssignedClientId(_options.ManagedIdentityClientId));
+        var tokenRequest = new TokenRequestContext([TokenExchangeScope]);
+
+        return builder
+            .WithClientAssertion(async options =>
+                (await credential.GetTokenAsync(
+                    tokenRequest,
+                    options.CancellationToken).ConfigureAwait(false)).Token)
+            .Build();
     }
 
     public async Task<string> AcquireAsync(

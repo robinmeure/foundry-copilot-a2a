@@ -1,5 +1,7 @@
 import { InteractionRequiredAuthError } from '@azure/msal-browser'
 import { useIsAuthenticated, useMsal } from '@azure/msal-react'
+import { appendActivityUpdate } from '../../FoundryCopilotA2A.BrowserShared/activityUpdates.ts'
+import { parseConnectionRepairRequest } from '../../FoundryCopilotA2A.BrowserShared/connectionRepair.ts'
 import { parseConsentRequest } from '../../FoundryCopilotA2A.BrowserShared/consent.ts'
 import {
   Fragment,
@@ -69,6 +71,7 @@ interface TurnRecord {
   answer?: string
   citations?: CitationBundle
   progress?: string
+  activityUpdates?: string[]
   error?: string
   agentName: string
   route: {
@@ -393,7 +396,7 @@ function App({ config }: AppProps) {
         chainTargetAgentId: plan.targetAgentId,
         onRequest: (request) => updateTurn(turnId, { request, status: 'sending' }),
         onUpdate: (answer, citations) => updateTurn(turnId, { answer, citations, progress: undefined }),
-        onProgress: (progress) => updateTurn(turnId, { progress }),
+        onProgress: (progress) => recordActivityUpdate(turnId, progress),
         onTaskStatus: ({ state, message }) => updateTurn(turnId, { progress: message ?? taskStatusLabel(state) }),
         onResponse: (response, durationMs) => {
           receivedResponse = true
@@ -445,6 +448,20 @@ function App({ config }: AppProps) {
   function updateTurn(id: string, update: Partial<TurnRecord>) {
     setTurns((current) =>
       current.map((turn) => (turn.id === id ? { ...turn, ...update } : turn)),
+    )
+  }
+
+  function recordActivityUpdate(id: string, progress: string) {
+    setTurns((current) =>
+      current.map((turn) =>
+        turn.id === id
+          ? {
+              ...turn,
+              progress,
+              activityUpdates: appendActivityUpdate(turn.activityUpdates, progress),
+            }
+          : turn,
+      ),
     )
   }
 
@@ -690,6 +707,7 @@ function TurnBlock({
   onOpenEntry: (entryId: string) => void
 }) {
   const spanCount = turn.trace?.spans.length ?? 0
+  const latestActivityUpdate = turn.activityUpdates?.at(-1)
 
   return (
     <section className="turn" aria-label={`Turn ${turn.index}`}>
@@ -710,6 +728,8 @@ function TurnBlock({
       </article>
 
       <HopStrip turn={turn} onOpenEntry={onOpenEntry} />
+
+      <ActivityUpdates updates={turn.activityUpdates} />
 
       {turn.answer !== undefined ? (
         <article className="message assistant">
@@ -735,7 +755,7 @@ function TurnBlock({
             ) : null}
           </button>
         </article>
-      ) : turn.progress ? (
+      ) : turn.progress && turn.progress !== latestActivityUpdate ? (
         <article className="message assistant" aria-live="polite">
           <span>Specialist · {turn.agentName}</span>
           <p>{turn.progress}</p>
@@ -776,6 +796,24 @@ function TurnBlock({
 }
 
 function AssistantMessage({ answer }: { answer: string }) {
+  const repair = parseConnectionRepairRequest(answer)
+  if (repair) {
+    return (
+      <div className="message-body connection-repair-message" role="alert">
+        <strong>Connection needs attention</strong>
+        <p>
+          The end-user connection for <strong>{repair.agentName}</strong> returned an
+          authentication error. Open its Copilot Studio connection settings, revalidate the
+          connection, and then retry the request.
+        </p>
+        <a href={repair.url} target="_blank" rel="noopener noreferrer">
+          Open connection settings
+          <span aria-hidden="true"> ↗</span>
+        </a>
+      </div>
+    )
+  }
+
   const consent = parseConsentRequest(answer)
   if (!consent) {
     return <p>{answer}</p>
@@ -951,6 +989,19 @@ function participantForSource(source: string) {
   return /^(system\.|microsoft\.|azure\.|experimental\.|foundrycopilota2a)/i.test(normalized)
     ? adapterParticipant
     : normalized
+}
+
+function ActivityUpdates({ updates }: { updates?: readonly string[] }) {
+  if (!updates?.length) return null
+
+  return (
+    <article className="message assistant activity-updates" aria-label="Agent updates">
+      <span>Agent updates</span>
+      <ol>
+        {updates.map((update, index) => <li key={`${index}:${update}`}>{update}</li>)}
+      </ol>
+    </article>
+  )
 }
 
 function buildTimelineGroup(turn: TurnRecord): TimelineGroup {

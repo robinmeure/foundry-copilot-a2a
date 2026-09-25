@@ -44,6 +44,14 @@ test('console Sources refuses unsafe link props at render time', () => {
 test('console history retains only successful text, never serializing citation provenance', () => {
   const turns = [
     { status: 'succeeded', prompt: 'Question', answer: 'Answer [original-7]', citations },
+    {
+      status: 'succeeded',
+      prompt: 'Repair',
+      answer: 'CONNECTION REPAIR REQUIRED\nConnection: Inventory API\n' +
+        'Open connection settings: https://copilotstudio.microsoft.com/environments/' +
+        '9c3f15bd-df17-e445-a89e-e04d32e55659/bots/' +
+        '5a1045c2-a8a6-f111-aaad-000d3a832204/settings/connections',
+    },
     { status: 'failed', prompt: 'Failed', answer: 'Partial', citations },
     { status: 'sending', prompt: 'Pending', answer: 'Partial', citations },
   ]

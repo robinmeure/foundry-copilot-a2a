@@ -257,6 +257,8 @@ public sealed class CopilotStudioOptions
 
     public string ClientSecret { get; set; } = string.Empty;
 
+    public string ManagedIdentityClientId { get; set; } = string.Empty;
+
     public string DefaultAgent { get; set; } = "default";
 
     public Dictionary<string, CopilotStudioAgentOptions> Agents { get; set; } =
@@ -285,10 +287,19 @@ public sealed class CopilotStudioOptions
     {
         if (string.IsNullOrWhiteSpace(TenantId) ||
             string.IsNullOrWhiteSpace(ClientId) ||
-            string.IsNullOrWhiteSpace(ClientSecret))
+            (string.IsNullOrWhiteSpace(ClientSecret) &&
+             string.IsNullOrWhiteSpace(ManagedIdentityClientId)))
         {
             throw new InvalidOperationException(
-                "CopilotStudio TenantId, ClientId, and ClientSecret are required.");
+                "CopilotStudio TenantId, ClientId, and either ClientSecret or " +
+                "ManagedIdentityClientId are required.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(ManagedIdentityClientId) &&
+            !Guid.TryParse(ManagedIdentityClientId, out _))
+        {
+            throw new InvalidOperationException(
+                "CopilotStudio ManagedIdentityClientId must be a GUID.");
         }
 
         if (Agents.Count == 0)

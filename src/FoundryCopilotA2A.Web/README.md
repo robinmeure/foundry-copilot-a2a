@@ -7,6 +7,14 @@ Copilot Studio produces it, and progress such as "Generating plan..." is shown w
 runs without becoming part of the answer. The adapter remains responsible for token validation
 and the Copilot Studio OBO exchange.
 
+Bounded Copilot Studio dynamic-plan `thought` values arrive as informative `Thought: ...`
+updates. The console keeps a bounded **Agent updates** history visible for successful and failed
+turns; those updates never enter the answer or follow-up history.
+
+Connector authentication failures include an allowlisted link to the current agent's Copilot
+Studio **Connection Settings** page. The console renders it as a dedicated repair action and does
+not relay that failure response into later conversation history.
+
 Task snapshots/status updates also drive progress labels. Failed, canceled, rejected and
 required-input/authentication tasks are errors even if partial text was received, with no
 automatic retry. Completed tasks drain remaining stream data before success, preserving late

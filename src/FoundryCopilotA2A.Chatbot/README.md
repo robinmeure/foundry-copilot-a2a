@@ -115,6 +115,14 @@ remote content automatically. Links open in a new tab without replacing the conv
 User messages and progress remain plain text; Copy response and conversation history retain
 the original Markdown source.
 
+Bounded Copilot Studio dynamic-plan `thought` values are displayed as persistent
+`Thought: ...` entries under **Agent updates**, including when the turn fails. They remain
+informative progress and are excluded from copied answers and follow-up conversation history.
+
+When a connector returns an authentication failure, the chatbot displays an allowlisted
+**Open connection settings** action for the affected tool. The repair response remains visible
+but is excluded from subsequent conversation history.
+
 Successful replies with structured A2A citations show a **Sources** button next to Copy
 response, with the number of distinct sources. The button expands or collapses an accessible
 list below the answer; each reply's list starts collapsed and toggles independently.

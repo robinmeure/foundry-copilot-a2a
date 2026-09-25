@@ -141,6 +141,148 @@ public sealed class CopilotStudioActivitySummaryTests
     }
 
     [Fact]
+    public void FailedPlanStepEnrichesMatchingGenericErrorMessage()
+    {
+        var summary = new CopilotStudioActivitySummary();
+        summary.Observe(PlanReceivedActivity(), oauthCardPresent: false);
+        summary.Observe(PlanFailureActivity(), oauthCardPresent: false);
+        const string genericMessage =
+            "An error has occurred.\nError code: ConnectorRequestFailure";
+
+        var enriched = summary.EnrichFailureResponse(genericMessage);
+
+        Assert.Equal(1, summary.PlanFailureCount);
+        Assert.Contains(genericMessage, enriched, StringComparison.Ordinal);
+        Assert.Contains(
+            "Failure details: The connector 'Inventory API' returned an HTTP error with code 401.",
+            enriched,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Connection: Inventory API",
+            enriched,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Open connection settings: " +
+            "https://copilotstudio.microsoft.com/environments/" +
+            "9c3f15bd-df17-e445-a89e-e04d32e55659/bots/" +
+            "5a1045c2-a8a6-f111-aaad-000d3a832204/settings/connections",
+            enriched,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FailedPlanStepDoesNotAlterARecoveredAnswer()
+    {
+        var summary = new CopilotStudioActivitySummary();
+        summary.Observe(PlanFailureActivity(), oauthCardPresent: false);
+        const string recoveredAnswer = "I used a fallback data source and found three records.";
+
+        var response = summary.EnrichFailureResponse(recoveredAnswer);
+
+        Assert.Equal(recoveredAnswer, response);
+    }
+
+    [Fact]
+    public void FailedPlanStepProducesSanitizedErrorTelemetry()
+    {
+        var summary = new CopilotStudioActivitySummary();
+        summary.Observe(PlanFailureActivity(), oauthCardPresent: false);
+        summary.Observe(
+            new BotActivity { Type = "message", Text = "An error has occurred." },
+            oauthCardPresent: false);
+        using var activity = new System.Diagnostics.Activity("test").Start();
+
+        summary.RecordTelemetry(activity, allowOAuthChallenge: false);
+        var attributes = TraceSanitizer.SanitizeAttributes(activity, "orchestrator");
+
+        Assert.Equal(ActivityStatusCode.Error, activity.Status);
+        Assert.Equal(
+            typeof(CopilotStudioPlanFailureException).FullName,
+            activity.GetTagItem("error.type"));
+        Assert.Equal("1", attributes["copilot_studio.plan.failure.count"]);
+        Assert.Equal(
+            "connectorRequestFailure",
+            attributes["copilot_studio.plan.failure.code"]);
+        Assert.Equal(
+            "The connector 'Inventory API' returned an HTTP error with code 401.",
+            attributes["adapter.failure.reason"]);
+        Assert.DoesNotContain("private task text", attributes.Values);
+        Assert.DoesNotContain("copilotstudio.microsoft.com", attributes.Values);
+    }
+
+    [Fact]
+    public void FailedPlanStepBoundsProviderControlledCodeAndMessage()
+    {
+        var failure = CopilotStudioPlanFailure.Read(
+            PlanFailureActivity(new string('c', 200), new string('m', 1_100)));
+
+        Assert.NotNull(failure);
+        Assert.Equal(131, failure.Code?.Length);
+        Assert.EndsWith("...", failure.Code, StringComparison.Ordinal);
+        Assert.Equal(1_003, failure.Message?.Length);
+        Assert.EndsWith("...", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ConnectionSettingsUrlRequiresAnEnvironmentAndBotGuid()
+    {
+        var activity = PlanFailureActivity();
+        activity.From = new ChannelAccount { Id = "not-an-environment/not-a-bot" };
+
+        Assert.Null(CopilotStudioConnectionSettings.TryCreateUrl(activity));
+    }
+
+    [Fact]
+    public void DynamicPlanThoughtProducesAnInformativeUpdate()
+    {
+        var thought = CopilotStudioPlanThought.Read(
+            PlanThoughtActivity("Retrieve relevant parliamentary questions."));
+
+        var update = thought?.ToUpdate("conversation-1", "activity-1");
+
+        Assert.NotNull(update);
+        Assert.Equal(
+            "Thought: Retrieve relevant parliamentary questions.",
+            update.Text);
+        Assert.Equal("conversation-1", update.ConversationId);
+        Assert.Equal("activity-1", update.ResponseId);
+        Assert.True(update.IsInformative);
+    }
+
+    [Fact]
+    public void DynamicPlanThoughtIsBoundedAndExcludedFromTelemetry()
+    {
+        var summary = new CopilotStudioActivitySummary();
+        var activity = PlanThoughtActivity(new string('t', 1_100));
+        var thought = CopilotStudioPlanThought.Read(activity);
+        summary.Observe(activity, oauthCardPresent: false);
+        summary.Observe(
+            new BotActivity { Type = "message", Text = "Final answer." },
+            oauthCardPresent: false);
+        using var trace = new System.Diagnostics.Activity("test").Start();
+
+        summary.RecordTelemetry(trace, allowOAuthChallenge: false);
+        var attributes = TraceSanitizer.SanitizeAttributes(trace, "orchestrator");
+
+        Assert.NotNull(thought);
+        Assert.Equal(1_003, thought.Text.Length);
+        Assert.EndsWith("...", thought.Text, StringComparison.Ordinal);
+        Assert.Equal("1", attributes["copilot_studio.plan.thought.count"]);
+        Assert.DoesNotContain(thought.Text, attributes.Values);
+        Assert.Equal(ActivityStatusCode.Ok, trace.Status);
+    }
+
+    [Fact]
+    public void ThoughtOnAnUnrelatedEventIsNotForwarded()
+    {
+        var activity = PlanThoughtActivity("Do not forward this.");
+        activity.Name = "UnrelatedEvent";
+        activity.ValueType = "UnrelatedEvent";
+
+        Assert.Null(CopilotStudioPlanThought.Read(activity));
+    }
+
+    [Fact]
     public void InformativeTypingActivityProvidesAStreamingProgressUpdate()
     {
         var activity = new BotActivity
@@ -309,6 +451,64 @@ public sealed class CopilotStudioActivitySummaryTests
             Id = Guid.NewGuid().ToString("N"),
             Text = text,
             ChannelData = new { streamType = "final", streamId }
+        };
+
+    private static BotActivity PlanFailureActivity(
+        string code = "connectorRequestFailure",
+        string message = "The connector 'Inventory API' returned an HTTP error with code 401.") =>
+        new()
+        {
+            Type = "event",
+            Name = "DynamicPlanStepFinished",
+            ValueType = "DynamicPlanStepFinished",
+            From = new ChannelAccount
+            {
+                Id = "9c3f15bd-df17-e445-a89e-e04d32e55659/" +
+                     "5a1045c2-a8a6-f111-aaad-000d3a832204"
+            },
+            Value = JsonSerializer.SerializeToElement(
+                new
+                {
+                    taskDialogId = "contoso.topic.InventoryApi",
+                    arguments = new { Task = "private task text" },
+                    error = new { userErrorCode = code, message },
+                    state = "failed"
+                })
+        };
+
+    private static BotActivity PlanReceivedActivity() =>
+        new()
+        {
+            Type = "event",
+            Name = "DynamicPlanReceived",
+            ValueType = "DynamicPlanReceived",
+            Value = JsonSerializer.SerializeToElement(new
+            {
+                toolDefinitions = new[]
+                {
+                    new
+                    {
+                        schemaName = "contoso.topic.InventoryApi",
+                        displayName = "Inventory API"
+                    }
+                }
+            })
+        };
+
+    private static BotActivity PlanThoughtActivity(string thought) =>
+        new()
+        {
+            Type = "event",
+            Id = "plan-step-triggered",
+            Name = "DynamicPlanStepTriggered",
+            ValueType = "DynamicPlanStepTriggered",
+            Value = JsonSerializer.SerializeToElement(new
+            {
+                planIdentifier = "plan-1",
+                stepId = "step-1",
+                thought,
+                state = "inProgress"
+            })
         };
 
     [Fact]

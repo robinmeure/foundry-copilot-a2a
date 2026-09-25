@@ -34,11 +34,17 @@ internal sealed class CliApplication(CliContext context)
                     context, commandArguments, cancellationToken),
                 "register-spa" => await EntraCommands.RegisterSpaAsync(
                     context, commandArguments, cancellationToken),
+                "register-oauth-client" => await EntraCommands.RegisterOAuthClientAsync(
+                    context, commandArguments, cancellationToken),
                 "register-hub" => await EntraCommands.RegisterHubAsync(
+                    context, commandArguments, cancellationToken),
+                "add-federated-credential" => await EntraCommands.AddFederatedCredentialAsync(
                     context, commandArguments, cancellationToken),
                 "grant-hub-access" => await EntraCommands.GrantHubAccessAsync(
                     context, commandArguments, cancellationToken),
                 "preauthorize-client" => await EntraCommands.PreauthorizeClientAsync(
+                    context, commandArguments, cancellationToken),
+                "register-web-redirect" => await EntraCommands.RegisterWebRedirectAsync(
                     context, commandArguments, cancellationToken),
                 "register-consent-bypass-app" =>
                     await ConsentBypassAppRegistrationCommands.RegisterAsync(
@@ -70,6 +76,8 @@ internal sealed class CliApplication(CliContext context)
                 "configure-citadel" => await CitadelCommands.ConfigureAsync(
                     context, commandArguments, cancellationToken),
                 "configure-hub" => await HubCommands.ConfigureAsync(
+                    context, commandArguments, cancellationToken),
+                "set-hub-backend" => await HubCommands.SetBackendAsync(
                     context, commandArguments, cancellationToken),
                 "test-citadel" => await CitadelSmokeTest.RunAsync(
                     context, commandArguments, cancellationToken),
@@ -132,11 +140,17 @@ internal sealed class CliApplication(CliContext context)
             Commands:
               register-app  Create the backend API app used by the adapter and OBO flow.
               register-spa  Create a frontend SPA app with delegated access to the backend API.
+              register-oauth-client
+                            Create a confidential OAuth client registration without a credential.
               register-hub  Create the API Hub app the gateway uses to exchange caller tokens.
+              add-federated-credential
+                            Bind a managed identity to an existing app registration.
               grant-hub-access
                             Grant an existing frontend delegated access to the API Hub scope.
               preauthorize-client
                             Preauthorize a client for an API scope, avoiding a consent prompt.
+              register-web-redirect
+                            Add an HTTPS Web callback to an existing OAuth client.
               register-consent-bypass-app
                             Create the public-client app used by consent-bypass administrators.
               register-spa-redirect
@@ -158,6 +172,8 @@ internal sealed class CliApplication(CliContext context)
                             Publish a separate delegated-OAuth API in an existing APIM instance.
               configure-hub
                             Publish the API Hub that exchanges hub tokens for adapter tokens.
+              set-hub-backend
+                            Switch an owned hub API between App Service and Dev Tunnel backends.
               test-citadel   Exercise browser CORS, streaming, traces, and optional OBO through APIM.
               test-foundry  Connect Foundry to an adapter and run the cloud smoke test.
               enable-foundry-a2a
@@ -177,19 +193,33 @@ internal sealed class CliApplication(CliContext context)
             "register-app" =>
                 """
                 register-app [--display-name <name>] [--preauthorize-azure-cli] [--admin-consent]
+                             [--no-client-secret] [--owner-object-id <object-id>]
 
                 Creates the single-tenant backend API app in the tenant selected by `az login`,
                 exposes access_as_user, adds CopilotStudio.Copilots.Invoke, enables the optional
-                device-code consent workflow, and creates a one-year OBO client secret.
+                device-code consent workflow, and creates a one-year OBO client secret unless
+                --no-client-secret is supplied for managed-identity federation.
                 """,
             "register-spa" =>
                 """
                 register-spa --api-client-id <backend-application-id>
                              [--display-name <name>] [--redirect-uri <url>] [--admin-consent]
+                             [--owner-object-id <object-id>]
 
                 Creates a secretless single-tenant SPA app and grants it delegated access to the
                 backend API's access_as_user scope. The redirect URI defaults to
                 http://localhost:5173. Admin consent is opt-in.
+                """,
+            "register-oauth-client" =>
+                """
+                register-oauth-client --api-client-id <api-application-id>
+                                      --display-name <name>
+                                      [--owner-object-id <object-id>]
+
+                Creates a single-tenant confidential OAuth client, grants access to the API's
+                access_as_user scope, and creates its service principal. It intentionally creates
+                no credential or redirect URI; add those only after the target platform generates
+                its callback and an approved secret store is available.
                 """,
             "register-hub" =>
                 """
@@ -197,13 +227,23 @@ internal sealed class CliApplication(CliContext context)
                              [--display-name <name>]
                              [--managed-identity-principal-id <object-id>]
                              [--preauthorize-client-ids <client-id>[,<client-id>...]]
-                             [--admin-consent]
+                             [--admin-consent] [--owner-object-id <object-id>]
 
                 Creates the single-tenant API Hub application used by the gateway, exposes its own
                 access_as_user scope, and grants it delegated access to the adapter API. Supplying
                 the gateway managed identity's object (principal) ID adds a federated identity
                 credential so API Management can act as the hub without a client secret. No client
                 secret is created. The default display name is foundry-copilot-a2a-hub.
+                """,
+            "add-federated-credential" =>
+                """
+                add-federated-credential --client-id <application-id>
+                                         --principal-id <managed-identity-object-id>
+                                         [--name <credential-name>]
+
+                Adds or verifies a managed-identity federated credential using the active tenant
+                issuer and api://AzureADTokenExchange audience. A same-name credential with
+                different trust settings is rejected rather than overwritten.
                 """,
             "grant-hub-access" =>
                 """
@@ -220,10 +260,13 @@ internal sealed class CliApplication(CliContext context)
                 """
                 configure-hub --subscription-id <subscription-id> --resource-group <rg>
                               --service-name <apim-name>
-                              --backend-url <adapter-origin>
                               --tenant-id <tenant-id>
                               --hub-client-id <hub-application-id>
                               --adapter-client-id <adapter-application-id>
+                              [--backend-url <single-adapter-origin> |
+                               --app-service-backend-url <app-service-origin>
+                               --dev-tunnel-backend-url <https-devtunnels-origin>
+                               --backend-mode <appservice|devtunnel>]
                               [--api-id <id>] [--api-path <path>]
                               [--identity-client-id <user-assigned-identity-client-id>]
                               [--allowed-origins <origin>[,<origin>...]] [--replace]
@@ -233,6 +276,17 @@ internal sealed class CliApplication(CliContext context)
                 forwards that to the adapter. The gateway authenticates as the hub through a
                 federated identity credential, so no client secret is stored. Discovery operations
                 stay public. Requires a managed identity on the API Management service.
+                """,
+            "set-hub-backend" =>
+                """
+                set-hub-backend --subscription-id <subscription-id> --resource-group <rg>
+                                --service-name <apim-name>
+                                --backend-mode <appservice|devtunnel>
+                                [--api-id <id>]
+
+                Switches an API created by configure-hub between its preconfigured App Service and
+                Dev Tunnel origins by changing only the owned backend-mode named value. Refuses
+                unowned APIs and missing backend configuration.
                 """,
             "preauthorize-client" =>
                 """
@@ -245,6 +299,15 @@ internal sealed class CliApplication(CliContext context)
                 tier obtain a scope in the OBO flow without a privileged consent operation. The
                 scope defaults to access_as_user. Existing preauthorized entries are preserved,
                 and the command is idempotent.
+                """,
+            "register-web-redirect" =>
+                """
+                register-web-redirect --client-id <oauth-client-application-id>
+                                      --redirect-uri <https-callback>
+
+                Adds one exact HTTPS Web callback while preserving existing callbacks. Credentials,
+                query strings, fragments, and non-HTTPS callbacks are rejected. The command is
+                idempotent.
                 """,
             "register-consent-bypass-app" =>
                 """
@@ -362,9 +425,10 @@ internal sealed class CliApplication(CliContext context)
                 """,
             "start-tunnel" =>
                 """
-                start-tunnel [--port <port>]
+                start-tunnel [--port <port>] [--tunnel-id <persistent-tunnel-id>]
 
-                Runs `devtunnel host --allow-anonymous` for the local adapter port.
+                Runs `devtunnel host --allow-anonymous` for the local adapter port. Supply a
+                tunnel ID to keep the APIM backend URL stable across local sessions.
                 """,
             "configure-citadel" =>
                 """

@@ -198,4 +198,36 @@ public class CopilotStudioOptionsValidationTests
 
         Assert.Contains("required", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public void ManagedIdentityFederationCanReplaceTheClientSecret()
+    {
+        var options = new CopilotStudioOptions
+        {
+            TenantId = "11111111-2222-3333-4444-555555555555",
+            ClientId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            ManagedIdentityClientId = "99999999-8888-7777-6666-555555555555",
+            DirectConnectUrl = DirectConnectUrl
+        };
+
+        var exception = Record.Exception(options.Validate);
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void InvalidManagedIdentityClientIdIsRejected()
+    {
+        var options = new CopilotStudioOptions
+        {
+            TenantId = "11111111-2222-3333-4444-555555555555",
+            ClientId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            ManagedIdentityClientId = "not-a-guid",
+            DirectConnectUrl = DirectConnectUrl
+        };
+
+        var exception = Assert.Throws<InvalidOperationException>(options.Validate);
+
+        Assert.Contains("ManagedIdentityClientId", exception.Message, StringComparison.Ordinal);
+    }
 }

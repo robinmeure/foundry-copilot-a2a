@@ -17,6 +17,9 @@ internal static class HubCommands
     private const string ApiVersion = "2024-05-01";
     private const string OwnershipMarker =
         "Managed by foundry-copilot-a2a configure-hub. Exchanges hub tokens for adapter tokens.";
+    private const string AppServiceBackendSuffix = "app-service-backend-url";
+    private const string DevTunnelBackendSuffix = "dev-tunnel-backend-url";
+    private const string BackendModeSuffix = "backend-mode";
 
     private const string ClosedPolicy =
         """
@@ -39,7 +42,8 @@ internal static class HubCommands
     {
         arguments.EnsureOnly(
             "subscription-id", "resource-group", "service-name", "api-id", "api-path",
-            "backend-url", "tenant-id", "hub-client-id", "adapter-client-id",
+            "backend-url", "app-service-backend-url", "dev-tunnel-backend-url",
+            "backend-mode", "tenant-id", "hub-client-id", "adapter-client-id",
             "identity-client-id", "allowed-origins", "replace", "help");
 
         var subscriptionId = arguments.Require("subscription-id");
@@ -57,7 +61,47 @@ internal static class HubCommands
             throw new CliException("Option '--api-path' cannot be empty.");
         }
 
-        var backendUrl = arguments.AbsoluteHttpUri("backend-url").AbsoluteUri.TrimEnd('/');
+        var singleBackend = arguments.Optional("backend-url");
+        var appServiceBackend = arguments.Optional("app-service-backend-url");
+        var devTunnelBackend = arguments.Optional("dev-tunnel-backend-url");
+        var requestedBackendMode = arguments.Optional("backend-mode");
+        var hasSwitchableOption =
+            appServiceBackend is not null ||
+            devTunnelBackend is not null ||
+            requestedBackendMode is not null;
+        if (singleBackend is not null && hasSwitchableOption)
+        {
+            throw new CliException(
+                "Use either '--backend-url' or the switchable backend options, not both.");
+        }
+
+        string backendUrl;
+        string? appServiceBackendUrl = null;
+        string? devTunnelBackendUrl = null;
+        string? backendMode = null;
+        if (hasSwitchableOption)
+        {
+            if (appServiceBackend is null ||
+                devTunnelBackend is null ||
+                requestedBackendMode is null)
+            {
+                throw new CliException(
+                    "Switchable backends require '--app-service-backend-url', " +
+                    "'--dev-tunnel-backend-url', and '--backend-mode'.");
+            }
+
+            appServiceBackendUrl = ParseBackendUrl(
+                appServiceBackend, "app-service-backend-url", requireDevTunnel: false);
+            devTunnelBackendUrl = ParseBackendUrl(
+                devTunnelBackend, "dev-tunnel-backend-url", requireDevTunnel: true);
+            backendMode = ParseBackendMode(requestedBackendMode);
+            backendUrl = appServiceBackendUrl;
+        }
+        else
+        {
+            backendUrl = ParseBackendUrl(
+                arguments.Require("backend-url"), "backend-url", requireDevTunnel: false);
+        }
         var tenantId = arguments.Require("tenant-id");
         var hubClientId = RequireGuid(arguments, "hub-client-id");
         var adapterClientId = RequireGuid(arguments, "adapter-client-id");
@@ -130,11 +174,46 @@ internal static class HubCommands
 
             if (existing is not null)
             {
+                var description = existing.RootElement
+                    .GetProperty("properties")
+                    .GetProperty("description")
+                    .GetString();
+                if (!string.Equals(description, OwnershipMarker, StringComparison.Ordinal))
+                {
+                    throw new CliException(
+                        $"API '{apiId}' is not owned by configure-hub and will not be replaced.");
+                }
+
                 // Close the API before rewriting it so no request is served by a partially
                 // updated policy set.
                 await PutPolicyAsync(
                     client, accessToken, apiUrl, ClosedPolicy, cancellationToken);
             }
+        }
+
+        if (backendMode is not null)
+        {
+            await PutNamedValueAsync(
+                client,
+                accessToken,
+                serviceUrl,
+                NamedValueId(apiId, AppServiceBackendSuffix),
+                appServiceBackendUrl!,
+                cancellationToken);
+            await PutNamedValueAsync(
+                client,
+                accessToken,
+                serviceUrl,
+                NamedValueId(apiId, DevTunnelBackendSuffix),
+                devTunnelBackendUrl!,
+                cancellationToken);
+            await PutNamedValueAsync(
+                client,
+                accessToken,
+                serviceUrl,
+                NamedValueId(apiId, BackendModeSuffix),
+                backendMode,
+                cancellationToken);
         }
 
         context.Out.WriteLine($"Publishing hub API '{apiId}' at /{apiPath}...");
@@ -188,7 +267,9 @@ internal static class HubCommands
             client,
             accessToken,
             apiUrl,
-            BuildApiPolicy(backendUrl, allowedOrigins),
+            backendMode is null
+                ? BuildApiPolicy(backendUrl, allowedOrigins)
+                : BuildSwitchableApiPolicy(apiId, allowedOrigins),
             cancellationToken);
 
         var gatewayUrl = await ResolveGatewayUrlAsync(
@@ -199,12 +280,98 @@ internal static class HubCommands
         context.Out.WriteLine($"Hub base URL:     {gatewayUrl}/{apiPath}");
         context.Out.WriteLine($"Caller scope:     api://{hubClientId}/access_as_user");
         context.Out.WriteLine($"Exchanged for:    api://{adapterClientId}/access_as_user");
-        context.Out.WriteLine($"Backend:          {backendUrl}");
+        if (backendMode is null)
+        {
+            context.Out.WriteLine($"Backend:          {backendUrl}");
+        }
+        else
+        {
+            context.Out.WriteLine($"Backend mode:     {backendMode}");
+            context.Out.WriteLine($"App Service:      {appServiceBackendUrl}");
+            context.Out.WriteLine($"Dev Tunnel:       {devTunnelBackendUrl}");
+        }
         context.Out.WriteLine(
             $"Gateway identity: {(identityClientId is null ? "system-assigned" : identityClientId)}");
         context.Out.WriteLine(
             "Callers must now request the hub scope. The adapter still performs its own OBO " +
             "exchange for the downstream provider.");
+        return 0;
+    }
+
+    public static async Task<int> SetBackendAsync(
+        CliContext context,
+        CommandArguments arguments,
+        CancellationToken cancellationToken)
+    {
+        arguments.EnsureOnly(
+            "subscription-id", "resource-group", "service-name", "api-id",
+            "backend-mode", "help");
+
+        var subscriptionId = arguments.Require("subscription-id");
+        if (!Guid.TryParse(subscriptionId, out _))
+        {
+            throw new CliException("Option '--subscription-id' must be a subscription GUID.");
+        }
+
+        var resourceGroup = arguments.Require("resource-group");
+        var serviceName = arguments.Require("service-name");
+        var apiId = arguments.Optional("api-id", "copilot-studio-hub")!;
+        var backendMode = ParseBackendMode(arguments.Require("backend-mode"));
+        var accessToken = await AcquireArmTokenAsync(context, cancellationToken);
+        var serviceUrl =
+            $"{ArmEndpoint}/subscriptions/{subscriptionId}/resourceGroups/{resourceGroup}" +
+            $"/providers/Microsoft.ApiManagement/service/{serviceName}";
+        var apiUrl = $"{serviceUrl}/apis/{apiId}";
+
+        using var api = await GetAsync(
+            context.HttpClient,
+            accessToken,
+            $"{apiUrl}?api-version={ApiVersion}",
+            allowMissing: true,
+            cancellationToken);
+        if (api is null)
+        {
+            throw new CliException(
+                $"API '{apiId}' was not found in API Management service '{serviceName}'.");
+        }
+
+        var description = api.RootElement
+            .GetProperty("properties")
+            .GetProperty("description")
+            .GetString();
+        if (!string.Equals(description, OwnershipMarker, StringComparison.Ordinal))
+        {
+            throw new CliException(
+                $"API '{apiId}' is not owned by configure-hub and will not be modified.");
+        }
+
+        var selectedBackendId = NamedValueId(
+            apiId,
+            backendMode == "devtunnel"
+                ? DevTunnelBackendSuffix
+                : AppServiceBackendSuffix);
+        using var selectedBackend = await GetAsync(
+            context.HttpClient,
+            accessToken,
+            $"{serviceUrl}/namedValues/{selectedBackendId}?api-version={ApiVersion}",
+            allowMissing: true,
+            cancellationToken);
+        if (selectedBackend is null)
+        {
+            throw new CliException(
+                $"API '{apiId}' has no configured {backendMode} backend.");
+        }
+
+        await PutNamedValueAsync(
+            context.HttpClient,
+            accessToken,
+            serviceUrl,
+            NamedValueId(apiId, BackendModeSuffix),
+            backendMode,
+            cancellationToken);
+
+        context.Out.WriteLine(
+            $"API '{apiId}' now routes through its {backendMode} backend.");
         return 0;
     }
 
@@ -246,6 +413,37 @@ internal static class HubCommands
                     Environment.NewLine,
                     allowedOrigins.Select(origin => new XElement("origin", origin).ToString())))
             .Replace("__BACKEND_HEADERS__", tunnelHeader);
+    }
+
+    internal static string BuildSwitchableApiPolicy(
+        string apiId,
+        IReadOnlyList<string> allowedOrigins)
+    {
+        var backendSelection =
+            """
+            <choose>
+              <when condition="@(&quot;devtunnel&quot;.Equals(&quot;{{__MODE__}}&quot;, System.StringComparison.OrdinalIgnoreCase))">
+                <set-backend-service base-url="{{__DEV_TUNNEL_URL__}}" />
+                <set-header name="X-Tunnel-Skip-AntiPhishing-Page" exists-action="override">
+                  <value>true</value>
+                </set-header>
+              </when>
+              <otherwise>
+                <set-backend-service base-url="{{__APP_SERVICE_URL__}}" />
+              </otherwise>
+            </choose>
+            """
+            .Replace("__MODE__", NamedValueId(apiId, BackendModeSuffix))
+            .Replace("__DEV_TUNNEL_URL__", NamedValueId(apiId, DevTunnelBackendSuffix))
+            .Replace("__APP_SERVICE_URL__", NamedValueId(apiId, AppServiceBackendSuffix));
+
+        return ReadPolicy("citadel-api.xml")
+            .Replace(
+                "__ALLOWED_ORIGINS__",
+                string.Join(
+                    Environment.NewLine,
+                    allowedOrigins.Select(origin => new XElement("origin", origin).ToString())))
+            .Replace("__BACKEND_HEADERS__", backendSelection);
     }
 
     internal static IReadOnlyList<HubOperation> BuildOperations() =>
@@ -296,6 +494,44 @@ internal static class HubCommands
             : throw new CliException($"Option '--{name}' must be an application (client) ID.");
     }
 
+    private static string ParseBackendUrl(
+        string value,
+        string optionName,
+        bool requireDevTunnel)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
+            uri.Scheme != Uri.UriSchemeHttps ||
+            !string.IsNullOrEmpty(uri.UserInfo) ||
+            !string.IsNullOrEmpty(uri.Query) ||
+            !string.IsNullOrEmpty(uri.Fragment))
+        {
+            throw new CliException(
+                $"Option '--{optionName}' must be an HTTPS base URL without credentials, " +
+                "a query, or a fragment.");
+        }
+
+        if (requireDevTunnel &&
+            !uri.Host.EndsWith(".devtunnels.ms", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new CliException(
+                $"Option '--{optionName}' must use a devtunnels.ms host.");
+        }
+
+        return uri.AbsoluteUri.TrimEnd('/');
+    }
+
+    private static string ParseBackendMode(string value) =>
+        value.ToLowerInvariant() switch
+        {
+            "appservice" => "appservice",
+            "devtunnel" => "devtunnel",
+            _ => throw new CliException(
+                "Option '--backend-mode' must be either 'appservice' or 'devtunnel'.")
+        };
+
+    private static string NamedValueId(string apiId, string suffix) =>
+        $"{apiId}-{suffix}";
+
     private static async Task<string> AcquireArmTokenAsync(
         CliContext context,
         CancellationToken cancellationToken)
@@ -318,6 +554,28 @@ internal static class HubCommands
         CancellationToken cancellationToken) =>
         PutAsync(client, token, $"{parentUrl}/policies/policy?api-version={ApiVersion}",
             new { properties = new { format = "rawxml", value = policy } }, cancellationToken);
+
+    private static Task PutNamedValueAsync(
+        HttpClient client,
+        string token,
+        string serviceUrl,
+        string name,
+        string value,
+        CancellationToken cancellationToken) =>
+        PutAsync(
+            client,
+            token,
+            $"{serviceUrl}/namedValues/{name}?api-version={ApiVersion}",
+            new
+            {
+                properties = new
+                {
+                    displayName = name,
+                    secret = false,
+                    value
+                }
+            },
+            cancellationToken);
 
     private static async Task PutAsync(
         HttpClient client,

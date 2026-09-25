@@ -56,8 +56,10 @@ test('progress stays out of answers and token chunks update incrementally', asyn
   await chat.send('Question', token)
   assert.ok(snapshots.some((s) => s.turns[0].progress === 'Working'))
   assert.ok(snapshots.some((s) => s.turns[0].answer === 'First'))
-  assert.equal(chat.getSnapshot().turns[0].answer, 'First second')
-  assert.equal(chat.getSnapshot().turns[0].status, 'succeeded')
+  const final = chat.getSnapshot().turns[0]
+  assert.equal(final.answer, 'First second')
+  assert.equal(final.status, 'succeeded')
+  assert.deepEqual(final.activityUpdates, ['Working'])
 })
 
 test('retains original Markdown in answers and follow-up history', async (t) => {
@@ -72,6 +74,24 @@ test('retains original Markdown in answers and follow-up history', async (t) => 
   assert.equal(chat.getSnapshot().turns[0].answer, answer)
   await chat.send('Explain the code', token)
   assert.equal(requests[1].params.message.metadata.history[1].text, answer)
+})
+
+test('connection repair responses stay out of follow-up history', async (t) => {
+  const requests = []
+  const repair = 'CONNECTION REPAIR REQUIRED\nConnection: Inventory API\n' +
+    'Open connection settings: https://copilotstudio.microsoft.com/environments/' +
+    '9c3f15bd-df17-e445-a89e-e04d32e55659/bots/' +
+    '5a1045c2-a8a6-f111-aaad-000d3a832204/settings/connections'
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    requests.push(JSON.parse(init.body))
+    return requests.length === 1 ? response(repair) : response('Recovered')
+  })
+  const chat = new ChatSession(config)
+
+  await chat.send('Broken connection', token)
+  await chat.send('Try something else', token)
+
+  assert.equal(requests[1].params.message.metadata, undefined)
 })
 
 test('gateway and protocol errors are visible, never retried, and excluded from history', async (t) => {
@@ -190,6 +210,9 @@ test('task failure after partial output preserves visible text but clears source
     requests.push(JSON.parse(init.body))
     return requests.length > 1 ? response() : new Response(
       await citedResponse().text() +
+      event({ artifactUpdate: { artifact: { parts: [
+        { text: 'Thought: Calling the selected specialist.', metadata: { isInformative: true } },
+      ] } } }) +
       event({ statusUpdate: { status: { state: 'TASK_STATE_FAILED', message: { parts: [{ text: 'Reported failure' }] } } } }),
       { headers: { 'Content-Type': 'text/event-stream' } },
     )
@@ -201,6 +224,7 @@ test('task failure after partial output preserves visible text but clears source
   assert.equal(failed.answer, '**Answer** [7]')
   assert.equal(failed.citations, undefined)
   assert.equal(failed.progress, undefined)
+  assert.deepEqual(failed.activityUpdates, ['Thought: Calling the selected specialist.'])
   assert.match(failed.error, /could not complete.*Reported failure/)
   assert.equal(chat.getSnapshot().isSending, false)
   await chat.send('Next', token)

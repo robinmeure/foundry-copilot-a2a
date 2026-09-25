@@ -294,6 +294,26 @@ dd {
   border-bottom-left-radius: 4px;
 }
 
+.activity-updates ol {
+  margin: 0;
+  padding: 12px 17px 12px 38px;
+  border-radius: 16px;
+  border-bottom-left-radius: 4px;
+  color: #263b5b;
+  background: #edf2f8;
+}
+
+.activity-updates li {
+  padding-left: 3px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+.activity-updates li + li {
+  margin-top: 8px;
+}
+
 .message.assistant .consent-message {
   display: grid;
   gap: 10px;
@@ -302,6 +322,41 @@ dd {
   border-left: 4px solid #245fc4;
   border-bottom-left-radius: 4px;
   background: #f3f7fd;
+}
+
+.connection-repair-message {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #edc46c;
+  border-left: 4px solid #b7791f;
+  border-bottom-left-radius: 4px;
+  color: #67410f;
+  background: #fffaf0;
+}
+
+.connection-repair-message strong {
+  font-size: 1rem;
+}
+
+.message.assistant .connection-repair-message p {
+  padding: 0;
+  border-radius: 0;
+  color: #67410f;
+  background: transparent;
+}
+
+.connection-repair-message a {
+  justify-self: start;
+  padding: 9px 13px;
+  border-radius: 8px;
+  color: white;
+  font-weight: 750;
+  text-decoration: none;
+  background: #9c650f;
+}
+
+.connection-repair-message a:hover {
+  background: #7c4f0a;
 }
 
 .consent-message strong {

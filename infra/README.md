@@ -1,7 +1,137 @@
-# Citadel, adapter, and Microsoft Foundry infrastructure
+# Foundry Copilot A2A infrastructure
 
-This folder contains the development infrastructure described in
-[`../.azure/deployment-plan.md`](../.azure/deployment-plan.md):
+This folder contains two separate deployments:
+
+- [`hub.bicep`](./hub.bicep) is the new API Hub deployment described in
+  [`../.azure/deployment-plan.md`](../.azure/deployment-plan.md).
+- [`main.bicep`](./main.bicep) is the existing Citadel/Foundry deployment described
+  in the archived
+  [`../.azure/deployment-plan.citadel-2026-08-31.md`](../.azure/deployment-plan.citadel-2026-08-31.md).
+
+The deployments use different resource groups and app registrations. Deploying the
+hub does not update the existing Citadel resources.
+
+## API Hub deployment
+
+The development hub stack creates `rg-fca2a-hub-dev-wus2` in West US 2 with:
+
+- Developer API Management with a system-assigned managed identity.
+- A Linux B1 App Service handler in authenticated mock/standby mode.
+- A user-assigned handler identity federated to the handler API registration.
+- Key Vault, Log Analytics, and workspace-based Application Insights.
+- One `/hub` API that can switch between the new App Service and an HTTPS Dev
+  Tunnel without republishing its authentication policy.
+
+App registrations are tenant resources, so Bicep does not create them. Use the
+repository CLI and the environment-explicit names from the deployment plan.
+
+### 1. Create the secretless handler registration
+
+```powershell
+$subscriptionId = '<subscription-id>'
+$tenantId = '<tenant-id>'
+$ownerObjectId = '<owner-object-id>'
+$env:AZURE_TENANT_ID = $tenantId
+$env:APIM_PUBLISHER_EMAIL = '<publisher-email>'
+
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- register-app `
+  --display-name fca2a-dev-handler-api --no-client-secret `
+  --owner-object-id $ownerObjectId
+
+$env:HANDLER_CLIENT_ID = az ad app list `
+  --display-name fca2a-dev-handler-api --query "[0].appId" --output tsv
+```
+
+### 2. Validate and deploy the new resource group
+
+```powershell
+az bicep build --file .\infra\hub.bicep
+az bicep build-params --file .\infra\hub.dev.bicepparam
+
+az deployment sub validate `
+  --subscription $subscriptionId `
+  --location westus2 `
+  --template-file .\infra\hub.bicep `
+  --parameters .\infra\hub.dev.bicepparam
+
+az deployment sub create `
+  --subscription $subscriptionId `
+  --name foundry-copilot-a2a-hub-dev `
+  --location westus2 `
+  --template-file .\infra\hub.bicep `
+  --parameters .\infra\hub.dev.bicepparam
+```
+
+Read the deployment outputs without copying secrets:
+
+```powershell
+$hubOutputs = az deployment sub show `
+  --subscription $subscriptionId `
+  --name foundry-copilot-a2a-hub-dev `
+  --query properties.outputs --output json | ConvertFrom-Json
+```
+
+### 3. Bind identities and create the hub callers
+
+```powershell
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- add-federated-credential `
+  --client-id $env:HANDLER_CLIENT_ID `
+  --principal-id $hubOutputs.handlerIdentityPrincipalId.value `
+  --name handler-managed-identity
+
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- register-hub `
+  --api-client-id $env:HANDLER_CLIENT_ID `
+  --display-name fca2a-dev-hub-api `
+  --managed-identity-principal-id $hubOutputs.apimPrincipalId.value `
+  --owner-object-id $ownerObjectId
+
+$hubClientId = az ad app list `
+  --display-name fca2a-dev-hub-api --query "[0].appId" --output tsv
+
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- register-spa `
+  --api-client-id $hubClientId --display-name fca2a-dev-frontend-spa `
+  --redirect-uri http://localhost:5173 `
+  --owner-object-id $ownerObjectId
+
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- register-oauth-client `
+  --api-client-id $hubClientId `
+  --display-name fca2a-dev-orchestrator-oauth-client `
+  --owner-object-id $ownerObjectId
+
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- register-oauth-client `
+  --api-client-id $hubClientId `
+  --display-name fca2a-dev-tweede-kamer-classic-oauth-client `
+  --owner-object-id $ownerObjectId
+```
+
+Preauthorize the hub on the handler and each controlled caller on the hub with
+`preauthorize-client`. Do not grant tenant-wide admin consent as part of this
+development deployment.
+
+### 4. Publish the switchable hub API
+
+```powershell
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- configure-hub `
+  --subscription-id $subscriptionId `
+  --resource-group rg-fca2a-hub-dev-wus2 `
+  --service-name $hubOutputs.apimName.value `
+  --app-service-backend-url $hubOutputs.handlerBackendUrl.value `
+  --dev-tunnel-backend-url https://xf14hllk-5099.euw.devtunnels.ms `
+  --backend-mode devtunnel `
+  --tenant-id $tenantId `
+  --hub-client-id $hubClientId `
+  --adapter-client-id $env:HANDLER_CLIENT_ID `
+  --allowed-origins http://localhost:5173
+```
+
+Use `set-hub-backend --backend-mode appservice` after an authorized secret
+operator has populated the two direct-connect URLs, created and stored the two
+agent OAuth credentials, registered the generated Copilot Studio callbacks, and
+activated the live handler backend.
+
+## Existing Citadel and Foundry deployment
+
+The existing deployment provisions:
 
 - A user-assigned adapter identity with narrowly scoped Key Vault secret-read
   access.

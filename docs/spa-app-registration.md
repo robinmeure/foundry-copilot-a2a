@@ -41,7 +41,8 @@ browser-held token becomes a Copilot Studio-usable one.
    of which describe the backend registration. The requested `access_as_user` scope is also
    advertised in the agent card and appears in the delegated token's `scp` claim.
 4. **Token B.** The adapter performs OBO: it presents token A as a user assertion, authenticates
-   as the backend confidential client with `COPILOT_STUDIO_CLIENT_SECRET`, and requests
+   as the backend confidential client with either `COPILOT_STUDIO_CLIENT_SECRET` locally or a
+   managed-identity federated client assertion on Azure, and requests
    `https://api.powerplatform.com/.default`. Entra returns a Power Platform token carrying the
    *same* `oid`.
 5. **Invoke.** `Microsoft.Agents.CopilotStudio.Client` calls Copilot Studio with token B. The
@@ -199,12 +200,17 @@ instead when public-client flows are not part of the intended registration desig
 dotnet run --project src/FoundryCopilotA2A.Cli -- consent --tenant-id <tenant-id> --client-id <backend-client-id>
 ```
 
-Under **Certificates & secrets**, create the backend client secret used for OBO. Store its
+For local development, create the backend client secret used for OBO. Store its
 **Value**, not its ID, in a process-scoped environment variable:
 
 ```text
 COPILOT_STUDIO_CLIENT_SECRET=<secret-value>
 ```
+
+For Azure hosting, prefer `register-app --no-client-secret`, bind the Web App's
+user-assigned identity with `add-federated-credential`, and set
+`CopilotStudio__ManagedIdentityClientId` instead. Do not create an Azure handler
+secret when federation is configured.
 
 The backend registration does not need an SPA redirect URI. If it retains one from an earlier
 shared-registration setup, remove it after the dedicated frontend registration works.

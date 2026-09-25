@@ -1,4 +1,6 @@
 import { sendMessage, type A2AAgent, type CitationBundle, type ConversationTurn } from '../../FoundryCopilotA2A.BrowserShared/a2aClient.ts'
+import { appendActivityUpdate } from '../../FoundryCopilotA2A.BrowserShared/activityUpdates.ts'
+import { parseConnectionRepairRequest } from '../../FoundryCopilotA2A.BrowserShared/connectionRepair.ts'
 import type { ChatbotConfig } from './config.ts'
 
 export interface ChatTurn {
@@ -7,6 +9,7 @@ export interface ChatTurn {
   answer: string
   citations?: CitationBundle
   progress?: string
+  activityUpdates?: string[]
   responder?: A2AAgent
   error?: string
   status: 'sending' | 'succeeded' | 'failed'
@@ -66,7 +69,8 @@ export class ChatSession {
     const id = crypto.randomUUID()
     const { contextId, turns } = this.snapshot
     const history: ConversationTurn[] = turns
-      .filter((turn) => turn.status === 'succeeded')
+      .filter((turn) =>
+        turn.status === 'succeeded' && !parseConnectionRepairRequest(turn.answer))
       .flatMap((turn) => [
         { role: 'user', text: turn.prompt },
         { role: 'assistant', text: turn.answer },
@@ -77,11 +81,16 @@ export class ChatSession {
       turns: [...turns, { id, prompt: text, answer: '', status: 'sending', phase: 'sending', startedAt: Date.now() }],
     })
 
-    const update = (change: Partial<ChatTurn>) => {
+    const update = (
+      change: Partial<ChatTurn> | ((turn: ChatTurn) => Partial<ChatTurn>),
+    ) => {
       if (this.active !== controller) return
       this.publish({
         ...this.snapshot,
-        turns: this.snapshot.turns.map((turn) => turn.id === id ? { ...turn, ...change } : turn),
+        turns: this.snapshot.turns.map((turn) =>
+          turn.id === id
+            ? { ...turn, ...(typeof change === 'function' ? change(turn) : change) }
+            : turn),
       })
     }
     let phase: ChatTurn['phase'] = 'sending'
@@ -109,7 +118,11 @@ export class ChatSession {
         },
         onProgress: (progress) => {
           if (phase === 'sending' || phase === 'waiting' || phase === 'accepted') phase = 'working'
-          update({ progress, phase })
+          update((turn) => ({
+            progress,
+            phase,
+            activityUpdates: appendActivityUpdate(turn.activityUpdates, progress),
+          }))
         },
         onTaskStatus: ({ state, message }) => {
           if (state === 'completed') phase = 'finalizing'

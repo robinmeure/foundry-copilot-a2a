@@ -451,13 +451,15 @@ audit. Microsoft's guidance ranks credential types in this order:
 
 | Preference | Credential | Applicability here |
 | --- | --- | --- |
-| Best | Managed identity as a federated credential (workload identity federation) | Azure-hosted adapter; removes credential management entirely |
+| Best | Managed identity as a federated credential (workload identity federation) | Azure-hosted adapter and API Hub; removes credential management entirely |
 | Good | Certificate credential, stored in Key Vault | Where federation is unavailable |
-| Discouraged | Client secret | The sample's default, for local-development simplicity |
+| Discouraged | Client secret | Local-development fallback or provider clients that cannot federate |
 
-The sample uses `COPILOT_STUDIO_CLIENT_SECRET` and stores it as a Key Vault
-reference resolved by a managed identity in the deployed configuration. That
-protects the secret at rest, but it is still a password credential.
+The adapter accepts `COPILOT_STUDIO_CLIENT_SECRET` for local development. An
+Azure-hosted adapter can instead set `CopilotStudio:ManagedIdentityClientId` and
+federate that user-assigned identity to the adapter registration. MSAL uses the
+managed-identity token as a client assertion for OBO, so no adapter password is
+stored in App Service or Key Vault.
 
 **Decide this before adding registrations, not after.** Secret sprawl and rotation
 failures scale with the number of confidential registrations, whereas federated

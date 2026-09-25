@@ -1,4 +1,5 @@
 import { useMemo, type ReactNode } from 'react'
+import { parseConnectionRepairRequest } from '../../FoundryCopilotA2A.BrowserShared/connectionRepair.ts'
 import { parseConsentRequest } from '../../FoundryCopilotA2A.BrowserShared/consent.ts'
 import type { ChatTurn } from './chatSession.ts'
 import MarkdownAnswer from './MarkdownAnswer.ts'
@@ -16,7 +17,10 @@ export default function ReplyBody({ turn, agentName, children }: {
     [answer, speaker, status])
   const presentation = useMemo<{ text: string; sources: ResponseLink[] }>(() => {
     const { text } = attribution
-    return status === 'succeeded' && !citations?.sources.length && !parseConsentRequest(answer)
+    return status === 'succeeded' &&
+      !citations?.sources.length &&
+      !parseConsentRequest(answer) &&
+      !parseConnectionRepairRequest(answer)
       ? prepareResponseLinks(text) : { text, sources: [] }
   }, [answer, citations, status, attribution])
   return (

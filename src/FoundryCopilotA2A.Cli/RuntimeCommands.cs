@@ -1,5 +1,7 @@
 namespace FoundryCopilotA2A.Cli;
 
+using System.Text.Json;
+
 internal static class RuntimeCommands
 {
     public static async Task<int> RunMockAsync(
@@ -116,15 +118,78 @@ internal static class RuntimeCommands
         CommandArguments arguments,
         CancellationToken cancellationToken)
     {
-        arguments.EnsureOnly("port", "help");
+        arguments.EnsureOnly("port", "tunnel-id", "help");
         var port = arguments.Integer("port", 5099);
+        var tunnelId = arguments.Optional("tunnel-id");
+        if (tunnelId is not null &&
+            (tunnelId.Length is < 3 or > 60 ||
+             tunnelId[0] is '-' or '.' ||
+             tunnelId[^1] is '-' or '.' ||
+             tunnelId.Contains("..", StringComparison.Ordinal) ||
+             tunnelId.Any(character =>
+                 !char.IsAsciiLetterOrDigit(character) &&
+                 character is not '-' and not '.')))
+        {
+            throw new CliException(
+                "Option '--tunnel-id' must be 3-60 ASCII letters, digits, hyphens, or " +
+                "a cluster-separator dot and cannot start or end with punctuation.");
+        }
 
-        context.Out.WriteLine($"Starting anonymous Dev Tunnel for port {port}...");
+        context.Out.WriteLine(tunnelId is null
+            ? $"Starting anonymous Dev Tunnel for port {port}..."
+            : $"Starting anonymous Dev Tunnel '{tunnelId}' for port {port}...");
+        var hostArguments = new List<string> { "host" };
+        if (tunnelId is not null)
+        {
+            var portList = await context.Processes.CaptureAsync(
+                "devtunnel",
+                ["port", "list", tunnelId, "--json", "--nologo"],
+                cancellationToken);
+            if (!ContainsTunnelPort(portList.StandardOutput, port))
+            {
+                context.Out.WriteLine(
+                    $"Adding HTTP port {port} to persistent tunnel '{tunnelId}'...");
+                await context.Processes.CaptureAsync(
+                    "devtunnel",
+                    [
+                        "port", "create", tunnelId,
+                        "--port-number", port.ToString(),
+                        "--protocol", "http",
+                        "--json",
+                        "--nologo"
+                    ],
+                    cancellationToken);
+            }
+
+            hostArguments.Add(tunnelId);
+            hostArguments.Add("--allow-anonymous");
+        }
+        else
+        {
+            hostArguments.AddRange(["-p", port.ToString(), "--allow-anonymous"]);
+        }
+
         await context.Processes.RunInteractiveAsync(
             "devtunnel",
-            ["host", "-p", port.ToString(), "--allow-anonymous"],
+            hostArguments,
             cancellationToken);
         return 0;
+    }
+
+    internal static bool ContainsTunnelPort(string json, int port)
+    {
+        using var document = JsonDocument.Parse(json);
+        if (!document.RootElement.TryGetProperty("ports", out var ports) ||
+            ports.ValueKind != JsonValueKind.Array)
+        {
+            throw new CliException(
+                "The Dev Tunnel CLI returned an invalid port-list response.");
+        }
+
+        return ports.EnumerateArray().Any(item =>
+            item.TryGetProperty("portNumber", out var portNumber) &&
+            portNumber.TryGetInt32(out var value) &&
+            value == port);
     }
 }
 

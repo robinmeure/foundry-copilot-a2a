@@ -52,12 +52,15 @@ Long-lived infrastructure remains declarative under `infra/`.
 
 | Command | What it does | Why it is here |
 | --- | --- | --- |
-| `register-app` | Creates the single-tenant backend API registration, exposes `access_as_user`, adds the Copilot Studio delegated permission, enables optional device-code consent, and creates the confidential-client secret required for OBO. | Establishes the adapter's protected API audience and same-user token exchange. |
+| `register-app` | Creates the single-tenant backend API registration, exposes `access_as_user`, and adds the Copilot Studio delegated permission. It creates a local-development secret by default; `--no-client-secret` leaves the registration ready for managed-identity federation. | Establishes the adapter's protected API audience and same-user token exchange. |
 | `register-spa` | Creates a secretless SPA registration and grants delegated access to the backend's `access_as_user` scope. | Gives the browser the minimum registration needed to call the adapter or APIM facade. |
+| `register-oauth-client` | Creates a single-tenant confidential OAuth client and grants the API's `access_as_user` scope without creating a credential or callback. | Creates an isolated Copilot Studio client boundary before the platform-generated callback and approved secret store are available. |
 | `register-spa-redirect` | Adds and verifies a SPA redirect URI on an existing frontend registration, preserving other redirects and settings. | Connects a dedicated chatbot SPA to its local origin without creating another app or changing permissions. |
 | `register-hub` | Creates the secretless API Hub registration, exposes its own `access_as_user` scope, grants it delegated access to the adapter API, optionally preauthorizes frontends, and optionally binds the gateway managed identity as a federated credential. | Gives the gateway its own audience so browser tokens are never valid against the adapter directly. |
+| `add-federated-credential` | Adds or verifies the exact managed-identity issuer, subject, and token-exchange audience on an existing registration. | Lets the Azure-hosted handler authenticate as its API registration without a password or certificate. |
 | `grant-hub-access` | Grants an existing frontend registration delegated access to the hub's `access_as_user` scope and prints the frontend setting to use. | Repoints a browser client at the hub audience without creating another registration. |
 | `preauthorize-client` | Preauthorizes a client application for an API's delegated scope, preserving existing entries. | Lets a middle tier receive a scope in the OBO flow without a privileged tenant-wide consent operation. |
+| `register-web-redirect` | Adds one exact HTTPS Web callback while preserving existing callbacks. | Completes a Copilot Studio OAuth client after the platform generates its callback URL. |
 | `consent` | Uses device-code authentication to record a per-user delegated Copilot Studio grant. | Supports development tenants where tenant-wide admin consent is not used. |
 | `grant-foundry-consent` | Adds only Foundry's `https://ai.azure.com/user_impersonation` delegated permission to the existing backend registration and grants tenant-wide consent. | Allows the adapter to exchange the caller token for a same-user Foundry token without broad application permissions. |
 | `register-foundry-redirect` | Adds the exact generated Azure APIM consent callback as a Web redirect on the existing backend registration. | Completes the redirect prerequisite for a native Foundry OAuth A2A connection while preserving existing redirects. |
@@ -80,7 +83,7 @@ in the explicitly selected tenant. No client secret or new consent grant is crea
 | --- | --- | --- |
 | `run-mock` | Starts the adapter with the deterministic mock backend and explicit anonymous-development mode. | Exercises the A2A contract and frontend without Azure resources or credentials. |
 | `run-adapter` | Starts the adapter against a live standard-harness Copilot Studio direct-connect URL with authentication and OBO settings. | Provides a concise local live-backend workflow without putting secrets on the command line. |
-| `start-tunnel` | Runs an anonymous Dev Tunnel for the selected local adapter port. | Gives APIM and hosted agents a reachable HTTPS transport endpoint; the adapter runtime itself remains authenticated. |
+| `start-tunnel` | Runs an anonymous Dev Tunnel for the selected local adapter port, optionally reusing a persistent tunnel ID. | Gives APIM and hosted agents a stable reachable HTTPS transport endpoint; the adapter runtime itself remains authenticated. |
 
 ### Provider and gateway configuration
 
@@ -89,7 +92,8 @@ in the explicitly selected tenant. No client secret or new consent grant is crea
 | `enable-foundry-a2a` | Adds or replaces the agent card on an existing Foundry prompt agent, enables its incoming A2A protocol, validates the published card, and can run a smoke prompt. | Makes a Foundry prompt agent callable through the same A2A boundary used by the adapter. |
 | `configure-foundry-chain` | Creates or reuses the Foundry project connection for a target-specific adapter A2A route, attaches it as an authenticated A2A tool, updates the bounded instruction block, and supports safe connection migration. | Configures native provider orchestration without moving orchestration logic into the adapter. |
 | `configure-citadel` | Publishes a separately owned API in an existing APIM service, applies CORS/JWT/rate-limit/payload policies, and optionally creates one card/runtime API per configured Copilot Studio or Foundry agent. | Keeps APIM governance consistent with the adapter's A2A and delegated-token contract. |
-| `configure-hub` | Publishes the API Hub API, whose runtime operations validate a hub-audience token and exchange it on-behalf-of the same user for an adapter-audience token before forwarding. | Gives the gateway its own audience so a browser token is never valid against the adapter, without storing a gateway secret. |
+| `configure-hub` | Publishes the API Hub API, whose runtime operations validate a hub-audience token and exchange it on-behalf-of the same user for an adapter-audience token before forwarding. It can configure one backend or a switchable App Service/Dev Tunnel pair. | Gives the gateway its own audience so a browser token is never valid against the adapter, without storing a gateway secret. |
+| `set-hub-backend` | Switches an owned hub API between its preconfigured App Service and Dev Tunnel origins by changing one APIM named value. | Supports local debugging without republishing policy or weakening the hub token contract. |
 
 `configure-citadel` does not provision APIM, create app registrations, store a subscription key,
 or import arbitrary provider credentials. It forwards the existing delegated backend token and

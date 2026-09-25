@@ -1543,6 +1543,25 @@ It still observes the activity for diagnostics and extracts any citations it car
 of empty deltas does not suppress the final answer. Agents that return only a final message
 remain supported.
 
+Copilot Studio can also send `DynamicPlanStepFinished` event activities before a generic final
+error message. When such an event contains a structured plan-step error, the adapter retains only
+its bounded error code and message. A matching generic final reply is enriched with that message,
+and the sanitized trace records the failed step instead of treating the HTTP 200 SSE envelope as
+a successful turn. Plan arguments and arbitrary event payloads are not copied into the response
+or trace.
+
+Nonempty bounded `thought` values on `DynamicPlan*` events are forwarded as informative
+`Thought: ...` updates. Both browser applications retain the latest bounded update history and
+keep it visible after success or failure, while excluding it from the final answer and follow-up
+conversation history. Traces record only the thought count, not the thought text.
+
+For a matching connector authentication failure, the adapter maps the failed plan
+`taskDialogId` to its advertised tool display name and derives the current orchestrator's
+environment and bot IDs from the Copilot Studio activity identity. It adds an allowlisted
+`https://copilotstudio.microsoft.com/environments/<environment>/bots/<bot>/settings/connections`
+repair link. Both browser applications render that URL as an explicit connection-settings action;
+repair responses are excluded from follow-up history.
+
 Progress is marked with `metadata.isInformative` on its part so a caller can show it while the
 turn runs without it becoming part of the answer. The non-streaming `SendMessage` response never
 contains it.

@@ -16,12 +16,15 @@ internal static class EntraCommands
         CancellationToken cancellationToken)
     {
         arguments.EnsureOnly(
-            "display-name", "preauthorize-azure-cli", "admin-consent", "help");
+            "display-name", "preauthorize-azure-cli", "admin-consent",
+            "no-client-secret", "owner-object-id", "help");
 
         var displayName = arguments.Optional(
             "display-name", "foundry-copilot-a2a-api")!;
         var preauthorizeAzureCli = arguments.Flag("preauthorize-azure-cli");
         var attemptAdminConsent = arguments.Flag("admin-consent");
+        var noClientSecret = arguments.Flag("no-client-secret");
+        var ownerObjectId = OptionalGuid(arguments, "owner-object-id");
 
         var tenantId = (await AzAsync(
             context,
@@ -61,6 +64,7 @@ internal static class EntraCommands
 
         try
         {
+            await AddOwnerAsync(context, appId, ownerObjectId, cancellationToken);
             var objectId = await ResolveApplicationObjectIdAsync(
                 context, appId, cancellationToken);
             var delegatedScopeId = Guid.NewGuid();
@@ -171,28 +175,42 @@ internal static class EntraCommands
                 }
             }
 
-            context.Out.WriteLine("Creating one-year client secret...");
-            var secret = (await AzAsync(
-                context,
-                cancellationToken,
-                "ad", "app", "credential", "reset",
-                "--id", appId,
-                "--append",
-                "--display-name", "adapter-obo",
-                "--years", "1",
-                "--query", "password",
-                "--output", "tsv",
-                "--only-show-errors"))
-                .StandardOutput.Trim();
+            string? secret = null;
+            if (!noClientSecret)
+            {
+                context.Out.WriteLine("Creating one-year client secret...");
+                secret = (await AzAsync(
+                    context,
+                    cancellationToken,
+                    "ad", "app", "credential", "reset",
+                    "--id", appId,
+                    "--append",
+                    "--display-name", "adapter-obo",
+                    "--years", "1",
+                    "--query", "password",
+                    "--output", "tsv",
+                    "--only-show-errors"))
+                    .StandardOutput.Trim();
+            }
 
             context.Out.WriteLine();
-            context.Out.WriteLine("Application created. The client secret is shown once.");
+            context.Out.WriteLine(noClientSecret
+                ? "Application created without a client secret."
+                : "Application created. The client secret is shown once.");
             context.Out.WriteLine($"TenantId:     {tenantId}");
             context.Out.WriteLine($"ClientId:     {appId}");
             context.Out.WriteLine($"Audience:     api://{appId}");
             context.Out.WriteLine(
                 $"Authority:    https://login.microsoftonline.com/{tenantId}/v2.0");
-            context.Out.WriteLine($"ClientSecret: {secret}");
+            if (secret is not null)
+            {
+                context.Out.WriteLine($"ClientSecret: {secret}");
+            }
+            else
+            {
+                context.Out.WriteLine(
+                    "Credential:   add a managed-identity federated credential before Azure use.");
+            }
             context.Out.WriteLine(
                 $"Cleanup:      delete-app --client-id {appId}");
             return 0;
@@ -211,7 +229,8 @@ internal static class EntraCommands
         CancellationToken cancellationToken)
     {
         arguments.EnsureOnly(
-            "api-client-id", "display-name", "redirect-uri", "admin-consent", "help");
+            "api-client-id", "display-name", "redirect-uri", "admin-consent",
+            "owner-object-id", "help");
 
         var apiClientId = arguments.Require("api-client-id");
         var displayName = arguments.Optional(
@@ -220,6 +239,7 @@ internal static class EntraCommands
             .AbsoluteHttpUri("redirect-uri", "http://localhost:5173")
             .AbsoluteUri.TrimEnd('/');
         var attemptAdminConsent = arguments.Flag("admin-consent");
+        var ownerObjectId = OptionalGuid(arguments, "owner-object-id");
 
         var tenantId = (await AzAsync(
             context,
@@ -272,6 +292,7 @@ internal static class EntraCommands
 
         try
         {
+            await AddOwnerAsync(context, spaClientId, ownerObjectId, cancellationToken);
             var objectId = await ResolveApplicationObjectIdAsync(
                 context, spaClientId, cancellationToken);
             var patchBody = JsonSerializer.Serialize(new
@@ -346,6 +367,247 @@ internal static class EntraCommands
         }
     }
 
+    public static async Task<int> RegisterOAuthClientAsync(
+        CliContext context,
+        CommandArguments arguments,
+        CancellationToken cancellationToken)
+    {
+        arguments.EnsureOnly(
+            "api-client-id", "display-name", "owner-object-id", "help");
+
+        var apiClientId = RequireGuid(arguments, "api-client-id");
+        var displayName = arguments.Require("display-name");
+        var ownerObjectId = OptionalGuid(arguments, "owner-object-id");
+        var tenantId = await ResolveTenantIdAsync(context, cancellationToken);
+        var apiScopeId = await ResolveAccessAsUserScopeIdAsync(
+            context, apiClientId, cancellationToken);
+
+        var existing = (await AzAsync(
+            context,
+            cancellationToken,
+            "ad", "app", "list",
+            "--display-name", displayName,
+            "--query", "[].appId",
+            "--output", "tsv"))
+            .StandardOutput
+            .Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+        if (existing.Length > 0)
+        {
+            throw new CliException(
+                $"An application named '{displayName}' already exists " +
+                $"(client id {string.Join(", ", existing)}).");
+        }
+
+        context.Out.WriteLine($"Creating OAuth client registration '{displayName}'...");
+        var clientId = (await AzAsync(
+            context,
+            cancellationToken,
+            "ad", "app", "create",
+            "--display-name", displayName,
+            "--sign-in-audience", "AzureADMyOrg",
+            "--query", "appId",
+            "--output", "tsv"))
+            .StandardOutput.Trim();
+
+        try
+        {
+            await AddOwnerAsync(context, clientId, ownerObjectId, cancellationToken);
+            context.Out.WriteLine("Granting delegated access to the API...");
+            await RetryAsync(
+                () => AzAsync(
+                    context,
+                    cancellationToken,
+                    "ad", "app", "permission", "add",
+                    "--id", clientId,
+                    "--api", apiClientId,
+                    "--api-permissions", $"{apiScopeId}=Scope",
+                    "--only-show-errors"),
+                cancellationToken);
+
+            context.Out.WriteLine("Creating the OAuth client service principal...");
+            await RetryAsync(
+                () => AzAsync(
+                    context,
+                    cancellationToken,
+                    "ad", "sp", "create",
+                    "--id", clientId,
+                    "--only-show-errors"),
+                cancellationToken);
+
+            context.Out.WriteLine();
+            context.Out.WriteLine("OAuth client created without a credential or redirect URI.");
+            context.Out.WriteLine($"TenantId:       {tenantId}");
+            context.Out.WriteLine($"ClientId:       {clientId}");
+            context.Out.WriteLine($"Delegated scope: api://{apiClientId}/access_as_user");
+            context.Out.WriteLine(
+                "Next: create the credential in an approved secret store, configure the " +
+                "Copilot Studio connection, then register its generated callback.");
+            context.Out.WriteLine($"Cleanup:        delete-app --client-id {clientId}");
+            return 0;
+        }
+        catch
+        {
+            context.Error.WriteLine(
+                $"OAuth client registration did not complete. Clean up with: " +
+                $"delete-app --client-id {clientId}");
+            throw;
+        }
+    }
+
+    public static async Task<int> AddFederatedCredentialAsync(
+        CliContext context,
+        CommandArguments arguments,
+        CancellationToken cancellationToken)
+    {
+        arguments.EnsureOnly("client-id", "principal-id", "name", "help");
+
+        var clientId = RequireGuid(arguments, "client-id");
+        var principalId = RequireGuid(arguments, "principal-id");
+        var name = arguments.Optional("name", "managed-identity")!;
+        var tenantId = await ResolveTenantIdAsync(context, cancellationToken);
+        var issuer = $"https://login.microsoftonline.com/{tenantId}/v2.0";
+        const string audience = "api://AzureADTokenExchange";
+
+        var existingJson = (await AzAsync(
+            context,
+            cancellationToken,
+            "ad", "app", "federated-credential", "list",
+            "--id", clientId,
+            "--output", "json"))
+            .StandardOutput;
+        using var existing = JsonDocument.Parse(existingJson);
+        var namedCredentials = existing.RootElement
+            .EnumerateArray()
+            .Where(item => string.Equals(
+                item.GetProperty("name").GetString(),
+                name,
+                StringComparison.Ordinal))
+            .ToArray();
+        if (namedCredentials.Length > 1)
+        {
+            throw new CliException(
+                $"Application {clientId} has multiple federated credentials named '{name}'.");
+        }
+
+        if (namedCredentials.Length == 1)
+        {
+            var credential = namedCredentials[0];
+            var audiences = credential.GetProperty("audiences")
+                .EnumerateArray()
+                .Select(value => value.GetString())
+                .ToArray();
+            if (!string.Equals(
+                    credential.GetProperty("issuer").GetString(),
+                    issuer,
+                    StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(
+                    credential.GetProperty("subject").GetString(),
+                    principalId,
+                    StringComparison.OrdinalIgnoreCase) ||
+                audiences.Length != 1 ||
+                !string.Equals(audiences[0], audience, StringComparison.Ordinal))
+            {
+                throw new CliException(
+                    $"Federated credential '{name}' exists with different trust settings.");
+            }
+
+            context.Out.WriteLine(
+                $"Federated credential '{name}' already matches the managed identity.");
+            return 0;
+        }
+
+        var body = JsonSerializer.Serialize(new
+        {
+            name,
+            issuer,
+            subject = principalId,
+            audiences = new[] { audience },
+            description = "Managed identity federation for foundry-copilot-a2a."
+        });
+        using var bodyFile = await TemporaryTextFile.CreateAsync(body, cancellationToken);
+        await AzAsync(
+            context,
+            cancellationToken,
+            "ad", "app", "federated-credential", "create",
+            "--id", clientId,
+            "--parameters", bodyFile.AzureCliReference,
+            "--only-show-errors");
+
+        context.Out.WriteLine(
+            $"Added federated credential '{name}' to application {clientId}.");
+        return 0;
+    }
+
+    public static async Task<int> RegisterWebRedirectAsync(
+        CliContext context,
+        CommandArguments arguments,
+        CancellationToken cancellationToken)
+    {
+        arguments.EnsureOnly("client-id", "redirect-uri", "help");
+
+        var clientId = RequireGuid(arguments, "client-id");
+        var redirectUri = arguments.AbsoluteHttpUri("redirect-uri");
+        if (redirectUri.Scheme != Uri.UriSchemeHttps ||
+            !string.IsNullOrEmpty(redirectUri.UserInfo) ||
+            !string.IsNullOrEmpty(redirectUri.Query) ||
+            !string.IsNullOrEmpty(redirectUri.Fragment))
+        {
+            throw new CliException(
+                "Option '--redirect-uri' must be an HTTPS URL without credentials, a query, or a fragment.");
+        }
+
+        var objectId = await ResolveApplicationObjectIdAsync(
+            context, clientId, cancellationToken);
+        var redirectsJson = (await AzAsync(
+            context,
+            cancellationToken,
+            "ad", "app", "show",
+            "--id", clientId,
+            "--query", "web.redirectUris",
+            "--output", "json"))
+            .StandardOutput;
+        using var redirectsDocument = JsonDocument.Parse(redirectsJson);
+        var redirects = redirectsDocument.RootElement.ValueKind == JsonValueKind.Array
+            ? redirectsDocument.RootElement
+                .EnumerateArray()
+                .Select(value => value.GetString())
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value!)
+                .ToList()
+            : [];
+        var normalized = redirectUri.AbsoluteUri;
+        if (redirects.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+        {
+            context.Out.WriteLine(
+                $"Web redirect URI '{normalized}' is already registered.");
+            return 0;
+        }
+
+        redirects.Add(normalized);
+        var patchBody = JsonSerializer.Serialize(new
+        {
+            web = new
+            {
+                redirectUris = redirects
+            }
+        });
+        using var patchFile = await TemporaryTextFile.CreateAsync(
+            patchBody, cancellationToken);
+        await AzAsync(
+            context,
+            cancellationToken,
+            "rest",
+            "--method", "PATCH",
+            "--url", $"https://graph.microsoft.com/v1.0/applications/{objectId}",
+            "--headers", "Content-Type=application/json",
+            "--body", patchFile.AzureCliReference,
+            "--output", "none");
+
+        context.Out.WriteLine(
+            $"Registered Web redirect URI '{normalized}' on application {clientId}.");
+        return 0;
+    }
+
     public static async Task<int> DeleteAppAsync(
         CliContext context,
         CommandArguments arguments,
@@ -413,11 +675,12 @@ internal static class EntraCommands
     {
         arguments.EnsureOnly(
             "api-client-id", "display-name", "managed-identity-principal-id",
-            "preauthorize-client-ids", "admin-consent", "help");
+            "preauthorize-client-ids", "admin-consent", "owner-object-id", "help");
 
         var apiClientId = RequireGuid(arguments, "api-client-id");
         var displayName = arguments.Optional(
             "display-name", "foundry-copilot-a2a-hub")!;
+        var ownerObjectId = OptionalGuid(arguments, "owner-object-id");
         var managedIdentityPrincipalId = arguments.Optional("managed-identity-principal-id");
         if (managedIdentityPrincipalId is not null &&
             !Guid.TryParse(managedIdentityPrincipalId, out _))
@@ -465,6 +728,7 @@ internal static class EntraCommands
 
         try
         {
+            await AddOwnerAsync(context, hubClientId, ownerObjectId, cancellationToken);
             var objectId = await ResolveApplicationObjectIdAsync(
                 context, hubClientId, cancellationToken);
             var hubScopeId = Guid.NewGuid();
@@ -881,6 +1145,42 @@ internal static class EntraCommands
         return Guid.TryParse(value, out _)
             ? value
             : throw new CliException($"Option '--{name}' must be an application (client) ID.");
+    }
+
+    private static string? OptionalGuid(CommandArguments arguments, string name)
+    {
+        var value = arguments.Optional(name);
+        if (value is null)
+        {
+            return null;
+        }
+
+        return Guid.TryParse(value, out _)
+            ? value
+            : throw new CliException($"Option '--{name}' must be an object ID.");
+    }
+
+    private static async Task AddOwnerAsync(
+        CliContext context,
+        string clientId,
+        string? ownerObjectId,
+        CancellationToken cancellationToken)
+    {
+        if (ownerObjectId is null)
+        {
+            return;
+        }
+
+        context.Out.WriteLine($"Assigning application owner {ownerObjectId}...");
+        await RetryAsync(
+            () => AzAsync(
+                context,
+                cancellationToken,
+                "ad", "app", "owner", "add",
+                "--id", clientId,
+                "--owner-object-id", ownerObjectId,
+                "--only-show-errors"),
+            cancellationToken);
     }
 
     private static IReadOnlyList<string> ParseGuidList(string? value, string name)
