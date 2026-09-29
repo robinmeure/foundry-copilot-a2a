@@ -524,6 +524,15 @@ This avoids giving a provider-managed OAuth connection the adapter's OBO
 application credential. Multiple agents within the same trusted integration can
 still use that integration's client registration.
 
+A Copilot Studio custom connector with on-behalf-of login is an instance of this
+role: its connector registration preauthorizes the Azure API Connections service
+principal and exchanges the user's sign-in token for the adapter scope. It
+creates each user's connection silently instead of eliminating it. Converting a
+native A2A connection's underlying connector to OBO was validated in this
+repository, but it isn't documented or supported. End users also need to be
+shared on the orchestrator and specialists. See
+[OBO custom connectors](copilot-studio-a2a-connections.md#on-behalf-of-obo-custom-connectors).
+
 ```text
 Frontend SPA or native OAuth client registration
   | requests api://<adapter-client-id>/access_as_user
