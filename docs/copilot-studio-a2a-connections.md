@@ -385,6 +385,12 @@ user, and the specialist answered. The maker-configured generic OAuth 2.0
 connection on the same route, by contrast, requires each user to complete an
 interactive sign-in once.
 
+The result was reproduced in a second, independent run with a new connector app
+registration, a new connected agent, and a new connector, following the setup
+below. The first run converted the connector with `pac connector update`. The
+second used the Power Apps Security tab, which is simpler and is the procedure
+in step 6.
+
 #### Tested flow
 
 ```text
@@ -450,52 +456,137 @@ connection.
    ```
 
 3. **Confirm tenant-wide admin consent** for the connector app to the backend
-   scope. Check the **API permissions** blade of the connector app for a green
-   **Granted** status on `access_as_user`, or grant it there. This consent is
+   scope. `--admin-consent` in step 1 normally creates the grant already, so this
+   step is a check. Look at the **API permissions** blade of the connector app for
+   a green **Granted** status on `access_as_user`, or grant it there. This consent is
    essential: without it, the silent exchange fails and each user is sent to the
    connection manager with "I couldn't connect. Open connection manager to verify
    your credentials."
 
-4. **Create a client secret** on the connector app in the Azure portal under
-   **Certificates & secrets**. Copy the secret **Value**, not the **Secret ID**.
-   Don't store it in the repository, user secrets, or chat. It's entered only into
-   the connector in step 5 and step 9.
+4. **Create a client secret on the connector app.** The connector is a
+   confidential client: the Power Platform connection service uses this secret to
+   redeem the authorization code on the maker's first connection, and to perform
+   the silent on-behalf-of exchange for every other user. `register-hub`
+   deliberately creates the registration without a secret, so that no secret
+   passes through the CLI output or shell history.
 
-5. **Add the A2A connected agent** in the orchestrator (**Agents** > **Add an
-   agent**, then choose the Agent2Agent option), side by side with
-   any existing connection to the same specialist:
+   1. In the [Microsoft Entra admin center](https://entra.microsoft.com), open
+      **Identity** > **Applications** > **App registrations** > **All
+      applications**, and select `<prefix>-<agent-id>-obo-connector`. You can
+      also search for `<connector-app-client-id>`.
+   2. Open **Certificates & secrets** > **Client secrets** > **New client
+      secret**.
+   3. Enter a description that identifies the consumer, for example
+      `copilot-studio-<agent-id>-obo`, and choose an expiry that matches your
+      rotation policy. When the secret expires, every user's connection fails,
+      not only new ones.
+   4. Select **Add**, then copy the **Value** column immediately. The portal
+      shows it only once. The **Secret ID** column is a GUID that identifies the
+      secret. Pasting the Secret ID instead of the Value is what causes
+      `AADSTS7000215: Invalid client secret provided` later.
 
-   | Field | Value |
-   | --- | --- |
-   | Endpoint URL | `https://<apim-name>.azure-api.net/<api-path>/a2a-agents/<agent-id>/a2a` |
-   | Authentication | OAuth 2.0 |
-   | Client ID | `<connector-app-client-id>` |
-   | Client secret | the secret **Value** from step 4 |
-   | Authorization URL | `https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/authorize` |
-   | Token URL template | `https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token` |
-   | Refresh URL | `https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token` |
-   | Scopes | `api://<backend-client-id>/access_as_user offline_access` |
+   Keep the value only until step 6 finishes. Don't store it in the repository,
+   user secrets, scripts, tickets, or chat. It's entered in exactly two places:
+   the connected-agent form in step 5, and the Power Apps Security tab in step 6,
+   which requires it again when the identity provider changes. To rotate the
+   secret later, add a new one, paste it into the Security tab with the step 6
+   procedure, and then
+   delete the old one. Existing user connections keep working, because the
+   secret belongs to the connector, not to each connection.
 
-   Give it a distinct name (for example `<Specialist> OBO`) so the connector is
-   easy to identify. Copilot Studio creates a Dataverse custom connector for it
-   with `identityProvider: oauth2` and `redirectMode: GlobalPerConnector`.
+5. **Add the A2A connected agent to the orchestrator.** This step creates the
+   Power Platform custom connector that steps 6 and 7 convert and verify. Copilot Studio
+   exposes only generic OAuth 2.0 in this form, so the form is used just to
+   produce a connector with the right host, route, client ID, and secret.
 
-6. **Find and download the underlying connector:**
+   1. In [Copilot Studio](https://copilotstudio.microsoft.com), select the
+      orchestrator's environment, open the orchestrator, and go to **Agents** >
+      **Add an agent**. Then choose the Agent2Agent (A2A) option.
+   2. Fill the form:
+
+      | Field | Value | Why |
+      | --- | --- | --- |
+      | Name | `<Specialist> OBO` | A distinct name makes the generated connector easy to find in steps 6 and 7, and keeps it apart from any existing connection to the same specialist. |
+      | Description | What the specialist does | The orchestrator's generative routing uses it to decide when to call the agent. Reuse the description of the existing connected agent. |
+      | Endpoint URL | `https://<apim-name>.azure-api.net/<api-path>/a2a-agents/<agent-id>/a2a` | The APIM per-agent route. `<api-path>` is the APIM API path that `configure-citadel` published, and `<agent-id>` is the adapter's agent ID. This is the same URL the generic OAuth 2.0 connection already uses. |
+      | Authentication | OAuth 2.0 | Only generic OAuth 2.0 is available here. Step 6 converts it to Microsoft Entra ID with on-behalf-of login. |
+      | Client ID | `<connector-app-client-id>` | The app from step 1, not the adapter backend and not any existing OAuth client. Tokens are issued to this app, and the on-behalf-of exchange runs as this app. |
+      | Client secret | The secret **Value** from step 4 | Stored in the connector, not in each connection. |
+      | Authorization URL | `https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/authorize` | The single-tenant v2 endpoint. Don't use `common` or `organizations`, because the connector app is single-tenant. |
+      | Token URL template | `https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token` | Used to redeem the code and refresh tokens. |
+      | Refresh URL | `https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token` | The same token endpoint. |
+      | Scopes | `api://<backend-client-id>/access_as_user offline_access` | The adapter scope that APIM and the adapter validate. `offline_access` issues refresh tokens so connections stay valid. Enter it space-separated exactly as shown, because step 6 reuses the same string. |
+
+   3. Save the connected agent. The wizard lets you save without creating a
+      connection, and the OBO setup doesn't need one at this point, because the
+      connection that matters is the one created after the conversion in
+      step 9. If your version of the wizard does require a connection, create
+      it as the maker. That's harmless: it's bound to the generic OAuth 2.0
+      definition and is replaced or re-authenticated in step 9. Either way,
+      test users have no connection to this new connector, so the per-user test
+      stays valid.
+   4. Leave any existing connected agent for the same specialist in place until
+      step 9, so you can compare the two and roll back easily.
+
+   On save, Copilot Studio creates a Dataverse custom connector for the agent,
+   with `identityProvider: oauth2`, `redirectMode: GlobalPerConnector`, and one
+   `POST` operation for the endpoint route. It has no `redirectUrl` yet; that's
+   generated in step 6. The connector is solution-aware and belongs to the
+   orchestrator's environment.
+
+6. **Convert the connector to Microsoft Entra ID with on-behalf-of login in
+   Power Apps.** This is the procedure from the Learn article's
+   **Configure Power Apps authentication settings for your custom connector**,
+   applied to the connector that step 5 generated.
+
+   1. Open [Power Apps](https://make.powerapps.com), select the orchestrator's
+      environment, and open **Custom connectors** (**More** > **Discover all**
+      if it isn't pinned). The connector appears there, not under
+      **Connections**. If it isn't listed, open it from **Solutions** >
+      **Default Solution** > **Custom connectors**.
+   2. Reload the page (Ctrl+F5) so the editor loads the connector's current
+      definition, then select **Edit** (the pencil icon) on the connector with
+      the name from step 5.
+   3. Open **2. Security**. **Authentication type** is **OAuth 2.0** and
+      **Identity provider** shows **Generic Oauth 2**, as generated by the
+      wizard.
+   4. Change **Identity provider** to **Microsoft Entra ID**. The form switches
+      to the Entra ID fields. Fill them in:
+
+      | Field | Value | Notes |
+      | --- | --- | --- |
+      | Client ID | `<connector-app-client-id>` | The app from step 1. |
+      | Client secret | The secret **Value** from step 4 | Required again, because the identity provider changed. |
+      | Authorization URL | `https://login.microsoftonline.com` | The default. |
+      | Tenant ID | `<tenant-id>` | The connector app is single-tenant, so don't leave `common`. |
+      | Resource URL | `api://<backend-client-id>` | The **adapter backend's** Application ID URI, the API being called. **Not** the connector app's `api://<connector-app-client-id>`. |
+      | Enable on-behalf-of login | `true` | Makes the connection service create each user's connection silently. |
+      | Scope | `api://<backend-client-id>/access_as_user offline_access` | Space-separated, the same string as in step 5. |
+
+      The two `api://` values are easy to confuse. A wrong **Resource URL** makes
+      the connection service request tokens for the connector app itself, which
+      APIM's audience check would reject with `401`. This mistake was caught at
+      step 7 in the second validation run, before any call was made.
+   5. Select **Update connector**. On the first save, the platform generates
+      the **Redirect URL** shown at the bottom of the Security page, in the
+      form `https://global.consent.azure-apim.net/redirect/<connector-name>-<suffix>`.
+      The wizard-created connector doesn't have one until this save.
+
+   Don't edit the connector afterwards from the A2A connected-agent UI in
+   Copilot Studio, which offers only generic OAuth 2.0 and can revert the
+   conversion.
+
+7. **Verify the conversion persisted** by downloading the connector. Work in a
+   scratch folder outside the repository, because the files contain
+   environment-specific identifiers:
 
    ```powershell
    pac connector list
    pac connector download --connector-id <connector-id> --outputDirectory <scratch-folder>
    ```
 
-   Keep an unmodified copy of `apiProperties.json` for rollback. Work in a
-   scratch folder outside the repository; the files contain environment-specific
-   identifiers.
-
-7. **Convert the connector to Entra ID with on-behalf-of login.** In
-   `apiProperties.json`, replace
-   `properties.connectionParameters.token.oAuthSettings` with the Entra ID shape
-   the Learn article's **Enable on-behalf-of login** switch produces, keeping the
-   existing `redirectMode` and `redirectUrl`:
+   In `apiProperties.json`, `properties.connectionParameters.token.oAuthSettings`
+   must look like this:
 
    ```json
    {
@@ -505,9 +596,9 @@ connection.
        "api://<backend-client-id>/access_as_user offline_access"
      ],
      "redirectMode": "GlobalPerConnector",
-     "redirectUrl": "<existing-redirect-url>",
+     "redirectUrl": "https://global.consent.azure-apim.net/redirect/<connector-name>-<suffix>",
      "properties": {
-       "IsFirstParty": "False",
+       "IsFirstParty": "True",
        "AzureActiveDirectoryResourceId": "api://<backend-client-id>",
        "IsOnbehalfofLoginSupported": true
      },
@@ -520,61 +611,62 @@ connection.
    }
    ```
 
-   Leave `apiDefinition.json` unchanged. The host, base path, and single
-   `POST /<api-path>/a2a-agents/<agent-id>/a2a` operation stay the same.
+   Check in particular that `AzureActiveDirectoryResourceId` and `ResourceUri`
+   name the backend, not the connector app. The platform sets `IsFirstParty` to
+   `"True"` on save. That was observed in both validation runs and didn't affect
+   the result. `apiDefinition.json` keeps the wizard's host, base path, and
+   single `POST /<api-path>/a2a-agents/<agent-id>/a2a` operation.
 
-8. **Apply the change.** `pac connector update` requires both files:
+8. **Register the connector's redirect URL** on the connector app. Use the
+   **Redirect URL** from step 6, or the `redirectUrl` from the step 7 download:
 
    ```powershell
-   pac connector update --connector-id <connector-id> `
-     --api-definition-file <scratch-folder>\apiDefinition.json `
-     --api-properties-file <scratch-folder>\apiProperties.json
+   dotnet run --project .\src\FoundryCopilotA2A.Cli -- register-web-redirect `
+     --client-id <connector-app-client-id> `
+     --redirect-uri <redirect-url>
    ```
 
-9. **Re-enter the client secret in Power Apps.** `pac connector update` has no
-   secret parameter and clears the stored secret, so creating a connection now
-   fails with `AADSTS7000215: Invalid client secret provided`. In
-   [Power Apps](https://make.powerapps.com), select the environment, open
-   **Custom connectors** (**More** > **Discover all** if it isn't pinned), select
-   **Edit** on the connector, and open **2. Security**. Confirm **Identity
-   provider** is **Microsoft Entra ID**, **Enable on-behalf-of login** is `true`,
-   and the client ID, resource URL, and scope match step 7. Paste the secret
-   **Value** into **Client secret** and select **Update connector**.
+   Repeat this if the connector is recreated, because the generated URL changes.
 
-   The connector appears under **Custom connectors**, not under **Connections**.
-   If it isn't listed, open it from **Solutions** > **Default Solution** >
-   **Custom connectors**. Don't edit it from the A2A connected-agent UI in Copilot
-   Studio, which offers only generic OAuth 2.0 and can revert the conversion.
+9. **Finish the connected agent in Copilot Studio.** On the OBO connected agent,
+   create the maker connection (**Not connected** > **Create new connection**)
+   and sign in as the maker. Set **Credentials to use** to **End user
+   credentials**, disable any older connected agent that points at the same
+   specialist so the orchestrator can't route to it, and **Publish** the
+   orchestrator.
 
-10. **Verify the conversion persisted** by downloading the connector again and
-    checking `oAuthSettings`. Expect `identityProvider: aad`,
-    `IsOnbehalfofLoginSupported: true`, and `EnableOnbehalfOfLogin: "true"`. The
-    platform sets `IsFirstParty` to `"True"` on save. That was observed and didn't
-    affect the result.
-
-11. **Register the connector's redirect URL** on the connector app. Use the
-    `redirectUrl` from the downloaded `apiProperties.json`, which has the form
-    `https://global.consent.azure-apim.net/redirect/<connector-name>-<suffix>`:
-
-    ```powershell
-    dotnet run --project .\src\FoundryCopilotA2A.Cli -- register-web-redirect `
-      --client-id <connector-app-client-id> `
-      --redirect-uri <redirect-url>
-    ```
-
-    Repeat this if the connector is recreated, because the generated URL changes.
-
-12. **Finish the connected agent in Copilot Studio.** On the OBO connected agent,
-    create the maker connection (**Not connected** > **Create new connection**),
-    set **Credentials to use** to **End user credentials**, disable any older
-    connected agent that points at the same specialist so the orchestrator can't
-    route to it, and **Publish** the orchestrator.
-
-13. **Share the agents.** Share the orchestrator, and each Copilot Studio
+10. **Share the agents.** Share the orchestrator, and each Copilot Studio
     specialist that the adapter invokes as the user, with the target users or a
     security group, with permission to use rather than edit the agent. Otherwise
     the channel answers "You don't have access to talk to this bot, contact the
-    owner."
+    owner." The Learn article also recommends sharing the custom connector with
+    end users (**Can view**). The validation runs succeeded without doing so,
+    but share it if users get connector permission errors.
+
+##### Alternative: convert with `pac connector update`
+
+The first validation run converted the connector from the command line instead
+of step 6: download it, replace `oAuthSettings` in `apiProperties.json` with the
+shape from step 7 (without `redirectUrl` if the download has none), and apply
+both files:
+
+```powershell
+pac connector update --connector-id <connector-id> `
+  --api-definition-file <scratch-folder>\apiDefinition.json `
+  --api-properties-file <scratch-folder>\apiProperties.json
+```
+
+This works, but has two pitfalls, so prefer step 6:
+
+- `pac connector update` has no secret parameter and clears the stored client
+  secret. Creating a connection afterwards fails with
+  `AADSTS7000215: Invalid client secret provided`, until the secret **Value**
+  is re-entered in the Power Apps Security tab.
+- In the second validation run, the Power Apps editor opened for that secret
+  re-entry still showed **Generic Oauth 2**. Selecting **Update connector**
+  wrote the generic OAuth 2.0 settings back and silently reverted the
+  conversion. If you use `pac`, make sure the Security tab shows **Microsoft
+  Entra ID** before saving, and always re-verify with step 7.
 
 #### Verification
 
@@ -599,13 +691,15 @@ silent connection creation.
 
 | Symptom | Cause | Resolution |
 | --- | --- | --- |
-| `AADSTS7000215: Invalid client secret provided` when creating the connection | `pac connector update` cleared the secret, or the **Secret ID** was entered instead of the **Value** | Re-enter the secret **Value** in Power Apps (setup step 9) |
+| `AADSTS7000215: Invalid client secret provided` when creating the connection | `pac connector update` cleared the secret, or the **Secret ID** was entered instead of the **Value** | Re-enter the secret **Value** in the Power Apps Security tab (setup step 6) |
 | The connector isn't in the **Connections** list | Connections are created only after the token exchange succeeds; the connector is a separate object | Open **Custom connectors**, or **Solutions** > **Default Solution** > **Custom connectors** |
 | `connectorRequestFailure ... returned an HTTP error with code 404` | APIM returns 404 before the adapter, for example when the per-agent API's backend points at a Dev Tunnel that hosts no port | Call the APIM route with a valid token; if the adapter sees no request, fix the APIM API service URL |
-| "You don't have access to talk to this bot, contact the owner." | The user isn't shared on the orchestrator | Share the orchestrator and specialists (setup step 13) |
+| "You don't have access to talk to this bot, contact the owner." | The user isn't shared on the orchestrator | Share the orchestrator and specialists (setup step 10) |
 | "I couldn't connect. Open connection manager to verify your credentials." and the connection shows **Not Connected** | The connector app has no tenant-wide admin consent to the backend scope, so the silent exchange fails | Grant admin consent (setup step 3) and retry in a new conversation |
 | `AADSTS65001` in adapter logs | The backend's own grant to Power Platform `CopilotStudio.Copilots.Invoke` is missing | Grant admin consent on the backend registration |
-| A sign-in card appears for the specialist | The connected agent still uses the generic OAuth 2.0 connector, or the conversion was reverted | Disable the old connected agent; re-download the connector and check step 10 |
+| A sign-in card appears for the specialist | The connected agent still uses the generic OAuth 2.0 connector, or the conversion was reverted | Disable the old connected agent; re-download the connector and check step 7 |
+| Download shows `identityProvider: oauth2` again after a Power Apps save | The editor loaded the generic OAuth 2.0 definition (for example a stale page after `pac connector update`) and **Update connector** wrote it back | Reload the page, redo setup step 6, and re-verify with step 7 |
+| `ResourceUri` in the download names the connector app, or the specialist call fails with `401` from APIM although the connection is **Connected** | **Resource URL** was set to `api://<connector-app-client-id>` instead of the backend's, so tokens get the wrong audience | Set **Resource URL** to `api://<backend-client-id>` (setup step 6) and check `ResourceUri` (step 7) |
 
 #### Operational caveats
 
@@ -617,7 +711,7 @@ silent connection creation.
   Power Apps (**Custom connectors** > **Security**), not through `pac`. Consider
   the secret another confidential credential with its own expiry monitoring.
 - **Per environment.** The connector, its redirect URL, and user connections are
-  environment-scoped. Repeat steps 5 to 12 in each Power Platform environment.
+  environment-scoped. Repeat steps 5 to 9 in each Power Platform environment.
 - **Client restriction.** APIM and the adapter currently accept any client that
   obtained an `access_as_user` token. To pin this route to the connector app, add
   an `azp` claim check to the APIM `validate-jwt` policy for that API.
