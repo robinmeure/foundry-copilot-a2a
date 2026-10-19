@@ -73,6 +73,8 @@ internal sealed class CliApplication(CliContext context)
                     context, commandArguments, cancellationToken),
                 "test-adapter" => await SmokeTestCommands.TestAdapterAsync(
                     context, commandArguments, cancellationToken),
+                "test-copilot-file-upload" => await CopilotFileUploadProbe.RunAsync(
+                    context, commandArguments, cancellationToken),
                 "configure-citadel" => await CitadelCommands.ConfigureAsync(
                     context, commandArguments, cancellationToken),
                 "configure-hub" => await HubCommands.ConfigureAsync(
@@ -167,6 +169,8 @@ internal sealed class CliApplication(CliContext context)
               run-adapter   Start the adapter against a live Copilot Studio connection URL.
               run-mock      Start the adapter with its local mock backend.
               test-adapter  Exercise an adapter directly over A2A.
+              test-copilot-file-upload
+                            Probe file-grounded answers through the Copilot Studio SDK.
               start-tunnel  Expose the local adapter through an anonymous Dev Tunnel.
               configure-citadel
                             Publish a separate delegated-OAuth API in an existing APIM instance.
@@ -190,6 +194,26 @@ internal sealed class CliApplication(CliContext context)
     {
         var help = command switch
         {
+            "test-copilot-file-upload" =>
+                """
+                test-copilot-file-upload
+                    --direct-connect-url-env <variable>
+                    [--bearer-token-env <variable>] [--obo]
+                    [--tenant-id-env <variable>] [--client-id-env <variable>]
+                    [--client-secret-env <variable>] [--timeout-seconds <10-600>]
+
+                Sends an in-memory synthetic TXT attachment using Copilot Studio Client 1.8.77.
+                Requires file-grounded facts, a follow-up answer, and a separate no-file control.
+                No agent settings, registrations, or consent grants are changed.
+
+                By default the bearer-token variable contains an existing delegated Copilot Studio
+                token. With --obo it contains an adapter-audience user token, exchanged using the
+                existing backend credentials. If absent in OBO mode, device-code sign-in is used.
+                Defaults: COPILOT_STUDIO_BEARER_TOKEN, COPILOT_STUDIO_TENANT_ID,
+                COPILOT_STUDIO_CLIENT_ID, COPILOT_STUDIO_CLIENT_SECRET; timeout 300 seconds.
+                Connection URLs, credentials, bearer tokens, and answers are not printed.
+                A failure is scoped to this agent and candidate payload, not all SDK file input.
+                """,
             "register-app" =>
                 """
                 register-app [--display-name <name>] [--preauthorize-azure-cli] [--admin-consent]

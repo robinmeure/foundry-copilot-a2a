@@ -35,6 +35,10 @@ public sealed class RoutingAgentInvoker(
                     [])
                 : throw new AdapterRequestException(
                     $"Agent '{metadata.AgentId}' is not configured."));
+        if (metadata.Files.Count > 0 && agent.ProviderKind != AgentProvider.CopilotStudio)
+        {
+            throw new AdapterRequestException(A2AInputFiles.UnsupportedProviderMessage);
+        }
         var target = metadata.ChainTargetAgentId is null
             ? null
             : catalog.ResolveChainTarget(agent.Id, metadata.ChainTargetAgentId);

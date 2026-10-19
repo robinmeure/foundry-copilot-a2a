@@ -37,6 +37,32 @@ button:focus-visible, a:focus-visible, summary:focus-visible, textarea:focus-vis
 .brand-dot { color: #b37d00; }
 .brand-caption { display: block; color: var(--muted); font-size: 11px; margin-top: 5px; }
 .sidebar-nav { margin-top: 38px; }
+.chat-history { margin-top: 24px; min-height: 0; }
+.chat-history > summary { display: flex; justify-content: space-between; padding: 10px; font-size: 12px; font-weight: 600; }
+.chat-history > summary span { color: var(--muted); font-weight: 400; }
+.history-scope, .history-empty { padding: 0 10px; color: var(--muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.chat-history ul { list-style: none; padding: 0; margin: 12px 0 0; }
+.chat-history li { display: flex; align-items: center; border-radius: 4px; margin-bottom: 4px; }
+.chat-history li[data-current="true"] { background: #f8edcd; }
+.chat-history li:hover { background: #f4f4f6; }
+.history-open { min-width: 0; flex: 1; border: 0; color: inherit; background: transparent; padding: 12px 10px; text-align: left; }
+.history-open > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.history-open small { display: block; color: var(--muted); margin-top: 6px; font-size: 10px; }
+.chat-history .icon-button { width: 32px; height: 40px; }
+.text-button { border: 0; padding: 8px 0; background: transparent; color: #745200; text-decoration: underline; text-underline-offset: 3px; text-align: left; }
+.page-alert .text-button { display: block; }
+.conversation-identity { position: relative; flex-shrink: 0; color: var(--muted); font-size: 11px; }
+.conversation-identity > summary { display: flex; align-items: center; gap: 6px; padding: 8px 0; }
+.conversation-identity > div { position: absolute; right: 0; top: 100%; width: min(320px, calc(100vw - 40px)); padding: 16px; z-index: 2; background: #fff; border: 1px solid #dedee4; border-radius: 4px; box-shadow: 0 6px 18px #22222212; line-height: 1.6; }
+.conversation-identity code { display: block; margin-top: 8px; color: #2b2b2e; overflow-wrap: anywhere; user-select: all; }
+.conversation-identity p { margin-bottom: 0; }
+.pending-file, .message-file { display: flex; gap: 8px; align-items: center; min-width: 0; font-size: 12px; }
+.pending-file { padding: 4px 8px; margin-bottom: 8px; background: #f4f4f6; border-radius: 4px; }
+.pending-file > span, .message-file > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.pending-file small, .message-file small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
+.message-file { border-top: 1px solid #d7d7de; margin-top: 12px; padding-top: 10px; }
+.upload-note { margin: 10px 0 0; color: #775619; font-size: 11px; line-height: 1.6; text-align: center; }
+.attach-button { margin-right: auto; }
 .nav-button, .help-menu summary {
   display: flex;
   align-items: center;
@@ -243,6 +269,11 @@ kbd { font: inherit; font-weight: 600; }
   .brand h1 { font-size: 20px; }
   .brand-caption { font-size: 10px; }
   .sidebar-nav { margin: 0; }
+  .chat-history { order: 4; width: 100%; margin-top: 4px; }
+  .chat-history > summary { min-height: 36px; padding: 8px 0; }
+  .chat-history[open] ul { max-height: 150px; overflow-y: auto; margin-top: 6px; }
+  .chat-history .history-scope { margin: 0; padding: 0; }
+  .chat-history .history-empty { margin: 4px 0; padding: 0; }
   .nav-button { gap: 6px; width: auto; padding: 10px 8px; font-size: 12px; }
   .sidebar-footer { display: flex; align-items: center; gap: 4px; margin: 0; padding: 0; }
   .account { padding: 0; gap: 0; }
@@ -254,6 +285,8 @@ kbd { font: inherit; font-weight: 600; }
   .help-menu[open] .help-content { position: absolute; top: calc(100% + 6px); right: 16px; z-index: 1; width: min(280px, calc(100vw - 32px)); padding: 8px 16px; border: 1px solid #dcdce1; border-radius: 4px; background: #fff; box-shadow: 0 8px 24px #22222212; }
   .chat-workspace { min-height: 0; }
   .conversation-header { min-height: 52px; padding: 14px 20px; }
+  .conversation-identity { max-width: 45%; }
+  .conversation-identity > summary { font-size: 10px; }
   .session-label { display: none; }
   .conversation { padding: 16px 20px 8px; scrollbar-gutter: auto; }
   .welcome { margin-top: clamp(24px, 7vh, 64px); }

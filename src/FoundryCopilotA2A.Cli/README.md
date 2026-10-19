@@ -105,8 +105,41 @@ only replaces APIs carrying its ownership marker. The Bicep equivalent is
 | Command | What it does | Why it is here |
 | --- | --- | --- |
 | `test-adapter` | Reads the agent card and sends an A2A 1.0 message directly to the adapter, using device code or a token read from an environment variable when authentication is enabled. | Verifies the direct A2A contract and actual answer, not only process health. |
+| `test-copilot-file-upload` | Sends a synthetic TXT data-URI attachment directly through Copilot Studio Client 1.8.77, with a separate no-file control and a follow-up requiring facts only present in the file. | Investigates actual file reading on the existing SDK channel, independently of the adapter's text-only A2A input. |
 | `test-foundry` | Validates the adapter card, force-creates or updates a named anonymous `remote-a2a` Foundry connection, creates a new version of the named test prompt agent, invokes it with required tool use, and checks the returned answer. | Provides a disposable mock/repro cloud smoke test that proves Foundry can discover and invoke a reachable adapter. It is not the secured native-chain setup. |
 | `test-citadel` | Checks APIM card discovery, CORS, unauthenticated rejection, JSON-RPC/SSE behavior, answer content, caller-scoped traces, and optional OBO evidence. | Verifies the complete browser/APIM/adapter contract rather than treating HTTP 200 as success. |
+
+### Investigating Copilot Studio file input
+
+Confirm the selected published agent's orchestration mode and **Settings > Generative AI >
+File processing capabilities > File uploads** setting before testing. The probe does not
+read or change those settings. With an existing delegated Copilot Studio token and direct-connect
+URL securely populated in environment variables:
+
+```powershell
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- test-copilot-file-upload `
+  --direct-connect-url-env COPILOT_STUDIO_DIRECT_CONNECT_URL `
+  --bearer-token-env COPILOT_STUDIO_BEARER_TOKEN
+```
+
+Add `--obo` to exchange an existing adapter-audience delegated token using
+`COPILOT_STUDIO_TENANT_ID`, `COPILOT_STUDIO_CLIENT_ID`, and `COPILOT_STUDIO_CLIENT_SECRET`.
+If the bearer-token variable is empty in OBO mode, the existing backend registration is used
+for device-code sign-in before exchange. This requires its existing public-client configuration
+and permissions; the probe does not create registrations or grant consent. Variable names can
+be overridden; see command help. App-only tokens are rejected.
+
+The command creates two conversations and an in-memory fictional shipment fixture. It requires
+the cargo and unique identifiers in the summary response, then a different hidden identifier in
+a follow-up without reattaching the file. It never prints connection URLs, tokens, file contents,
+or provider responses. Ctrl+C cancels execution; `--timeout-seconds` bounds the SDK probe
+(default 300, range 10-600, excluding initial sign-in).
+
+Success establishes only that the tested agent read this small TXT payload through
+`ExecuteAsync`; it does not certify other formats/limits, other agents, or A2A forwarding.
+The Activity attachment schema alone does not establish server-side support. A failed candidate
+payload, sign-in card, request failure, or ungrounded answer is not universal proof that file input
+is unsupported. The Direct Line `/upload` endpoint is a different API, not a substitute used here.
 
 ## Safety and ownership model
 

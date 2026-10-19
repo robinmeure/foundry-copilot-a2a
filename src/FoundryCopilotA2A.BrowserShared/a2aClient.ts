@@ -1,5 +1,6 @@
 import { readTaskStatus, taskStatusError, type A2ATaskStatus } from './taskStatus.ts'
 import { readResponseAgent, type A2AAgent } from './agentMetadata.ts'
+import { validateFile, type InputFile } from './inputFiles.ts'
 export { taskStatusLabel, type A2ATaskStatus } from './taskStatus.ts'
 export type { A2AAgent } from './agentMetadata.ts'
 
@@ -165,6 +166,7 @@ export interface SendMessageOptions {
   agentId: string
   contextId: string
   text: string
+  files?: readonly InputFile[]
   /** Prior turns of this conversation, oldest first. */
   history?: ConversationTurn[]
   chainTargetAgentId?: string
@@ -189,6 +191,7 @@ export async function sendMessage({
   agentId,
   contextId,
   text,
+  files = [],
   history = [],
   chainTargetAgentId,
   signal,
@@ -201,6 +204,8 @@ export async function sendMessage({
   onResponse,
   onTrace,
 }: SendMessageOptions): Promise<A2AExchange> {
+  if (files.length > 1) throw new Error('Attach only one file per message.')
+  for (const file of files) validateFile(file)
   const url = `${adapterBaseUrl}/a2a/copilot-studio`
   const relayedHistory = history.slice(-maxHistoryTurns)
   const body = {
@@ -210,7 +215,10 @@ export async function sendMessage({
     params: {
       message: {
         role: 'ROLE_USER',
-        parts: [{ text }],
+        parts: [
+          { text },
+          ...files.map((file) => ({ raw: file.bytes, mediaType: file.mediaType, filename: file.name })),
+        ],
         messageId: crypto.randomUUID(),
         contextId,
         ...(relayedHistory.length > 0

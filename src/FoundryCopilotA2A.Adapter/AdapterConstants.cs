@@ -21,6 +21,7 @@ public static class AdapterConstants
     public const string MessageIdItem = "a2a.message-id";
     public const string PayloadHashItem = "a2a.payload-hash";
     public const string HistoryItem = "a2a.history";
+    public const string FilesItem = "a2a.files";
 
     /// <summary>Key under <c>params.message.metadata</c> carrying the prior turns of the conversation.</summary>
     public const string HistoryMetadataKey = "history";
@@ -51,9 +52,20 @@ public static class PayloadHash
     /// reuses a messageId but changes the content is detected instead of silently being served
     /// another caller's answer.
     /// </summary>
-    public static string Compute(JsonElement message)
+    public static string Compute(JsonElement message, IReadOnlyList<A2AInputFile>? files = null)
     {
         var text = ExtractText(message);
+        files ??= message.ValueKind == JsonValueKind.Object ? A2AInputFiles.Read(message) : [];
+        if (files.Count > 0)
+        {
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            hash.AppendData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
+            {
+                text,
+                files = files.Select(file => new { file.Name, file.MediaType, file.Bytes })
+            })));
+            return Convert.ToHexString(hash.GetHashAndReset());
+        }
         return ComputeFromPrompt(text);
     }
 

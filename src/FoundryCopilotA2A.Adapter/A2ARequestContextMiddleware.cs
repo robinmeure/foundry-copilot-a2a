@@ -70,7 +70,9 @@ public sealed class A2ARequestContextMiddleware(
                         context.Items[AdapterConstants.MessageIdItem] = messageId;
                     }
 
-                    payloadHash = PayloadHash.Compute(message);
+                    var files = A2AInputFiles.Read(message);
+                    context.Items[AdapterConstants.FilesItem] = files;
+                    payloadHash = PayloadHash.Compute(message, files);
                     context.Items[AdapterConstants.PayloadHashItem] = payloadHash;
 
                     var history = ReadHistory(message);
@@ -84,6 +86,12 @@ public sealed class A2ARequestContextMiddleware(
 
                 Activity.Current?.SetTag("a2a.context.present", contextId is not null);
                 Activity.Current?.SetTag("a2a.message_id.present", messageId is not null);
+            }
+            catch (AdapterRequestException exception)
+            {
+                logger.LogWarning("Refused invalid file input: {Reason}", exception.Message);
+                await WriteJsonRpcErrorAsync(context, requestId, InvalidParamsErrorCode, exception.Message);
+                return;
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
@@ -102,6 +110,12 @@ public sealed class A2ARequestContextMiddleware(
                     context,
                     agentCatalog,
                     apiManagementAgents);
+                if (context.Items[AdapterConstants.FilesItem] is IReadOnlyList<A2AInputFile> { Count: > 0 } &&
+                    (!agentCatalog.TryResolveAgent(requestedAgentId, out var fileAgent) ||
+                     fileAgent?.ProviderKind != AgentProvider.CopilotStudio))
+                {
+                    throw new AdapterRequestException(A2AInputFiles.UnsupportedProviderMessage);
+                }
                 context.Items[AdapterConstants.SelectedAgentItem] = requestedAgentId;
                 var requestedChainTarget = context.Request.Headers[
                     AdapterConstants.ChainTargetHeaderName].ToString();
@@ -424,6 +438,7 @@ public sealed record A2ARequestMetadata
 
     /// <summary>Prior turns supplied by the caller, oldest first. Empty when the caller sent none.</summary>
     public IReadOnlyList<A2AConversationTurn> History { get; init; } = [];
+    public IReadOnlyList<A2AInputFile> Files { get; init; } = [];
 
     /// <summary>
     /// Overridden so the synthesized record ToString() cannot leak the delegated bearer token
@@ -433,7 +448,7 @@ public sealed record A2ARequestMetadata
         $"A2ARequestMetadata {{ ContextId = {ContextId}, MessageId = {MessageId}, " +
         $"AgentId = {AgentId}, UserId = {UserId}, PayloadHash = {PayloadHash}, " +
         $"ChainTargetAgentId = {ChainTargetAgentId}, HistoryTurns = {History.Count}, " +
-        $"BearerToken = [redacted] }}";
+        $"FileCount = {Files.Count}, BearerToken = [redacted] }}";
 }
 
 /// <summary>A single prior turn of the caller's conversation.</summary>
@@ -497,7 +512,8 @@ public sealed class A2ARequestMetadataAccessor(
                 IsAgentRoute = context.Items[AdapterConstants.RouteAgentItem] is string,
                 History =
                     context.Items[AdapterConstants.HistoryItem]
-                        as IReadOnlyList<A2AConversationTurn> ?? []
+                        as IReadOnlyList<A2AConversationTurn> ?? [],
+                Files = context.Items[AdapterConstants.FilesItem] as IReadOnlyList<A2AInputFile> ?? []
             };
         }
     }

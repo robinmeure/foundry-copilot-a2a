@@ -938,7 +938,8 @@ Azure-independent.
 This discovery is separate from `GatewayBaseUrl`: the latter chooses browser ingress, whereas
 `ApiManagementDiscovery` adds remote APIM-backed agents to the catalog. See
 [APIM discovery configuration](src/FoundryCopilotA2A.Web/README.md#discover-native-apim-a2a-apis)
-for the optional API allow-list, caching, and delegated-authentication requirements.
+for the optional API allow-list, background refresh, streaming, and delegated-authentication
+requirements.
 
 Keep these rules consistent for both providers:
 
@@ -1737,7 +1738,9 @@ explicitly when upgrading.
 | `ApiManagementDiscovery:ResourceGroup` | _(none)_ | APIM resource group; required when discovery is enabled. |
 | `ApiManagementDiscovery:ServiceName` | _(none)_ | APIM service name; required when discovery is enabled. |
 | `ApiManagementDiscovery:ApiIds` | `[]` | Optional API-ID allow-list. Explicitly listed missing/invalid APIs fail discovery rather than being skipped. |
-| `ApiManagementDiscovery:RefreshSeconds` | `300` | Lifetime of the successfully discovered agent catalog. |
+| `ApiManagementDiscovery:RefreshSeconds` | `300` | Interval of the background refresh. Requests route from the in-memory snapshot and never wait for a scheduled refresh. |
+| `ApiManagementDiscovery:MaxStaleSeconds` | `900` | Longest age of the last successful snapshot that requests may use while background refreshes fail. Must be at least `RefreshSeconds`. |
+| `ApiManagementDiscovery:MaxConcurrentCardReads` | `4` | Agent cards read in parallel during a refresh (1–16). |
 | `ApiManagementDiscovery:RequestTimeoutSeconds` | `10` | HTTP timeout for APIM management and public-card discovery requests. |
 | `ApiManagementDiscovery:MaxApis` | `100` | Maximum matching current APIs. Exceeding it fails explicitly; narrow `ApiIds` or raise the limit. |
 

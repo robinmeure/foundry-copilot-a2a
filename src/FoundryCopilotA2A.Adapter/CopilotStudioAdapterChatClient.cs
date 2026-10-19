@@ -130,13 +130,17 @@ public sealed class CopilotStudioAdapterChatClient(
     private (string Prompt, A2ARequestMetadata Metadata, string CacheKey, string PayloadHash)
         PrepareRequest(IEnumerable<ChatMessage> messages)
     {
+        var metadata = metadataAccessor.Current;
         var prompt = messages.LastOrDefault(message => message.Role == ChatRole.User)?.Text;
+        if (string.IsNullOrWhiteSpace(prompt) && metadata.Files.Count > 0)
+        {
+            prompt = "Please summarize the attached file.";
+        }
         if (string.IsNullOrWhiteSpace(prompt))
         {
             throw new AdapterRequestException("An A2A request must contain a non-empty user message.");
         }
 
-        var metadata = metadataAccessor.Current;
         if (metadata.MessageId is null)
         {
             throw new AdapterRequestException(
@@ -427,7 +431,7 @@ public sealed class IdempotencyStore : IDisposable
 
     private sealed class IdempotencyEntry
     {
-        private readonly Func<CancellationToken, IAsyncEnumerable<CopilotInvocationUpdate>> _factory;
+        private Func<CancellationToken, IAsyncEnumerable<CopilotInvocationUpdate>>? _factory;
         private readonly TimeSpan _operationTimeout;
         private readonly CancellationToken _applicationStopping;
         private readonly Lock _gate = new();
@@ -524,7 +528,8 @@ public sealed class IdempotencyStore : IDisposable
 
             try
             {
-                await foreach (var update in _factory(timeoutSource.Token)
+                var factory = _factory ?? throw new InvalidOperationException("The invocation has already completed.");
+                await foreach (var update in factory(timeoutSource.Token)
                     .WithCancellation(timeoutSource.Token))
                 {
                     if (string.IsNullOrEmpty(update.Text) &&
@@ -559,6 +564,10 @@ public sealed class IdempotencyStore : IDisposable
             catch (Exception exception)
             {
                 Complete(exception);
+            }
+            finally
+            {
+                _factory = null;
             }
         }
 

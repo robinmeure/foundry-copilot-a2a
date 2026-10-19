@@ -34,8 +34,10 @@ and `logoutRedirect`, not popups. The dedicated `auth-redirect.html` page implem
 MSAL v5 redirect bridge without loading React or starting another authentication flow.
 The chatbot uses the current signed-in account. It never uses the developer's Azure CLI identity
 or a service token to impersonate a user. Tokens are cached by MSAL in session storage;
-conversations stay in memory and are cleared on sign-out, account changes, reload, sign-in
-redirects, or New chat. After an interactive token renewal, resend the request explicitly.
+conversation history is stored separately in browser local storage, scoped by tenant/account,
+adapter endpoint and agent. Changing accounts or signing out hides the previous account's
+history rather than deleting it. Reload and sign-in redirects preserve saved chats.
+After an interactive token renewal, resend the request explicitly.
 Sending a request does not automatically retry it after an error or cancellation.
 
 Copy `.env.example` to `.env.local` and configure:
@@ -93,10 +95,51 @@ and with a gateway configured. It is not an authentication fallback.
 
 ## Behavior and validation
 
+### Experimental file input and browser conversations
+
+The paperclip attaches one nonempty file, up to 5 MB: TXT, CSV, PDF, DOCX, PNG or JPEG.
+The composer shows its filename and size, with a Remove action. Sending a file without text
+uses the visible prompt "Please summarize the attached file." Messages retain the attachment's
+metadata. File bytes are sent only on that turn, not replayed in text history or follow-ups.
+Reselect the original file if you need to resend it after an error.
+
+This is **experimental transport**, not a promise that the agent can analyze the file.
+The prior authenticated SDK probe did not recover file content. Browser input uses A2A 1.0
+inline `raw` parts; the adapter also accepts A2A 0.3 inline file parts, validates size/type/name,
+includes file identity/content in replay conflict detection, and sends an Activity attachment
+through SDK `ExecuteAsync`, including the existing OAuth-challenge retry. File URLs and multiple
+files are refused; the adapter does not fetch remote URLs or extract document contents locally.
+Foundry/APIM agents reject this experimental input instead of silently discarding it. Native
+delegation may still drop files. The versioned APIM JSON-validation policy remains unchanged at
+**1 MB for the entire encoded JSON request**. Base64 overhead and message/history content mean
+the usable file size through that gateway is below 768 KiB. The adapter's 5 MB file limit is
+not a promise that the existing gateway accepts that size. Use a smaller nonsensitive test file
+through APIM, or the authenticated direct-adapter route when appropriate; this feature does not
+change or bypass gateway policy.
+
+**Conversations** lists up to 30 chats created in this browser for the signed-in account,
+endpoint and agent. Select a conversation to reopen its transcript and original A2A context;
+**Conversation details** displays that context ID, not a Copilot Studio server conversation ID.
+New chat saves the prior transcript and rotates context. Delete removes a local chat; **Help &
+guidance > Clear saved conversations** removes this partition's saved chats. Neither action
+deletes provider-side data. The oldest local chats are removed when the 30-chat limit is reached.
+
+Messages, sources, responder attribution, activity updates and file metadata are saved.
+Raw attachment bytes and access tokens are not saved by conversation history. Interrupted
+messages reopen as failed, never as indefinitely streaming replies. Corrupt storage, quota
+failures and unavailable storage are surfaced without overwriting unreadable history.
+There is a 4 MB serialized text budget; delete older chats if saving fails.
+
+Browser storage is not encrypted or a server authorization boundary; avoid sensitive chats on
+shared devices. This list is not an API-backed enumeration of all user-owned Copilot Studio
+conversations. The adapter's per-user provider-conversation mapping expires (30 minutes by
+default) and is lost on restart. Reopening a browser transcript does not restore provider-side
+file context or reupload files. A locally deleted chat can remain with the provider.
+
 The chatbot uses a compact navigation sidebar, a centered reading column, and a yellow
 send control. On narrow screens the sidebar becomes a compact top bar. New chat, account
 sign-in/sign-out, and Help & guidance remain available without adding console-only tools.
-Help & guidance explains the keyboard shortcuts and session lifetime. Completed replies
+Help & guidance explains the keyboard shortcuts and browser history lifetime. Completed replies
 offer Copy response with visible success or clipboard-error feedback.
 
 The rounded message composer grows with typed or pasted text, up to 240px or 30% of the
@@ -143,7 +186,7 @@ optional fields must be omitted, not null. See the [full wire contract](../Found
 Credential-bearing source query parameters (including signed URLs) are rejected, not stripped
 or exposed as links; unrelated query parameters/fragments remain intact.
 
-Sources stay with successful responses in memory; failed/stopped turns clear partial citation
+Sources stay with successful responses, including saved browser history; failed/stopped turns clear partial citation
 state. Follow-up history remains text-only and never asserts browser-supplied provenance.
 Managed orchestrators can drop structured metadata while summarizing tool results. If the
 final response omits the extension, this UI cannot recover verified citations from prose;
@@ -182,7 +225,7 @@ If the orchestrator only reports its own identity, inner specialists cannot driv
 
 Task failures, cancellation, rejection and required-input/authentication states are explicit
 errors even after partial text. Partial text stays visible, but unsuccessful sources and
-history are discarded. Artifact completion does not finish a task. Task completion shows
+history are excluded from future requests; the failed local turn remains visible. Artifact completion does not finish a task. Task completion shows
 "Finalizing response..." until the connection drains so late citations are retained; legacy
 streams can still complete at EOF without a task-completed event.
 

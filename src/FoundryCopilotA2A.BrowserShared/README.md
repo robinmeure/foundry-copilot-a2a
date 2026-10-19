@@ -11,6 +11,22 @@ Text parts override message/artifact and task/status envelope metadata. Source-p
 data and agent names embedded in answer prose are not used. Repeated identities across token
 chunks are deduplicated; absent metadata does not reset the last reported identity.
 
+## Experimental inline file input
+
+`sendMessage` accepts an optional `files` array containing one `{ name, mediaType, size, bytes }`
+attachment, where `bytes` is base64. `inputFiles.ts` validates filename/type and the 5 MB decoded
+size limit and reads browser-selected files without extracting their document content.
+The request uses A2A 1.0 `{ raw, mediaType, filename }` parts alongside text.
+Follow-up `ConversationTurn` history stays text-only; callers must deliberately select an
+attachment on the turn that sends it. The adapter rejects malformed/oversized files, remote file
+URLs, multiple files and unsupported providers. The repository's shared APIM policy remains
+at a 1 MB total JSON request cap, so base64 files must be smaller than 768 KiB through that
+gateway, with additional room for text/history. No gateway policy changes are included.
+
+This advertises the adapter's experimental input transport, not verified file understanding
+or guaranteed native-agent-to-agent file forwarding. Both text and file bytes participate in
+adapter replay conflict detection. Outbound traces omit attachment payloads.
+
 ## Task lifecycle
 
 `onTaskStatus({ state, message? })` reports task snapshots and status updates independently

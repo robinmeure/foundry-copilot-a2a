@@ -8,6 +8,7 @@ import Chatbot from './Chatbot.tsx'
 export interface ChatAuthentication {
   signedIn: boolean
   accountName?: string
+  accountId?: string
   busy: boolean
   error?: string
   signIn?: () => Promise<void>
@@ -23,6 +24,7 @@ export function AuthenticatedChatbot({ config }: {
   const [busy, setBusy] = useState(false)
   const interacting = useRef(false)
   const account = instance.getActiveAccount() ?? (accounts.length === 1 ? accounts[0] : undefined)
+  const accountId = account ? `${account.tenantId}:${account.localAccountId}:${account.homeAccountId}` : undefined
   const loginRequest = createDelegatedLoginRequest(config)
 
   async function interact(action: () => Promise<void>) {
@@ -43,6 +45,7 @@ export function AuthenticatedChatbot({ config }: {
   const auth: ChatAuthentication = {
     signedIn: Boolean(account),
     accountName: account?.name ?? account?.username,
+    accountId,
     busy: busy || inProgress !== InteractionStatus.None,
     error,
     signIn: () => interact(async () => {
@@ -64,5 +67,5 @@ export function AuthenticatedChatbot({ config }: {
     },
   }
 
-  return <Chatbot key={account?.homeAccountId ?? 'signed-out'} config={config} auth={auth} />
+  return <Chatbot key={`${accountId ?? 'signed-out'}:${config.adapterBaseUrl}:${config.agentId}`} config={config} auth={auth} />
 }

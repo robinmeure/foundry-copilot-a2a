@@ -106,8 +106,23 @@ APIM API path, and merges valid entries into `/api/agents` with an `APIM A2A` la
 
 `ApiIds` is optional. Set it in production to restrict discovery to approved APIs and to make a
 missing or invalid card fail explicitly. Without it, the adapter probes up to `MaxApis` current
-APIs and ignores APIs that do not expose a public A2A card. The result is cached for
-`RefreshSeconds` (five minutes by default).
+APIs and ignores APIs that do not expose a public A2A card, so every unrelated API costs an extra
+card request on each refresh. Listing only the A2A APIs also keeps refreshes short. Keep these
+environment-specific IDs in AppHost user secrets rather than in committed configuration, for
+example `dotnet user-secrets set "ApiManagementDiscovery:ApiIds:0" "<api-id>" --project
+src/FoundryCopilotA2A.AppHost`.
+
+Discovery runs in a background service: it fills the catalog at startup and refreshes it every
+`RefreshSeconds` (five minutes by default), reading up to `MaxConcurrentCardReads` agent cards
+in parallel (four by default). Requests route from the in-memory snapshot and do not wait for a
+scheduled refresh. If a background refresh fails, the adapter logs a warning, retries within 30
+seconds, and keeps serving the last successful snapshot for at most `MaxStaleSeconds` (15
+minutes by default). Only when there is no snapshot yet, or it is older than that limit, does a
+request refresh discovery itself, and then it fails visibly if discovery still fails.
+
+The adapter invokes a selected APIM agent with `SendStreamingMessage` and relays answer chunks as
+they arrive, so the first tokens are not held back until the specialist finishes. A runtime that
+answers with plain JSON instead of server-sent events is still accepted.
 
 Discovered runtimes must use delegated Entra authentication compatible with the browser token.
 The adapter forwards that caller token and never stores an APIM subscription key. APIs marked

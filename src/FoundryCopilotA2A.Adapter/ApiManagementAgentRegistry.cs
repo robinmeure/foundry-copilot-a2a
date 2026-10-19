@@ -25,9 +25,13 @@ public sealed class ApiManagementAgentRegistry(
     private static readonly TokenRequestContext ArmTokenRequest =
         new(["https://management.azure.com/.default"]);
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
-    private IReadOnlyDictionary<string, ResolvedApiManagementAgent> _agents =
+    private static readonly IReadOnlyDictionary<string, ResolvedApiManagementAgent> NoAgents =
         new Dictionary<string, ResolvedApiManagementAgent>(StringComparer.OrdinalIgnoreCase);
-    private DateTimeOffset _expiresAt;
+    private volatile DiscoverySnapshot? _snapshot;
+
+    private sealed record DiscoverySnapshot(
+        IReadOnlyDictionary<string, ResolvedApiManagementAgent> Agents,
+        DateTimeOffset RefreshedAt);
 
     public bool Enabled => options.Value.Enabled;
 
@@ -60,6 +64,28 @@ public sealed class ApiManagementAgentRegistry(
         return agents.TryGetValue(agentId.Trim(), out var agent) ? agent : null;
     }
 
+    /// <summary>
+    /// Refreshes the snapshot outside the request path. A failure keeps the last successful
+    /// snapshot, which requests keep using until it is older than <c>MaxStaleSeconds</c>.
+    /// </summary>
+    public async Task RefreshAsync(CancellationToken cancellationToken)
+    {
+        if (!Enabled)
+        {
+            return;
+        }
+
+        await _refreshLock.WaitAsync(cancellationToken);
+        try
+        {
+            await RefreshSnapshotAsync(cancellationToken);
+        }
+        finally
+        {
+            _refreshLock.Release();
+        }
+    }
+
     private async Task<IReadOnlyDictionary<string, ResolvedApiManagementAgent>> GetResolvedAgentsAsync(
         CancellationToken cancellationToken)
     {
@@ -70,18 +96,18 @@ public sealed class ApiManagementAgentRegistry(
         {
             if (!Enabled)
             {
-                return _agents;
+                return NoAgents;
             }
 
-            var now = timeProvider.GetUtcNow();
-            if (now < _expiresAt)
+            if (TryUseSnapshot(activity, out var snapshotResult, out var agents))
             {
-                result = "hit";
-                activity?.SetTag("apim.discovery.cache.hit", true);
-                return _agents;
+                result = snapshotResult;
+                return agents;
             }
 
-            result = "miss";
+            // Only a missing or over-age snapshot blocks a request; the hosted refresher keeps
+            // the snapshot current otherwise.
+            result = _snapshot is null ? "miss" : "expired";
             activity?.SetTag("apim.discovery.cache.hit", false);
             var lockWaitStarted = Stopwatch.GetTimestamp();
             await _refreshLock.WaitAsync(cancellationToken);
@@ -90,25 +116,14 @@ public sealed class ApiManagementAgentRegistry(
                 AdapterTelemetry.RecordApiManagementDiscoveryLockWait(
                     activity,
                     Stopwatch.GetElapsedTime(lockWaitStarted));
-                now = timeProvider.GetUtcNow();
-                if (now < _expiresAt)
+                if (TryUseSnapshot(activity, out _, out agents))
                 {
                     result = "filled_by_peer";
-                    activity?.SetTag("apim.discovery.cache.hit", true);
-                    return _agents;
+                    return agents;
                 }
 
-                var discovered = await DiscoverAsync(cancellationToken);
-                _agents = discovered.ToDictionary(
-                    agent => agent.Id,
-                    StringComparer.OrdinalIgnoreCase);
-                _expiresAt = now.AddSeconds(options.Value.RefreshSeconds);
-                logger.LogInformation(
-                    "Discovered {AgentCount} A2A agent APIs in API Management service {ServiceName}.",
-                    _agents.Count,
-                    options.Value.ServiceName);
                 result = "refreshed";
-                return _agents;
+                return await RefreshSnapshotAsync(cancellationToken);
             }
             finally
             {
@@ -133,6 +148,46 @@ public sealed class ApiManagementAgentRegistry(
                 Stopwatch.GetElapsedTime(resolveStarted),
                 result);
         }
+    }
+
+    private bool TryUseSnapshot(
+        Activity? activity,
+        out string result,
+        out IReadOnlyDictionary<string, ResolvedApiManagementAgent> agents)
+    {
+        var snapshot = _snapshot;
+        agents = snapshot?.Agents ?? NoAgents;
+        result = "miss";
+        if (snapshot is null)
+        {
+            return false;
+        }
+
+        var age = timeProvider.GetUtcNow() - snapshot.RefreshedAt;
+        activity?.SetTag("apim.discovery.snapshot.age_ms", age.TotalMilliseconds);
+        if (age >= TimeSpan.FromSeconds(options.Value.MaxStaleSeconds))
+        {
+            return false;
+        }
+
+        result = age < TimeSpan.FromSeconds(options.Value.RefreshSeconds) ? "hit" : "stale";
+        activity?.SetTag("apim.discovery.cache.hit", true);
+        return true;
+    }
+
+    private async Task<IReadOnlyDictionary<string, ResolvedApiManagementAgent>> RefreshSnapshotAsync(
+        CancellationToken cancellationToken)
+    {
+        var discovered = await DiscoverAsync(cancellationToken);
+        var agents = discovered.ToDictionary(
+            agent => agent.Id,
+            StringComparer.OrdinalIgnoreCase);
+        _snapshot = new DiscoverySnapshot(agents, timeProvider.GetUtcNow());
+        logger.LogInformation(
+            "Discovered {AgentCount} A2A agent APIs in API Management service {ServiceName}.",
+            agents.Count,
+            options.Value.ServiceName);
+        return agents;
     }
 
     private async Task<IReadOnlyList<ResolvedApiManagementAgent>> DiscoverAsync(
@@ -250,19 +305,28 @@ public sealed class ApiManagementAgentRegistry(
                 var cardsCompleted = false;
                 try
                 {
-                    foreach (var api in candidates)
-                    {
-                        var agent = await TryReadAgentAsync(
-                            gatewayUrl,
-                            api,
-                            explicitlyRequested: requestedIds.Count > 0,
-                            cancellationToken);
-                        if (agent is not null)
+                    // Results are stored by candidate index so the snapshot order, and therefore
+                    // duplicate detection, does not depend on which card returns first.
+                    var results = new ResolvedApiManagementAgent?[candidates.Length];
+                    cardsActivity?.SetTag(
+                        "apim.discovery.card.concurrency",
+                        options.Value.MaxConcurrentCardReads);
+                    await Parallel.ForEachAsync(
+                        Enumerable.Range(0, candidates.Length),
+                        new ParallelOptions
                         {
-                            discovered.Add(agent);
-                        }
-                    }
-
+                            MaxDegreeOfParallelism = options.Value.MaxConcurrentCardReads,
+                            CancellationToken = cancellationToken
+                        },
+                        async (index, token) =>
+                        {
+                            results[index] = await TryReadAgentAsync(
+                                gatewayUrl,
+                                candidates[index],
+                                explicitlyRequested: requestedIds.Count > 0,
+                                token);
+                        });
+                    discovered.AddRange(results.OfType<ResolvedApiManagementAgent>());
                     cardsCompleted = true;
                     cardsActivity?.SetStatus(ActivityStatusCode.Ok);
                 }

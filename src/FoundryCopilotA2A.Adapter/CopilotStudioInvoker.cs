@@ -87,6 +87,9 @@ public sealed class MockCopilotStudioInvoker : ICopilotStudioInvoker
         var historySuffix = metadata.History.Count == 0
             ? string.Empty
             : $" | context: {metadata.History.Count} earlier turns";
+        var fileSuffix = metadata.Files.Count == 0 ? string.Empty :
+            $" | mock received {metadata.Files[0].Name} ({metadata.Files[0].Bytes.Length} bytes); " +
+            "mock mode does not analyze file contents";
 
         await Task.Yield();
         if (string.Equals(prompt, CitationPrompt, StringComparison.OrdinalIgnoreCase))
@@ -128,7 +131,7 @@ public sealed class MockCopilotStudioInvoker : ICopilotStudioInvoker
         }
 
         yield return new CopilotInvocationUpdate(
-            $"mock-copilot-studio[{invocation}]: {prompt}{historySuffix}",
+            $"mock-copilot-studio[{invocation}]: {prompt}{historySuffix}{fileSuffix}",
             conversationId,
             $"mock-response-{invocation}");
     }
@@ -496,7 +499,10 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
 
         var activitySummary = new CopilotStudioActivitySummary();
         var answer = ReadAnswerStreamAsync(
-            client.AskQuestionAsync(prompt, conversationId, cancellationToken),
+            metadata.Files.Count == 0
+                ? client.AskQuestionAsync(prompt, conversationId, cancellationToken)
+                : client.ExecuteAsync(
+                    conversationId, A2AInputFiles.CreateMessage(prompt, metadata.Files), cancellationToken),
             conversationId,
             new AgentResponder(metadata.AgentId, _agents[metadata.AgentId].DisplayName),
             activitySummary,
@@ -527,7 +533,7 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
             await foreach (var item in ReadAnswerStreamAsync(
                 client.ExecuteAsync(
                     conversationId,
-                    CreateMessageActivity(prompt),
+                    A2AInputFiles.CreateMessage(prompt, metadata.Files),
                     cancellationToken),
                 conversationId,
                 new AgentResponder(metadata.AgentId, _agents[metadata.AgentId].DisplayName),
@@ -750,13 +756,6 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
         }
 
         traceActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
-    }
-
-    private static Activity CreateMessageActivity(string text)
-    {
-        var activity = Activity.CreateMessageActivity();
-        activity.Text = text;
-        return (Activity)activity;
     }
 
     private CopilotClient CreateClient(CopilotStudioAgentRuntime agent, string accessToken) =>

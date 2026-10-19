@@ -118,11 +118,24 @@ public sealed class ApiManagementDiscoveryOptions
     /// </summary>
     public string[] ApiIds { get; set; } = [];
 
+    /// <summary>
+    /// Interval at which the background service refreshes the discovery snapshot. Requests are
+    /// routed from the snapshot and never wait for a scheduled refresh.
+    /// </summary>
     public int RefreshSeconds { get; set; } = 300;
+
+    /// <summary>
+    /// Longest age of the last successful snapshot that requests may still use when background
+    /// refreshes fail. Beyond it, a request refreshes synchronously and surfaces any error.
+    /// </summary>
+    public int MaxStaleSeconds { get; set; } = 900;
 
     public int RequestTimeoutSeconds { get; set; } = 10;
 
     public int MaxApis { get; set; } = 100;
+
+    /// <summary>Maximum number of agent cards read from the gateway in parallel.</summary>
+    public int MaxConcurrentCardReads { get; set; } = 4;
 
     public void Validate()
     {
@@ -147,6 +160,18 @@ public sealed class ApiManagementDiscoveryOptions
         {
             throw new InvalidOperationException(
                 "ApiManagementDiscovery refresh, request timeout, and API limit must be positive.");
+        }
+
+        if (MaxStaleSeconds < RefreshSeconds)
+        {
+            throw new InvalidOperationException(
+                "ApiManagementDiscovery:MaxStaleSeconds must be at least RefreshSeconds.");
+        }
+
+        if (MaxConcurrentCardReads is < 1 or > 16)
+        {
+            throw new InvalidOperationException(
+                "ApiManagementDiscovery:MaxConcurrentCardReads must be between 1 and 16.");
         }
 
         if (ApiIds.Any(id => string.IsNullOrWhiteSpace(id)))

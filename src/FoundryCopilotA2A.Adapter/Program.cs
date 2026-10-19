@@ -84,6 +84,7 @@ builder.Services.AddSingleton<CopilotStudioResponseMetadataAccessor>();
 builder.Services.AddSingleton<AgentIsolationKeyContext>();
 builder.Services.AddSingleton<AgentCatalog>();
 builder.Services.AddSingleton<ApiManagementAgentRegistry>();
+builder.Services.AddHostedService<ApiManagementDiscoveryService>();
 builder.Services.AddSingleton<CopilotConversationStore>();
 builder.Services.AddSingleton<IdempotencyStore>();
 builder.Services.AddSingleton<OboTokenBroker>();
@@ -412,7 +413,8 @@ IResult BuildChainAgentCard(string agentId, AgentCatalog catalog)
         },
         securitySchemes,
         security,
-        defaultInputModes = new[] { "text/plain" },
+        defaultInputModes = agent.ProviderKind == FoundryCopilotA2A.Adapter.AgentProvider.CopilotStudio
+            ? A2AInputFiles.MediaTypes : new[] { "text/plain" },
         defaultOutputModes = new[] { "text/plain", "application/json" },
         skills = new[]
         {
@@ -451,7 +453,7 @@ var agentCard = new AgentCard
     Name = "Specialist Agent Router",
     Description = "Delegates requests to the selected Copilot Studio or Foundry agent.",
     Version = "0.1.0",
-    DefaultInputModes = ["text/plain"],
+    DefaultInputModes = [.. A2AInputFiles.MediaTypes],
     DefaultOutputModes = ["text/plain", "application/json"],
     Capabilities = new AgentCapabilities
     {

@@ -598,7 +598,11 @@ internal static class TraceSanitizer
         {
             foreach (var property in jsonObject.ToArray())
             {
-                if (IsSensitiveProperty(property.Key))
+                if (property.Key.Equals("attachments", StringComparison.OrdinalIgnoreCase))
+                {
+                    jsonObject[property.Key] = "[attachment content omitted]";
+                }
+                else if (IsSensitiveProperty(property.Key))
                 {
                     jsonObject[property.Key] = "[redacted]";
                 }
@@ -622,6 +626,8 @@ internal static class TraceSanitizer
         name.Contains("secret", StringComparison.OrdinalIgnoreCase) ||
         name.Contains("authorization", StringComparison.OrdinalIgnoreCase) ||
         name.Contains("connectionString", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("raw", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("bytes", StringComparison.OrdinalIgnoreCase) ||
         name.EndsWith("Url", StringComparison.OrdinalIgnoreCase) ||
         name.EndsWith("Uri", StringComparison.OrdinalIgnoreCase);
 

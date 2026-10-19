@@ -10,6 +10,9 @@ const paths = {
   'chevron-down': 'm7 10 5 5 5-5',
   'chevron-up': 'm7 14 5-5 5 5',
   check: 'm5 12 4 4L19 6',
+  attach: 'm8 12 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l9-9m-7 12 8-8',
+  close: 'm6 6 12 12M6 18 18 6',
+  trash: 'M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6m4-6v6',
   sparkle: 'm12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3Z',
   shield: 'm12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Zm-4 9 3 3 5-6',
 }
