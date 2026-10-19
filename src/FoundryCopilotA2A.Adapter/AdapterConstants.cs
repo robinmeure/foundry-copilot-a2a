@@ -22,6 +22,7 @@ public static class AdapterConstants
     public const string PayloadHashItem = "a2a.payload-hash";
     public const string HistoryItem = "a2a.history";
     public const string FilesItem = "a2a.files";
+    public const string ConversationHandlesItem = "a2a.conversation-handles";
 
     /// <summary>Key under <c>params.message.metadata</c> carrying the prior turns of the conversation.</summary>
     public const string HistoryMetadataKey = "history";

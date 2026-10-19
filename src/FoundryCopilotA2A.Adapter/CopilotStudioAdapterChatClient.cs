@@ -103,7 +103,8 @@ public sealed class CopilotStudioAdapterChatClient(
                 : update.Text;
             var responseUpdate = new ChatResponseUpdate(
                 ChatRole.Assistant,
-                CreateResponseContents(text, responder, update.Citations, update.IsInformative))
+                CreateResponseContents(
+                    text, responder, update.Citations, update.IsInformative, update.ConversationHandle))
             {
                 AuthorName = responder.Name,
                 ConversationId = metadata.ContextId ?? update.ConversationId,
@@ -190,7 +191,11 @@ public sealed class CopilotStudioAdapterChatClient(
         var responder = RequireResponder(result.Responder);
         return new(new ChatMessage(
             ChatRole.Assistant,
-            CreateResponseContents(WithResponderHeader(result.Text, responder), responder, result.Citations))
+            CreateResponseContents(
+                WithResponderHeader(result.Text, responder),
+                responder,
+                result.Citations,
+                conversationHandle: result.ConversationHandle))
         {
             AuthorName = responder.Name
         })
@@ -209,7 +214,7 @@ public sealed class CopilotStudioAdapterChatClient(
         $"Responding agent: {responder.Name}\n\n{text}";
 
     private static TextContent CreateResponseContent(
-        string text, AgentResponder responder, bool isInformative = false)
+        string text, AgentResponder responder, bool isInformative = false, string? conversationHandle = null)
     {
         var properties = new AdditionalPropertiesDictionary
         {
@@ -220,17 +225,26 @@ public sealed class CopilotStudioAdapterChatClient(
         {
             properties["isInformative"] = true;
         }
+        if (conversationHandle is not null)
+        {
+            properties[CopilotConversationHandles.PartMetadataKey] = conversationHandle;
+        }
 
         return new TextContent(text) { AdditionalProperties = properties };
     }
 
     private static List<AIContent> CreateResponseContents(
-        string text, AgentResponder responder, CitationBundle? citations, bool isInformative = false)
+        string text,
+        AgentResponder responder,
+        CitationBundle? citations,
+        bool isInformative = false,
+        string? conversationHandle = null)
     {
         List<AIContent> contents = [];
         if (!string.IsNullOrEmpty(text))
         {
-            contents.Add(CreateResponseContent(text, responder, isInformative));
+            contents.Add(CreateResponseContent(
+                text, responder, isInformative, isInformative ? null : conversationHandle));
         }
         if (!isInformative && citations is { Sources.Count: > 0 })
         {
@@ -327,18 +341,22 @@ public sealed class IdempotencyStore : IDisposable
         Func<CancellationToken, IAsyncEnumerable<CopilotInvocationUpdate>> factory,
         CancellationToken cancellationToken)
     {
-        using var activity = AdapterTelemetry.StartActivity("a2a.idempotency.get_or_add");
-        var (entry, cacheHit) = GetOrCreateEntry(key, payloadHash, factory, activity);
-        activity?.SetTag("a2a.idempotency.cache_hit", cacheHit);
+        IdempotencyEntry entry;
+        // The span covers only the lookup, like the streaming path; the invocation records its own
+        // duration and outcome beside it.
+        using (var activity = AdapterTelemetry.StartActivity("a2a.idempotency.get_or_add"))
+        {
+            (entry, var cacheHit) = GetOrCreateEntry(key, payloadHash, factory, activity);
+            activity?.SetTag("a2a.idempotency.cache_hit", cacheHit);
+            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
+        }
 
         try
         {
             // Each caller waits with its OWN token. The shared work is never bound to whichever
             // caller happened to create the entry, so one client disconnecting cannot cancel
             // another client's in-flight request.
-            var response = await entry.Completion.WaitAsync(cancellationToken);
-            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
-            return response;
+            return await entry.Completion.WaitAsync(cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -348,7 +366,6 @@ public sealed class IdempotencyStore : IDisposable
         }
         catch
         {
-            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error);
             Evict(key, entry);
             throw;
         }
@@ -406,7 +423,21 @@ public sealed class IdempotencyStore : IDisposable
             }
         }
 
-        entry.Start();
+        // The shared invocation outlives this short idempotency span, so it starts under the
+        // caller's span and appears beside the idempotency step rather than nested inside it.
+        var current = System.Diagnostics.Activity.Current;
+        System.Diagnostics.Activity.Current = activity is not null && ReferenceEquals(current, activity)
+            ? activity.Parent
+            : current;
+        try
+        {
+            entry.Start();
+        }
+        finally
+        {
+            System.Diagnostics.Activity.Current = current;
+        }
+
         _ = entry.Completion.ContinueWith(
             _ => Evict(key, entry),
             CancellationToken.None,
@@ -525,6 +556,7 @@ public sealed class IdempotencyStore : IDisposable
             string? responseId = null;
             AgentResponder? responder = null;
             CitationBundle? citations = null;
+            string? conversationHandle = null;
 
             try
             {
@@ -546,6 +578,7 @@ public sealed class IdempotencyStore : IDisposable
                     }
                     conversationId = update.ConversationId ?? conversationId;
                     responseId = update.ResponseId ?? responseId;
+                    conversationHandle = update.ConversationHandle ?? conversationHandle;
                     Publish(update);
                 }
 
@@ -558,7 +591,8 @@ public sealed class IdempotencyStore : IDisposable
                 Complete(new CopilotInvocationResult(text.ToString(), conversationId, responseId)
                 {
                     Responder = responder,
-                    Citations = citations
+                    Citations = citations,
+                    ConversationHandle = conversationHandle
                 });
             }
             catch (Exception exception)

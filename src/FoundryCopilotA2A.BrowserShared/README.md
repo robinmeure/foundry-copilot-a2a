@@ -11,6 +11,15 @@ Text parts override message/artifact and task/status envelope metadata. Source-p
 data and agent names embedded in answer prose are not used. Repeated identities across token
 chunks are deduplicated; absent metadata does not reset the last reported identity.
 
+## Conversation handles
+
+Answer parts from a Copilot Studio agent may carry `metadata.copilotStudioConversation`, an
+opaque handle issued by the adapter. `sendMessage` collects them into
+`A2AExchange.conversationHandles`. Callers keep them per chat with `mergeConversationHandles`
+(newest first, deduplicated, at most 8) and pass them back as `conversationHandles`. They are
+sent as `params.message.metadata.copilotStudioConversations`. Clear them when the chat is reset
+or a turn fails.
+
 ## Experimental inline file input
 
 `sendMessage` accepts an optional `files` array containing one `{ name, mediaType, size, bytes }`

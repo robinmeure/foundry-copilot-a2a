@@ -86,6 +86,8 @@ builder.Services.AddSingleton<AgentCatalog>();
 builder.Services.AddSingleton<ApiManagementAgentRegistry>();
 builder.Services.AddHostedService<ApiManagementDiscoveryService>();
 builder.Services.AddSingleton<CopilotConversationStore>();
+builder.Services.AddDataProtection();
+builder.Services.AddSingleton<CopilotConversationHandles>();
 builder.Services.AddSingleton<IdempotencyStore>();
 builder.Services.AddSingleton<OboTokenBroker>();
 builder.Services.AddSingleton<IOboTokenBroker>(
@@ -572,11 +574,20 @@ static void ValidateAdapterConfiguration(
 
     if (options.IdempotencyTtlMinutes <= 0 ||
         options.ConversationTtlMinutes <= 0 ||
+        options.ConversationHandleLifetimeMinutes <= 0 ||
         options.RequestTimeoutSeconds <= 0 ||
         options.MaxCacheEntries <= 0)
     {
         throw new InvalidOperationException(
             "Adapter TTL, timeout, and cache-size values must be greater than zero.");
+    }
+
+    if (options.MaxReplayTurns is < 0 or > AdapterConstants.MaxHistoryTurns ||
+        options.MaxReplayCharacters < 0)
+    {
+        throw new InvalidOperationException(
+            $"Adapter:MaxReplayTurns must be between 0 and {AdapterConstants.MaxHistoryTurns}, " +
+            "and Adapter:MaxReplayCharacters must not be negative.");
     }
 
     foreach (var origin in options.AllowedOrigins)

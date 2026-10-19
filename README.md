@@ -658,6 +658,10 @@ The repro keeps conversation mappings and idempotent responses in a bounded in-p
 encrypted, shared persistence before running more than one adapter replica: two replicas
 do not share a cache, so replay protection is per-replica only.
 
+In traces, the `a2a.idempotency.get_or_add` and `a2a.idempotency.get_or_add_stream` spans cover
+only the cache lookup. The backend invocation they start is recorded as a sibling under the
+request span, not as a child, so the two durations are shown separately.
+
 ## Security behaviour
 
 The adapter fails closed. Dedicated tests cover these contracts; cloud authorization still
@@ -837,7 +841,33 @@ entries, oldest first. The adapter bounds the relay to the last 20 turns and 400
 per turn, drops entries with an unknown role or empty text, and passes the transcript to
 backends that do not keep the conversation themselves. A Copilot Studio conversation that is
 still mapped to the `contextId` keeps its own server-side transcript, so history is only
-replayed there when a new conversation has to be started.
+replayed there when a new conversation has to be started. That replay is limited further to
+the most recent `Adapter:MaxReplayTurns` turns (default 6) and `Adapter:MaxReplayCharacters`
+characters (default 6000); the header then reads `Conversation so far (last N of M turns):`.
+Foundry and APIM-discovered agents keep no transcript, so they still receive the full relayed
+history.
+
+### Resuming a Copilot Studio conversation from the client
+
+The adapter's `contextId` mapping lives in memory and is lost when the adapter restarts or the
+mapping expires. To avoid starting a new Copilot Studio conversation (about 1 s) and replaying
+history in those cases, the first answer part of a Copilot Studio turn carries an opaque handle
+in `metadata.copilotStudioConversation`. The handle is the Copilot Studio conversation ID, bound
+to the calling user, the agent and the `contextId`, and encrypted and time-limited with ASP.NET
+Core Data Protection (`Adapter:ConversationHandleLifetimeMinutes`, default 480). A client sends
+the handles it received back in `params.message.metadata.copilotStudioConversations`: an array of
+at most 8 strings, newest first. The adapter uses a handle only when its in-memory mapping misses
+and the handle matches the same user, agent and `contextId`. It ignores any other handle, and the
+`copilot_studio.conversation.source` span tag shows `adapter_cache` or `client_handle`.
+
+Both browser apps keep the handles with the chat. The chatbot saves them in browser storage with
+the conversation, so a reopened chat resumes too. After a failed turn both apps drop the handles,
+so the next turn starts a new conversation with a short replay. An orchestrator does not restart a
+rejected conversation by itself, because doing so could repeat a side effect.
+
+Data Protection keys are stored in the user profile during development and under `%HOME%` on
+App Service. Instances that should accept each other's handles must share a key ring; otherwise
+a handle from another instance is ignored and the turn falls back to a replay.
 
 The AppHost selects `Mock` unless its local `AdapterBackend` configuration is
 `CopilotStudio`. Select live mode explicitly:
@@ -1565,7 +1595,10 @@ repair responses are excluded from follow-up history.
 
 Progress is marked with `metadata.isInformative` on its part so a caller can show it while the
 turn runs without it becoming part of the answer. The non-streaming `SendMessage` response never
-contains it.
+contains it. Before the first answer text, a Copilot Studio turn also reports its own activity as
+progress: `Working...` on the first typing indicator, `Planning: …` when the dynamic plan arrives,
+and `Running …`/`Finished …` as plan steps start and complete. Step names come from the plan's tool
+display names. Repeated messages are suppressed, and nothing is reported once the answer starts.
 
 `SendStreamingMessage` is served in A2A task mode, configured through `AgentRunMode` where the A2A
 server is registered. This matters: in the default message mode the hosting layer aggregates the
@@ -1703,6 +1736,9 @@ explicitly when upgrading.
 | `Adapter:EnableFailureMock` | `false` | Exposes `mock-failure` alongside live agents for error-state testing. AppHost enables it. |
 | `Adapter:IdempotencyTtlMinutes` | `15` | How long a delegated response stays replay-protected. |
 | `Adapter:ConversationTtlMinutes` | `30` | Sliding TTL for the `contextId` to Copilot Studio conversation mapping. |
+| `Adapter:ConversationHandleLifetimeMinutes` | `480` | Lifetime of the encrypted conversation handle returned to clients for resuming a Copilot Studio conversation. |
+| `Adapter:MaxReplayTurns` | `6` | Most recent turns replayed into a new Copilot Studio conversation (0–20). |
+| `Adapter:MaxReplayCharacters` | `6000` | Character budget for that replay; older turns are dropped first. |
 | `Adapter:RequestTimeoutSeconds` | `60` | Shared delegated invocation budget. AppHost overrides it using `AdapterRequestTimeoutSeconds`, which defaults to `120`. |
 | `Adapter:FoundryRequestTimeoutSeconds` | `120` | HTTP timeout for outbound Foundry and discovered-APIM A2A calls, with no shared retries. A shorter outer invocation budget still wins. |
 | `Adapter:MaxCacheEntries` | `10000` | Entry limit for both bounded caches. |

@@ -152,3 +152,47 @@ test('pending messages restore as interrupted rather than appearing to stream fo
   resolveToken('')
   await pending
 })
+
+test('Copilot Studio conversation handles are saved with the chat, sent back and dropped after a failure', async (t) => {
+  const requests = []
+  let reply = 0
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    requests.push(JSON.parse(init.body))
+    reply += 1
+    if (reply === 3) return Response.json({ error: { code: -32603, message: 'Conversation expired' } })
+    return Response.json({ result: { message: { parts: [
+      { text: 'Answer', metadata: { copilotStudioConversation: `handle-${reply}` } },
+    ] } } })
+  })
+  const disk = storage()
+  const persistence = { key: 'alice', storage: disk }
+  const chat = new ChatSession(config, persistence)
+  await chat.send('First', token)
+  assert.equal(requests[0].params.message.metadata, undefined)
+  assert.deepEqual(chat.getSnapshot().conversationHandles, ['handle-1'])
+
+  const reloaded = new ChatSession(config, persistence)
+  assert.deepEqual(reloaded.getSnapshot().conversationHandles, ['handle-1'])
+  await reloaded.send('Second', token)
+  assert.deepEqual(requests[1].params.message.metadata.copilotStudioConversations, ['handle-1'])
+  assert.deepEqual(reloaded.getSnapshot().conversationHandles, ['handle-2', 'handle-1'])
+
+  await reloaded.send('Third', token)
+  assert.equal(reloaded.getSnapshot().turns.at(-1).status, 'failed')
+  assert.deepEqual(reloaded.getSnapshot().conversationHandles, [])
+  assert.equal(JSON.parse(disk.getItem('alice')).conversations[0].conversationHandles, undefined)
+
+  reloaded.reset()
+  assert.deepEqual(reloaded.getSnapshot().conversationHandles, [])
+})
+
+test('unusable saved conversation handles are dropped without losing the chat', () => {
+  const disk = storage()
+  disk.setItem('alice', JSON.stringify({
+    version: 1, activeContextId: 'ctx',
+    conversations: [{ contextId: 'ctx', updatedAt: 1, turns: [], conversationHandles: ['ok', 42, '', 'x'.repeat(2049)] }],
+  }))
+  const chat = new ChatSession(config, { key: 'alice', storage: disk })
+  assert.equal(chat.getSnapshot().contextId, 'ctx')
+  assert.deepEqual(chat.getSnapshot().conversationHandles, ['ok'])
+})

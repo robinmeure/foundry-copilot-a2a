@@ -125,6 +125,10 @@ guidance > Clear saved conversations** removes this partition's saved chats. Nei
 deletes provider-side data. The oldest local chats are removed when the 30-chat limit is reached.
 
 Messages, sources, responder attribution, activity updates and file metadata are saved.
+Each chat also keeps the opaque Copilot Studio conversation handles returned by the adapter
+(at most 8). They are sent back on the next turn, so a reopened chat or a restarted adapter
+resumes the same Copilot Studio conversation instead of replaying history. They are dropped after
+a failed turn.
 Raw attachment bytes and access tokens are not saved by conversation history. Interrupted
 messages reopen as failed, never as indefinitely streaming replies. Corrupt storage, quota
 failures and unavailable storage are surfaced without overwriting unreadable history.
@@ -159,7 +163,7 @@ User messages and progress remain plain text; Copy response and conversation his
 the original Markdown source.
 
 Bounded Copilot Studio dynamic-plan `thought` values are displayed as persistent
-`Thought: ...` entries under **Agent updates**, including when the turn fails. They remain
+`Thought: ...` entries in the status line and the collapsed updates trail, including when the turn fails. They remain
 informative progress and are excluded from copied answers and follow-up conversation history.
 
 When a connector returns an authentication failure, the chatbot displays an allowlisted
@@ -206,10 +210,15 @@ Replies render incrementally when the upstream agent actually supplies text chun
 final-only reply appears all at once without artificial typing delays. The answer area shows
 event-driven sending, accepted, working, receiving, and finalizing labels. The composer has
 a generic "Ask a question..." placeholder and no agent label; its controls stay right-aligned.
-Elapsed time starts at submission. After 20 seconds without answer text, the UI explains
-that no answer has arrived and Stop remains available; it only says "Still working" if the
-agent has reported work. Provider progress is displayed separately as plain text. The live
-region announces phase/progress changes, not every second or text fragment.
+Following the [Fluent 2 wait UX](https://fluent2.microsoft.design/wait-ux) guidance, waiting
+is a single status line (pulsing dot, shimmering text, elapsed time) that each provider
+update or phase label replaces in place; `Responding agent:` headers are stripped and long
+text is truncated. Once the turn ends, the updates collapse into one **N updates** line above
+the answer that expands into the full trail. Elapsed time starts at submission. After 20
+seconds without answer text, the line's tooltip and the live region explain that no answer has
+arrived and Stop remains available; they only say "Still working" if the agent has reported
+work. The live region announces line changes, not every second or text fragment. Animations
+stop under reduced motion.
 
 The latest `agentId` / `agentName` from A2A text-part, message/artifact, or task/status metadata
 drives the response heading and working/receiving indicator. IDs are available as tooltips;

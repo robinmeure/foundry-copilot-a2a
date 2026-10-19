@@ -22,6 +22,7 @@ import {
   type CopilotAgent,
   type CopilotAgentCatalog,
   listAgents,
+  mergeConversationHandles,
   sendMessage,
   taskStatusLabel,
 } from './a2aClient'
@@ -105,6 +106,8 @@ function App({ config }: AppProps) {
     [config, gatewayOverride],
   )
   const [contextId, setContextId] = useState(() => crypto.randomUUID())
+  // Copilot Studio conversation handles for the chat in progress; kept in memory like the turns.
+  const conversationHandlesRef = useRef<{ contextId: string; handles: string[] }>(undefined)
   const [draft, setDraft] = useState('')
   const [turns, setTurns] = useState<TurnRecord[]>([])
   const [agents, setAgents] = useState<CopilotAgent[]>([])
@@ -344,6 +347,9 @@ function App({ config }: AppProps) {
     const agentName = targetName ? `${entryName} → ${targetName}` : entryName
     const previousTurns = needsNewConversation ? [] : turns
     const requestContextId = needsNewConversation ? crypto.randomUUID() : contextId
+    const previousHandles = conversationHandlesRef.current?.contextId === requestContextId
+      ? conversationHandlesRef.current.handles
+      : []
     if (needsNewConversation) {
       setContextId(requestContextId)
       setSelectedEntryId(undefined)
@@ -393,6 +399,7 @@ function App({ config }: AppProps) {
         contextId: requestContextId,
         text,
         history,
+        conversationHandles: previousHandles,
         chainTargetAgentId: plan.targetAgentId,
         onRequest: (request) => updateTurn(turnId, { request, status: 'sending' }),
         onUpdate: (answer, citations) => updateTurn(turnId, { answer, citations, progress: undefined }),
@@ -416,7 +423,14 @@ function App({ config }: AppProps) {
         progress: undefined,
         status: 'succeeded',
       })
+      conversationHandlesRef.current = {
+        contextId: requestContextId,
+        handles: mergeConversationHandles(exchange.conversationHandles, previousHandles),
+      }
     } catch (reason) {
+      // A failed turn may mean the remembered conversation is no longer usable, so the next
+      // turn starts fresh and replays recent history instead.
+      conversationHandlesRef.current = undefined
       const message = toErrorMessage(reason)
       failTurn(turnId, message)
       setSelectedEntryId(
@@ -439,6 +453,7 @@ function App({ config }: AppProps) {
 
   function startNewConversation() {
     setContextId(crypto.randomUUID())
+    conversationHandlesRef.current = undefined
     setConversationSignature(undefined)
     setTurns([])
     setError(undefined)

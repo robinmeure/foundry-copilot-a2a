@@ -82,6 +82,12 @@ public sealed class A2ARequestContextMiddleware(
                     }
 
                     Activity.Current?.SetTag("a2a.history.turns", history.Count);
+
+                    var conversationHandles = ReadConversationHandles(message);
+                    if (conversationHandles.Count > 0)
+                    {
+                        context.Items[AdapterConstants.ConversationHandlesItem] = conversationHandles;
+                    }
                 }
 
                 Activity.Current?.SetTag("a2a.context.present", contextId is not null);
@@ -380,6 +386,28 @@ public sealed class A2ARequestContextMiddleware(
             : turns;
     }
 
+    /// <summary>
+    /// Reads the opaque conversation handles the caller kept from earlier turns. They are only
+    /// bounded here; <see cref="CopilotConversationHandles"/> authenticates them before use.
+    /// </summary>
+    private static IReadOnlyList<string> ReadConversationHandles(JsonElement message)
+    {
+        if (!TryGetObject(message, "metadata", out var metadata) ||
+            !metadata.TryGetProperty(CopilotConversationHandles.RequestMetadataKey, out var handles) ||
+            handles.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        return handles.EnumerateArray()
+            .Where(handle => handle.ValueKind == JsonValueKind.String)
+            .Select(handle => handle.GetString()!)
+            .Where(handle => handle.Length is > 0 and <= CopilotConversationHandles.MaxHandleLength)
+            .Distinct(StringComparer.Ordinal)
+            .Take(CopilotConversationHandles.MaxHandlesPerRequest)
+            .ToArray();
+    }
+
     private static string? NormalizeRole(string? role) => role?.ToLowerInvariant() switch
     {
         "user" or "role_user" => A2AConversationTurn.UserRole,
@@ -440,6 +468,9 @@ public sealed record A2ARequestMetadata
     public IReadOnlyList<A2AConversationTurn> History { get; init; } = [];
     public IReadOnlyList<A2AInputFile> Files { get; init; } = [];
 
+    /// <summary>Opaque Copilot Studio conversation handles returned by earlier turns, newest first.</summary>
+    public IReadOnlyList<string> ConversationHandles { get; init; } = [];
+
     /// <summary>
     /// Overridden so the synthesized record ToString() cannot leak the delegated bearer token
     /// into logs or telemetry.
@@ -448,7 +479,8 @@ public sealed record A2ARequestMetadata
         $"A2ARequestMetadata {{ ContextId = {ContextId}, MessageId = {MessageId}, " +
         $"AgentId = {AgentId}, UserId = {UserId}, PayloadHash = {PayloadHash}, " +
         $"ChainTargetAgentId = {ChainTargetAgentId}, HistoryTurns = {History.Count}, " +
-        $"FileCount = {Files.Count}, BearerToken = [redacted] }}";
+        $"FileCount = {Files.Count}, ConversationHandles = {ConversationHandles.Count}, " +
+        "BearerToken = [redacted] }";
 }
 
 /// <summary>A single prior turn of the caller's conversation.</summary>
@@ -464,16 +496,44 @@ public sealed record A2AConversationTurn(string Role, string Text)
 /// </summary>
 public static class ConversationTranscript
 {
-    public static string Prepend(string prompt, IReadOnlyList<A2AConversationTurn> history)
+    public static string Prepend(string prompt, IReadOnlyList<A2AConversationTurn> history) =>
+        Prepend(prompt, history, int.MaxValue, int.MaxValue);
+
+    /// <summary>
+    /// Renders only the most recent turns that fit both budgets. A turn that would exceed the
+    /// character budget ends the window, so the replayed context is always contiguous.
+    /// </summary>
+    public static string Prepend(
+        string prompt,
+        IReadOnlyList<A2AConversationTurn> history,
+        int maxTurns,
+        int maxCharacters)
     {
-        if (history.Count == 0)
+        var start = history.Count;
+        var characters = 0;
+        while (start > 0 && history.Count - start < maxTurns)
+        {
+            var length = history[start - 1].Text.Length;
+            if (characters + length > maxCharacters)
+            {
+                break;
+            }
+
+            characters += length;
+            start--;
+        }
+
+        if (start == history.Count)
         {
             return prompt;
         }
 
-        var builder = new System.Text.StringBuilder("Conversation so far:");
-        foreach (var turn in history)
+        var builder = new System.Text.StringBuilder(start == 0
+            ? "Conversation so far:"
+            : $"Conversation so far (last {history.Count - start} of {history.Count} turns):");
+        for (var index = start; index < history.Count; index++)
         {
+            var turn = history[index];
             builder.Append('\n')
                 .Append(turn.Role == A2AConversationTurn.UserRole ? "User: " : "Assistant: ")
                 .Append(turn.Text);
@@ -513,7 +573,9 @@ public sealed class A2ARequestMetadataAccessor(
                 History =
                     context.Items[AdapterConstants.HistoryItem]
                         as IReadOnlyList<A2AConversationTurn> ?? [],
-                Files = context.Items[AdapterConstants.FilesItem] as IReadOnlyList<A2AInputFile> ?? []
+                Files = context.Items[AdapterConstants.FilesItem] as IReadOnlyList<A2AInputFile> ?? [],
+                ConversationHandles =
+                    context.Items[AdapterConstants.ConversationHandlesItem] as IReadOnlyList<string> ?? []
             };
         }
     }

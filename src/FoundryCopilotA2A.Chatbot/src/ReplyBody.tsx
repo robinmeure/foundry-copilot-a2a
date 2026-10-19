@@ -8,8 +8,8 @@ import { prepareResponseLinks, type ResponseLink } from './responseLinks.ts'
 import { prepareResponseAttribution } from './responseAttribution.ts'
 import ChatIcon from './ChatIcon.tsx'
 
-export default function ReplyBody({ turn, agentName, children }: {
-  turn: ChatTurn; agentName: string; children: ReactNode
+export default function ReplyBody({ turn, agentName, lead, children }: {
+  turn: ChatTurn; agentName: string; lead?: ReactNode; children: ReactNode
 }) {
   const { answer, citations, status, responder } = turn
   const speaker = responder?.name ?? responder?.id ?? agentName
@@ -35,6 +35,7 @@ export default function ReplyBody({ turn, agentName, children }: {
           </span>
         ))}
       </div>
+      {lead}
       {presentation.text && <MarkdownAnswer text={presentation.text} responseLinks={presentation.sources} />}
       {children}
       {status === 'succeeded' && (

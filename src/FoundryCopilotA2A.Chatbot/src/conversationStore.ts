@@ -1,3 +1,4 @@
+import { mergeConversationHandles } from '../../FoundryCopilotA2A.BrowserShared/a2aClient.ts'
 import { parseCitationBundle } from '../../FoundryCopilotA2A.BrowserShared/citations.ts'
 import { validateFile } from '../../FoundryCopilotA2A.BrowserShared/inputFiles.ts'
 import type { ChatTurn } from './chatSession.ts'
@@ -6,6 +7,8 @@ export interface SavedConversation {
   contextId: string
   updatedAt: number
   turns: ChatTurn[]
+  /** Opaque adapter-issued handles that let the next turn resume the Copilot Studio conversation. */
+  conversationHandles?: string[]
 }
 
 export interface ConversationPersistence {
@@ -75,7 +78,12 @@ export function readConversations(persistence: ConversationPersistence): {
     if (!contextId || ids.has(contextId) || typeof conversation.updatedAt !== 'number' ||
       !Number.isFinite(conversation.updatedAt) || !Array.isArray(conversation.turns)) throw new Error('Invalid saved conversation.')
     ids.add(contextId)
-    return { contextId, updatedAt: conversation.updatedAt, turns: conversation.turns.map(readTurn) }
+    // Handles only save a replay, so unusable ones are dropped rather than rejecting the chat.
+    const conversationHandles = Array.isArray(conversation.conversationHandles)
+      ? mergeConversationHandles(conversation.conversationHandles)
+      : []
+    return { contextId, updatedAt: conversation.updatedAt, turns: conversation.turns.map(readTurn),
+      ...(conversationHandles.length ? { conversationHandles } : {}) }
   })
   return { conversations, activeContextId: saved.activeContextId === undefined ? undefined : text(saved.activeContextId) }
 }

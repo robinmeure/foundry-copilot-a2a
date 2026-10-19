@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { ChatTurn } from './chatSession.ts'
+import { activityLine } from './waitStatus.ts'
 
 export const longWaitSeconds = 20
 
@@ -20,9 +21,15 @@ export function getReplyActivity(turn: ChatTurn | undefined, agentName: string, 
     ? responder ? `${responder} is still working` : 'Still working'
     : labels[turn.phase]
   const detail = longWait ? 'No answer text has arrived yet. You can stop this request.' : undefined
+  // One status line: the agent's own latest update replaces the generic phase label until the
+  // answer starts streaming.
+  const reported = turn.answer
+    ? undefined
+    : activityLine(turn.progress) ?? activityLine(turn.activityUpdates?.at(-1))
+  const line = reported ?? activityLine(label) ?? label
   return {
-    label, elapsedSeconds, detail,
-    announcement: [label, turn.progress, detail].filter(Boolean).join(' '),
+    label, line, elapsedSeconds, detail,
+    announcement: [line, detail].filter(Boolean).join(' '),
   }
 }
 

@@ -21,6 +21,9 @@ public sealed record CopilotInvocationResult(
 {
     public AgentResponder? Responder { get; init; }
     public CitationBundle? Citations { get; init; }
+
+    /// <inheritdoc cref="CopilotInvocationUpdate.ConversationHandle"/>
+    public string? ConversationHandle { get; init; }
 }
 
 public sealed record CopilotInvocationUpdate(
@@ -31,6 +34,12 @@ public sealed record CopilotInvocationUpdate(
 {
     public AgentResponder? Responder { get; init; }
     public CitationBundle? Citations { get; init; }
+
+    /// <summary>
+    /// Opaque, protected reference to the Copilot Studio conversation. The client stores it with
+    /// its chat and sends it back so a restarted adapter can continue the same conversation.
+    /// </summary>
+    public string? ConversationHandle { get; init; }
 }
 
 public sealed record AgentResponder(string Id, string Name);
@@ -43,7 +52,7 @@ public interface ICopilotStudioInvoker
         CancellationToken cancellationToken);
 }
 
-public sealed class MockCopilotStudioInvoker : ICopilotStudioInvoker
+public sealed class MockCopilotStudioInvoker(CopilotConversationHandles conversationHandles) : ICopilotStudioInvoker
 {
     public const string FailureReason =
         "The mock Copilot Studio service is unavailable. Try the request again.";
@@ -83,10 +92,19 @@ public sealed class MockCopilotStudioInvoker : ICopilotStudioInvoker
             throw exception;
         }
 
-        var conversationId = metadata.ContextId ?? $"mock-{Guid.NewGuid():N}";
-        var historySuffix = metadata.History.Count == 0
-            ? string.Empty
-            : $" | context: {metadata.History.Count} earlier turns";
+        var resumedConversationId = conversationHandles.Resolve(metadata);
+        if (resumedConversationId is not null)
+        {
+            traceActivity?.SetTag("copilot_studio.conversation.source", "client_handle");
+        }
+
+        var conversationId = resumedConversationId ?? metadata.ContextId ?? $"mock-{Guid.NewGuid():N}";
+        var handle = conversationHandles.Issue(metadata, conversationId);
+        var historySuffix = resumedConversationId is not null
+            ? " | resumed conversation"
+            : metadata.History.Count == 0
+                ? string.Empty
+                : $" | context: {metadata.History.Count} earlier turns";
         var fileSuffix = metadata.Files.Count == 0 ? string.Empty :
             $" | mock received {metadata.Files[0].Name} ({metadata.Files[0].Bytes.Length} bytes); " +
             "mock mode does not analyze file contents";
@@ -133,7 +151,10 @@ public sealed class MockCopilotStudioInvoker : ICopilotStudioInvoker
         yield return new CopilotInvocationUpdate(
             $"mock-copilot-studio[{invocation}]: {prompt}{historySuffix}{fileSuffix}",
             conversationId,
-            $"mock-response-{invocation}");
+            $"mock-response-{invocation}")
+        {
+            ConversationHandle = handle
+        };
     }
 }
 
@@ -211,6 +232,9 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
     private readonly OboTokenBroker _tokenBroker;
     private readonly CopilotConversationStore _conversationStore;
     private readonly CopilotStudioResponseMetadataAccessor _responseMetadataAccessor;
+    private readonly CopilotConversationHandles _conversationHandles;
+    private readonly int _maxReplayTurns;
+    private readonly int _maxReplayCharacters;
     private readonly IReadOnlyDictionary<string, CopilotStudioAgentRuntime> _agents;
 
     public SdkCopilotStudioInvoker(
@@ -220,7 +244,9 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
         ILogger<SdkCopilotStudioInvoker> logger,
         OboTokenBroker tokenBroker,
         CopilotConversationStore conversationStore,
-        CopilotStudioResponseMetadataAccessor responseMetadataAccessor)
+        CopilotStudioResponseMetadataAccessor responseMetadataAccessor,
+        CopilotConversationHandles conversationHandles,
+        IOptions<AdapterOptions> adapterOptions)
     {
         _httpClientFactory = httpClientFactory;
         _loggerFactory = loggerFactory;
@@ -228,6 +254,9 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
         _tokenBroker = tokenBroker;
         _conversationStore = conversationStore;
         _responseMetadataAccessor = responseMetadataAccessor;
+        _conversationHandles = conversationHandles;
+        _maxReplayTurns = adapterOptions.Value.MaxReplayTurns;
+        _maxReplayCharacters = adapterOptions.Value.MaxReplayCharacters;
 
         var value = options.Value;
         _agents = value.ResolveAgents().ToDictionary(
@@ -334,11 +363,24 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
             metadata.UserId,
             metadata.AgentId,
             metadata.ContextId);
+        var conversationSource = cachedConversationId is null ? null : "adapter_cache";
+        if (cachedConversationId is null &&
+            _conversationHandles.Resolve(metadata) is { } handleConversationId)
+        {
+            cachedConversationId = handleConversationId;
+            conversationSource = "client_handle";
+        }
         traceActivity?.SetTag("copilot_studio.conversation.reused", cachedConversationId is not null);
+        if (conversationSource is not null)
+        {
+            traceActivity?.SetTag("copilot_studio.conversation.source", conversationSource);
+        }
 
         // Copilot Studio keeps the transcript against the conversation id, so history is only
-        // replayed when a new conversation has to be started for an existing A2A context.
-        var promptWithHistory = ConversationTranscript.Prepend(prompt, metadata.History);
+        // replayed when a new conversation has to be started for an existing A2A context, and
+        // then only its most recent turns.
+        var promptWithHistory = ConversationTranscript.Prepend(
+            prompt, metadata.History, _maxReplayTurns, _maxReplayCharacters);
 
         var effectivePrompt = cachedConversationId is null ? promptWithHistory : prompt;
         var restarted = false;
@@ -509,6 +551,20 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
             allowOAuthChallenge: true,
             cancellationToken);
         var emittedFinalText = false;
+        string? conversationHandle = null;
+        CopilotInvocationUpdate WithHandle(CopilotInvocationUpdate update)
+        {
+            if (conversationHandle is not null ||
+                update.IsInformative ||
+                string.IsNullOrWhiteSpace(update.Text))
+            {
+                return update;
+            }
+
+            conversationHandle = _conversationHandles.Issue(metadata, conversationId!);
+            return conversationHandle is null ? update : update with { ConversationHandle = conversationHandle };
+        }
+
         OAuthCardInfo? cardDuringTurn = null;
         await foreach (var item in answer)
         {
@@ -519,7 +575,7 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
                 // satisfy the response check or suppress the sign-in retry below.
                 emittedFinalText |= !item.Update.IsInformative &&
                                     !string.IsNullOrWhiteSpace(item.Update.Text);
-                yield return item.Update;
+                yield return WithHandle(item.Update);
             }
         }
 
@@ -545,7 +601,7 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
                 {
                     emittedFinalText |= !item.Update.IsInformative &&
                                         !string.IsNullOrWhiteSpace(item.Update.Text);
-                    yield return item.Update;
+                    yield return WithHandle(item.Update);
                 }
             }
         }
@@ -591,6 +647,7 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
         traceActivity?.SetTag("copilot_studio.agent.id", responder.Id);
         var collectionSummary = new CopilotStudioActivitySummary();
         var answerStream = new CopilotStudioAnswerStream();
+        var progress = new CopilotStudioProgress();
         var streamStarted = Stopwatch.GetTimestamp();
         var firstActivityRecorded = false;
         var firstProgressRecorded = false;
@@ -653,7 +710,15 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
                         responder);
                 if (update is null)
                 {
-                    continue;
+                    update = progress.Next(activity, conversationId);
+                    if (update is null)
+                    {
+                        continue;
+                    }
+                }
+                else
+                {
+                    progress.Observe(update);
                 }
 
                 if (!firstProgressRecorded && !string.IsNullOrWhiteSpace(update.Text))
@@ -835,6 +900,135 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
 public sealed class CopilotStudioResponseException(string message) : Exception(message);
 
 internal sealed class CopilotStudioPlanFailureException(string message) : Exception(message);
+
+/// <summary>
+/// Turns Copilot Studio activity that carries no answer text (typing indicators and dynamic-plan
+/// events) into short informative progress, so the caller sees the agent working before the first
+/// answer token. Repeats are suppressed, and nothing is emitted once the answer has started.
+/// </summary>
+internal sealed class CopilotStudioProgress
+{
+    public const string WorkingText = "Working...";
+    private const string PlanReceivedValueType = "DynamicPlanReceived";
+    private const string StepTriggeredValueType = "DynamicPlanStepTriggered";
+    private const string StepFinishedValueType = "DynamicPlanStepFinished";
+    private const int MaximumStepIdCharacters = 512;
+    private const int MaximumListedSteps = 4;
+
+    private readonly Dictionary<string, string> _toolNames = new(StringComparer.OrdinalIgnoreCase);
+    private string? _lastText;
+    private bool _progressSent;
+    private bool _answerStarted;
+
+    public CopilotInvocationUpdate? Next(IActivity activity, string conversationId)
+    {
+        foreach (var tool in CopilotStudioPlanTool.Read(activity))
+        {
+            _toolNames[tool.SchemaName] = tool.DisplayName;
+        }
+
+        if (_answerStarted)
+        {
+            return null;
+        }
+
+        var text = Describe(activity);
+        if (text is null || string.Equals(text, _lastText, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        var update = new CopilotInvocationUpdate(text, conversationId, activity.Id, IsInformative: true);
+        Observe(update);
+        return update;
+    }
+
+    /// <summary>Records an update produced elsewhere so progress does not repeat or trail the answer.</summary>
+    public void Observe(CopilotInvocationUpdate update)
+    {
+        if (string.IsNullOrWhiteSpace(update.Text))
+        {
+            return;
+        }
+
+        if (!update.IsInformative)
+        {
+            _answerStarted = true;
+            return;
+        }
+
+        _progressSent = true;
+        _lastText = update.Text;
+    }
+
+    private string? Describe(IActivity activity)
+    {
+        if (string.Equals(activity.Type, "typing", StringComparison.OrdinalIgnoreCase))
+        {
+            return !_progressSent && string.IsNullOrWhiteSpace(activity.Text) ? WorkingText : null;
+        }
+
+        if (!CopilotStudioDynamicPlan.IsDynamicPlanEvent(activity) ||
+            !CopilotStudioDynamicPlan.TryReadValue(activity.Value, out var value) ||
+            value.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (CopilotStudioDynamicPlan.IsEventType(activity, PlanReceivedValueType))
+        {
+            var steps = value.TryGetProperty("steps", out var stepArray) &&
+                        stepArray.ValueKind == JsonValueKind.Array
+                ? stepArray.EnumerateArray()
+                    .Where(step => step.ValueKind == JsonValueKind.String)
+                    .Select(step => NameOf(step.GetString()))
+                    .OfType<string>()
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray()
+                : [];
+            if (steps.Length == 0)
+            {
+                return "Planning...";
+            }
+
+            var listed = string.Join(", ", steps.Take(MaximumListedSteps));
+            return steps.Length > MaximumListedSteps
+                ? $"Planning: {listed}, and {steps.Length - MaximumListedSteps} more"
+                : $"Planning: {listed}";
+        }
+
+        var stepName = NameOf(CopilotStudioDynamicPlan.ReadString(
+            value, "taskDialogId", MaximumStepIdCharacters));
+        if (CopilotStudioDynamicPlan.IsEventType(activity, StepTriggeredValueType))
+        {
+            return stepName is null ? "Running a step..." : $"Running {stepName}...";
+        }
+
+        if (CopilotStudioDynamicPlan.IsEventType(activity, StepFinishedValueType) &&
+            !(value.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object))
+        {
+            return stepName is null ? null : $"Finished {stepName}";
+        }
+
+        return null;
+    }
+
+    private string? NameOf(string? schemaName)
+    {
+        if (string.IsNullOrWhiteSpace(schemaName))
+        {
+            return null;
+        }
+
+        if (_toolNames.TryGetValue(schemaName, out var displayName))
+        {
+            return displayName;
+        }
+
+        var name = schemaName[(schemaName.LastIndexOf('.') + 1)..].Trim();
+        return name.Length == 0 ? null : name.Replace('\r', ' ').Replace('\n', ' ');
+    }
+}
 
 internal sealed record CopilotStudioPlanThought(string Text)
 {

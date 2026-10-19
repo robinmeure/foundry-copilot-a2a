@@ -1,4 +1,4 @@
-import { sendMessage, type A2AAgent, type CitationBundle, type ConversationTurn } from '../../FoundryCopilotA2A.BrowserShared/a2aClient.ts'
+import { mergeConversationHandles, sendMessage, type A2AAgent, type CitationBundle, type ConversationTurn } from '../../FoundryCopilotA2A.BrowserShared/a2aClient.ts'
 import { appendActivityUpdate } from '../../FoundryCopilotA2A.BrowserShared/activityUpdates.ts'
 import { parseConnectionRepairRequest } from '../../FoundryCopilotA2A.BrowserShared/connectionRepair.ts'
 import type { ChatbotConfig } from './config.ts'
@@ -23,6 +23,8 @@ export interface ChatTurn {
 interface ChatSnapshot {
   contextId: string
   turns: ChatTurn[]
+  /** Copilot Studio conversation handles for the active chat, newest first. */
+  conversationHandles: string[]
   isSending: boolean
   conversations: SavedConversation[]
   storageError?: string
@@ -30,7 +32,9 @@ interface ChatSnapshot {
 
 export class ChatSession {
   private readonly config: ChatbotConfig
-  private snapshot: ChatSnapshot = { contextId: crypto.randomUUID(), turns: [], isSending: false, conversations: [] }
+  private snapshot: ChatSnapshot = {
+    contextId: crypto.randomUUID(), turns: [], conversationHandles: [], isSending: false, conversations: [],
+  }
   private listeners = new Set<() => void>()
   private active?: AbortController
   private readonly persistence?: ConversationPersistence
@@ -44,7 +48,8 @@ export class ChatSession {
         const saved = readConversations(persistence)
         const active = saved.conversations.find((conversation) => conversation.contextId === saved.activeContextId)
         this.snapshot = { ...this.snapshot, conversations: saved.conversations,
-          ...(active ? { contextId: active.contextId, turns: active.turns } : {}) }
+          ...(active ? { contextId: active.contextId, turns: active.turns,
+            conversationHandles: active.conversationHandles ?? [] } : {}) }
       } catch (reason) {
         this.historyBlocked = true
         this.snapshot.storageError = `Could not load browser history: ${reason instanceof Error ? reason.message : 'Storage unavailable.'} Saved data was left unchanged.`
@@ -61,14 +66,15 @@ export class ChatSession {
 
   reset = () => {
     this.stop()
-    this.publish({ ...this.snapshot, contextId: crypto.randomUUID(), turns: [], isSending: false })
+    this.publish({ ...this.snapshot, contextId: crypto.randomUUID(), turns: [], conversationHandles: [], isSending: false })
   }
 
   open = (contextId: string) => {
     this.stop()
     const conversation = this.snapshot.conversations.find((entry) => entry.contextId === contextId)
     if (!conversation) throw new Error('This conversation is no longer available in this browser.')
-    this.publish({ ...this.snapshot, contextId, turns: conversation.turns, isSending: false })
+    this.publish({ ...this.snapshot, contextId, turns: conversation.turns,
+      conversationHandles: conversation.conversationHandles ?? [], isSending: false })
   }
 
   delete = (contextId: string) => {
@@ -82,7 +88,7 @@ export class ChatSession {
     try {
       this.persistence?.storage.removeItem(this.persistence.key)
       this.historyBlocked = false
-      this.publish({ contextId: crypto.randomUUID(), turns: [], isSending: false, conversations: [] })
+      this.publish({ contextId: crypto.randomUUID(), turns: [], conversationHandles: [], isSending: false, conversations: [] })
     } catch (reason) {
       this.publish({ ...this.snapshot, storageError: `Could not clear browser history: ${reason instanceof Error ? reason.message : 'Storage unavailable.'}` }, false)
     }
@@ -111,7 +117,7 @@ export class ChatSession {
     const controller = new AbortController()
     this.active = controller
     const id = crypto.randomUUID()
-    const { contextId, turns } = this.snapshot
+    const { contextId, turns, conversationHandles } = this.snapshot
     const history: ConversationTurn[] = turns
       .filter((turn) =>
         turn.status === 'succeeded' && !parseConnectionRepairRequest(turn.answer))
@@ -155,6 +161,7 @@ export class ChatSession {
         text,
         files,
         history,
+        conversationHandles,
         includeTrace: false,
         signal: controller.signal,
         onAgent: (responder) => update({ responder }),
@@ -182,6 +189,10 @@ export class ChatSession {
         },
       })
       update({ answer: exchange.answer, citations: exchange.citations, status: 'succeeded', progress: undefined })
+      if (this.active === controller) {
+        this.publish({ ...this.snapshot,
+          conversationHandles: mergeConversationHandles(exchange.conversationHandles, conversationHandles) }, false)
+      }
     } catch (reason) {
       update({
         status: 'failed',
@@ -189,6 +200,9 @@ export class ChatSession {
         citations: undefined,
         error: reason instanceof Error ? reason.message : 'Unable to send the message.',
       })
+      // A failed turn may mean the remembered conversation is no longer usable; the next
+      // turn starts fresh and replays recent history instead.
+      if (this.active === controller) this.publish({ ...this.snapshot, conversationHandles: [] }, false)
     } finally {
       if (this.active === controller) {
         this.active = undefined
@@ -202,7 +216,9 @@ export class ChatSession {
       snapshot.conversations !== this.snapshot.conversations) {
       let conversations = snapshot.conversations.filter((entry) => entry.contextId !== snapshot.contextId)
       if (snapshot.turns.length) {
-        conversations = [{ contextId: snapshot.contextId, updatedAt: Date.now(), turns: snapshot.turns }, ...conversations]
+        conversations = [{ contextId: snapshot.contextId, updatedAt: Date.now(), turns: snapshot.turns,
+          ...(snapshot.conversationHandles.length ? { conversationHandles: snapshot.conversationHandles } : {}) },
+        ...conversations]
       }
       snapshot = { ...snapshot, conversations: conversations.slice(0, 30) }
       if (save && this.persistence && !this.historyBlocked) {

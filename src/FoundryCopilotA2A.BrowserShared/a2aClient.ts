@@ -26,6 +26,8 @@ export interface A2AHttpResponse {
 export interface A2AExchange {
   answer: string
   citations?: CitationBundle
+  /** Opaque Copilot Studio conversation handles returned by this turn; see mergeConversationHandles. */
+  conversationHandles: string[]
   durationMs: number
   request: A2AHttpRequest
   response: A2AHttpResponse
@@ -89,6 +91,26 @@ export interface ConversationTurn {
 
 /** Caps how many prior turns travel with a request, mirroring the adapter-side bound. */
 export const maxHistoryTurns = 20
+
+/** Mirrors the adapter's bounds on conversation handles sent back with a request. */
+export const maxConversationHandles = 8
+const maxConversationHandleLength = 2048
+
+export function isConversationHandle(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= maxConversationHandleLength
+}
+
+/**
+ * Keeps the newest handle first. Each handle is bound by the adapter to one caller, agent and
+ * chat, so older handles for other agents stay useful when a route spans several agents.
+ */
+export function mergeConversationHandles(
+  received: readonly string[],
+  previous: readonly string[] = [],
+): string[] {
+  return [...new Set([...received, ...previous].filter(isConversationHandle))]
+    .slice(0, maxConversationHandles)
+}
 
 export async function listAgents(
   adapterBaseUrl: string,
@@ -169,6 +191,8 @@ export interface SendMessageOptions {
   files?: readonly InputFile[]
   /** Prior turns of this conversation, oldest first. */
   history?: ConversationTurn[]
+  /** Handles from earlier turns of this chat, newest first; lets the agent resume its conversation. */
+  conversationHandles?: readonly string[]
   chainTargetAgentId?: string
   signal?: AbortSignal
   /** The diagnostic console loads traces by default; chat-only clients can opt out. */
@@ -193,6 +217,7 @@ export async function sendMessage({
   text,
   files = [],
   history = [],
+  conversationHandles = [],
   chainTargetAgentId,
   signal,
   includeTrace = true,
@@ -208,6 +233,11 @@ export async function sendMessage({
   for (const file of files) validateFile(file)
   const url = `${adapterBaseUrl}/a2a/copilot-studio`
   const relayedHistory = history.slice(-maxHistoryTurns)
+  const relayedHandles = mergeConversationHandles(conversationHandles)
+  const metadata = {
+    ...(relayedHistory.length > 0 ? { history: relayedHistory } : {}),
+    ...(relayedHandles.length > 0 ? { copilotStudioConversations: relayedHandles } : {}),
+  }
   const body = {
     jsonrpc: '2.0',
     id: crypto.randomUUID(),
@@ -221,9 +251,7 @@ export async function sendMessage({
         ],
         messageId: crypto.randomUUID(),
         contextId,
-        ...(relayedHistory.length > 0
-          ? { metadata: { history: relayedHistory } }
-          : {}),
+        ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
       },
     },
   }
@@ -258,7 +286,8 @@ export async function sendMessage({
   })
 
   const contentType = response.headers.get('Content-Type') ?? ''
-  const { responseText, answer, citations, rpcError, taskError } = await readStreamingResponse(
+  const { responseText, answer, citations, conversationHandles: receivedHandles, rpcError, taskError } =
+    await readStreamingResponse(
     response,
     onUpdate,
     onProgress,
@@ -315,6 +344,7 @@ export async function sendMessage({
   return {
     answer,
     citations,
+    conversationHandles: receivedHandles,
     durationMs,
     request,
     response: exchangeResponse,
@@ -345,6 +375,7 @@ async function readStreamingResponse(
   let rpcError: JsonRpcResponse['error']
   let taskError: Error | undefined
   let currentAgent: A2AAgent | undefined
+  const conversationHandles: string[] = []
 
   const processData = (data: string) => {
     if (taskError) return
@@ -379,6 +410,9 @@ async function readStreamingResponse(
     }
     const chunk = answerChunk(rpcResponse)
     if (!chunk) return
+    for (const handle of chunk.handles) {
+      if (!conversationHandles.includes(handle)) conversationHandles.unshift(handle)
+    }
     for (const progress of chunk.progress) onProgress?.(progress)
     if (chunk.text === undefined && !chunk.deltas.length) return
     sourceRegistry = mergeCitationBundles(sourceRegistry, chunk.deltas.map((delta) => ({
@@ -437,7 +471,14 @@ async function readStreamingResponse(
     reader.releaseLock()
   }
 
-  return { responseText, answer, citations, rpcError, taskError }
+  return {
+    responseText,
+    answer,
+    citations,
+    conversationHandles: conversationHandles.slice(0, maxConversationHandles),
+    rpcError,
+    taskError,
+  }
 }
 
 function asJsonRpcResponse(value: unknown): JsonRpcResponse | undefined {
@@ -471,12 +512,15 @@ function answerChunk(response: JsonRpcResponse) {
   const progress: string[] = []
   const deltas: CitationBundle[] = []
   const text: string[] = []
+  const handles: string[] = []
   for (const part of parts) {
     const partDeltas = citationDeltasFromPart(part)
     if (part.metadata?.isInformative === true) {
       if (part.text) progress.push(part.text)
       continue
     }
+    const handle = part.metadata?.copilotStudioConversation
+    if (isConversationHandle(handle)) handles.push(handle)
     if (typeof part.text === 'string' && part.text.length > 0) text.push(part.text)
     deltas.push(...partDeltas)
   }
@@ -487,6 +531,7 @@ function answerChunk(response: JsonRpcResponse) {
   return {
     text: text.length ? text.join('') : undefined,
     progress,
+    handles,
     deltas: progress.length && !text.length ? [] : deltas,
     append: artifactUpdate?.append === true,
   }

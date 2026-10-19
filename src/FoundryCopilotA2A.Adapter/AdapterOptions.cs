@@ -17,6 +17,21 @@ public sealed class AdapterOptions
     public int ConversationTtlMinutes { get; set; } = 30;
 
     /// <summary>
+    /// How long a client-held Copilot Studio conversation handle stays valid. Saved chats and
+    /// adapter restarts within this window continue the conversation instead of replaying history.
+    /// </summary>
+    public int ConversationHandleLifetimeMinutes { get; set; } = 480;
+
+    /// <summary>
+    /// Most recent caller-supplied turns replayed into a new Copilot Studio conversation. An
+    /// existing conversation already holds its transcript, so this applies only to a new one.
+    /// </summary>
+    public int MaxReplayTurns { get; set; } = 6;
+
+    /// <summary>Character budget for history replayed into a new Copilot Studio conversation.</summary>
+    public int MaxReplayCharacters { get; set; } = 6_000;
+
+    /// <summary>
     /// Must be set explicitly to run without authentication. Prevents an unsecured deployment
     /// from starting by accident, since both caches partition on the caller identity.
     /// </summary>
