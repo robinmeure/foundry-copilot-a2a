@@ -56,6 +56,98 @@ The public URL must be reachable from the provider, not just from the developer 
 Each Copilot Studio specialist gets its own route (`/a2a-agents/<id>/a2a`) and its own agent
 card, so a native tool addresses one specialist rather than a generic router.
 
+### Experimental file input
+
+File input enhances the existing adapter implementation; it does not introduce a separate
+upload service or a custom A2A protocol extension. The browser sends text and inline base64
+file bytes together in the same `SendStreamingMessage` request to `/a2a/copilot-studio`.
+The request uses the same A2A middleware, authentication, routing, idempotency, and streamed
+response pipeline as a text-only message.
+
+```text
+Browser: text + inline A2A file part
+  -> existing A2A runtime and file validation
+  -> Copilot Studio SDK ExecuteAsync: Activity with an Attachment
+  -> existing streamed A2A response
+```
+
+The adapter translates the incoming A2A file part into a Copilot Studio Activity attachment
+with a base64 data URI. The outbound Copilot Studio call uses the SDK, not another A2A
+upload endpoint. Text-only turns use `AskQuestionAsync`; turns with a file use `ExecuteAsync`.
+The adapter accepts both A2A 1.0 inline `raw` parts and legacy A2A 0.3 `file.bytes` parts,
+and preserves attachments when retrying after a sign-in challenge.
+
+Current limits and behavior:
+
+- **Copilot Studio only.** Foundry and APIM agent targets explicitly reject file input
+  rather than silently dropping the attachment.
+- **One nonempty file per message, up to 5 MiB** (5,242,880 decoded bytes). Base64 encoding
+  increases the request size; gateways may impose lower limits.
+- Supported formats are **TXT, CSV, PDF, DOCX, PNG, and JPEG**, with matching filename
+  extensions and media types. Acceptance does not guarantee the selected agent can read
+  every format.
+- Only inline bytes are accepted; remote file URLs are rejected.
+- A file-only message receives a default summary prompt. For the real provider, a short
+  hint ties the user's question to the attached file.
+- File bytes, names, and media types participate in the idempotency hash, so reusing a
+  message ID with a changed attachment is rejected.
+- Browser history saves only attachment names, types, and sizes, not file bytes. Reopening
+  a chat does not reupload its files. Follow-up access depends on the provider retaining
+  the original conversation and file context; replaying text history cannot restore files.
+  The provider may retain uploaded files.
+
+**Verification status:** the automated
+[file-input tests](tests/FoundryCopilotA2A.Adapter.Tests/FileInputTests.cs) verify transport
+to the mock backend through both A2A protocol versions, validation, replay conflicts,
+unsupported-provider rejection, and attachment redaction in traces. The mock reports receipt
+but does not analyze file contents. These tests do not prove that a live agent reads a file.
+The CLI's [file-upload probe](src/FoundryCopilotA2A.Cli/CopilotFileUploadProbe.cs) checks facts
+from a synthetic TXT attachment and a follow-up question directly through the Copilot Studio
+SDK; it bypasses A2A and does not verify other formats or agents. Live file understanding
+through the complete A2A path remains unverified.
+
+### Experimental voice input
+
+The [Orchestrator Chat frontend](src/FoundryCopilotA2A.Chatbot/README.md) offers optional
+browser speech-to-text in its message composer. This is a frontend enhancement, not a voice
+agent, an audio-upload feature, or an extension to the A2A protocol.
+
+```text
+Microphone -> browser speech recognition service -> editable message draft
+  -> user selects Send -> existing text-only A2A SendStreamingMessage request
+```
+
+Enable it with `VITE_SPEECH_INPUT_ENABLED=true` in the chatbot configuration, or
+`ChatbotSpeechInputEnabled=true` when configuring the repository's Aspire AppHost. It is
+**off by default**. The microphone and language selector are shown only when enabled and
+the browser exposes `SpeechRecognition` or `webkitSpeechRecognition`.
+
+- Dictation appends recognized speech to the existing draft and displays interim results.
+  Nothing is sent to the adapter or agent automatically; review and edit the text before
+  selecting Send. Once sent, it uses the same authentication, routing, idempotency, and
+  response streaming as typed text.
+- The language selector offers Auto (browser preferences), Dutch, English (US/UK), German,
+  French, and Spanish. An explicit selection is saved in browser local storage; Auto uses
+  the first full locale in the browser's preferences, or the recognizer's default.
+- Microphone permission and a working browser recognition service are required. Edge and
+  Chrome use the browser vendor's online speech service, so **audio may leave the device
+  for recognition** even before a message is sent. This implementation does not configure
+  Azure AI Speech, send audio through A2A, or store an audio recording in chat history.
+  Sent transcript text follows the normal browser conversation-persistence behavior.
+- Browser API availability does not guarantee a working service. Embedded Chromium browsers,
+  including VS Code's browser, may expose the API but fail to recognize speech. Permission,
+  microphone, network, and language failures produce user-facing errors; silence and user
+  cancellation are not treated as errors.
+- Recognition accuracy and language support depend on the browser service. There is no
+  synthesized speech output, real-time audio conversation, or provider-side voice session.
+
+**Verification status:** the
+[speech-input unit tests](src/FoundryCopilotA2A.Chatbot/tests/speechInput.test.mjs) cover
+language restoration and locale selection, merging dictation with typed text, and error
+messages. The [configuration tests](src/FoundryCopilotA2A.Chatbot/tests/config.test.mjs)
+cover the opt-in flag. These tests do not exercise a real microphone, browser permissions,
+the online recognition service, or end-to-end dictation accuracy.
+
 ### Responder identity in A2A replies
 
 Every adapter-produced answer starts with `Responding agent: <display name>`, followed by
@@ -376,7 +468,10 @@ aspire start --apphost .\src\FoundryCopilotA2A.AppHost\FoundryCopilotA2A.AppHost
 The AppHost creates `adapter-dev-tunnel` and maps only the adapter's `http` endpoint into it.
 The generated HTTPS URL appears in Aspire's resource output, dashboard, and
 `aspire describe --include-hidden --format Json`. Aspire normally reuses the modeled tunnel ID;
-set `DevTunnel:TunnelId` in AppHost user secrets only to select an existing tunnel. Check the
+set `DevTunnel:TunnelId` in AppHost user secrets only to select an existing tunnel. Also set
+`DevTunnel:Region` (for example `UKSouth` or `WestEurope`) to that tunnel's region: without it,
+Dev Tunnels uses the nearest cluster, and on another network that creates a second tunnel with the
+same ID and a different URL, so APIM backends time out. Check the
 allocated URL again after changing the AppHost identity, tunnel, or port mapping. A retained
 tunnel can also expire after inactivity. Its address is still developer-bound and works only
 while the local adapter and tunnel host are running.

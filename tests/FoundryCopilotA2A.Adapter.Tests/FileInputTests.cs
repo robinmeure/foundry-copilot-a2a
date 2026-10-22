@@ -173,6 +173,33 @@ public class FileInputTests : IClassFixture<A2AAdapterFactory>
     }
 
     [Fact]
+    public void FramedPromptTiesTheQuestionToTheAttachedFile()
+    {
+        var files = A2AInputFiles.Read(Message(Raw()));
+        var framed = A2AInputFiles.FramePrompt("  What are the action items?  ", files);
+
+        Assert.Equal(
+            "What are the action items?\n\n(This is about the attached text document \"notes.txt\".)",
+            framed);
+        Assert.DoesNotContain("aGVsbG8=", framed);
+        Assert.StartsWith("Please summarize the attached file.\n\n",
+            A2AInputFiles.FramePrompt(" ", files), StringComparison.Ordinal);
+        Assert.Equal("plain", A2AInputFiles.FramePrompt("plain", []));
+    }
+
+    [Fact]
+    public void FramedPromptStaysNextToTheQuestionWhenHistoryIsReplayed()
+    {
+        var files = A2AInputFiles.Read(Message(Raw()));
+        var replayed = ConversationTranscript.Prepend(
+            A2AInputFiles.FramePrompt("And the deadline?", files),
+            [new A2AConversationTurn(A2AConversationTurn.UserRole, "Hi")]);
+
+        Assert.StartsWith("Conversation so far:", replayed, StringComparison.Ordinal);
+        Assert.Contains("---\nAnd the deadline?\n\n(This is about the attached", replayed, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task TracesRedactAllAttachmentRepresentations()
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "https://example.test")

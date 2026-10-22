@@ -51,7 +51,14 @@ VITE_CHATBOT_AUTH_MODE=entra
 VITE_ENTRA_TENANT_ID=<tenant-id>
 VITE_ENTRA_CLIENT_ID=<dedicated-chatbot-spa-client-id>
 VITE_ADAPTER_API_CLIENT_ID=<existing-backend-api-client-id>
+VITE_SPEECH_INPUT_ENABLED=false
 ```
+
+`VITE_SPEECH_INPUT_ENABLED=true` shows a microphone and dictation-language selector in the
+composer (Aspire: `ChatbotSpeechInputEnabled`). It uses the browser's own speech recognition,
+which in Edge and Chrome sends audio to the browser vendor's online service. Dictated text only
+fills the message box; nothing is sent automatically. Recognition quality varies, so it is off
+by default. Browsers without speech recognition never show the controls.
 
 The agent ID must match a configured adapter agent. It is not inferred from a display name
 or selected from the agent catalog. Native delegation remains the orchestrator's decision;
@@ -107,7 +114,12 @@ This is **experimental transport**, not a promise that the agent can analyze the
 The prior authenticated SDK probe did not recover file content. Browser input uses A2A 1.0
 inline `raw` parts; the adapter also accepts A2A 0.3 inline file parts, validates size/type/name,
 includes file identity/content in replay conflict detection, and sends an Activity attachment
-through SDK `ExecuteAsync`, including the existing OAuth-challenge retry. File URLs and multiple
+through SDK `ExecuteAsync`, including the existing OAuth-challenge retry. The adapter also
+adds one short line after that turn's text so the agent ties a terse question to the file:
+`(This is about the attached PDF document "name".)`. The user's words stay first and the hint
+stays short, because Copilot Studio uses the message text to search the uploaded file; a long
+instruction preamble stopped it from reading the file. History replay stays in front of the
+message. File URLs and multiple
 files are refused; the adapter does not fetch remote URLs or extract document contents locally.
 Foundry/APIM agents reject this experimental input instead of silently discarding it. Native
 delegation may still drop files. The versioned APIM JSON-validation policy remains unchanged at

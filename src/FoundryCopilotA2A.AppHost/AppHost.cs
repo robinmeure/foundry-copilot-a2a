@@ -84,13 +84,25 @@ else
 if (builder.Configuration.GetValue("DevTunnel:Enabled", false))
 {
     var configuredTunnelId = builder.Configuration["DevTunnel:TunnelId"]?.Trim();
+    var configuredRegion = builder.Configuration["DevTunnel:Region"]?.Trim();
+    DevTunnelRegion? region = null;
+    if (!string.IsNullOrEmpty(configuredRegion))
+    {
+        region = Enum.TryParse<DevTunnelRegion>(configuredRegion, ignoreCase: true, out var parsed)
+            ? parsed
+            : throw new InvalidOperationException(
+                $"DevTunnel:Region must be one of: {string.Join(", ", Enum.GetNames<DevTunnelRegion>())}.");
+    }
     builder
         .AddDevTunnel(
             "adapter-dev-tunnel",
             tunnelId: string.IsNullOrEmpty(configuredTunnelId) ? null : configuredTunnelId,
             options: new DevTunnelOptions
             {
-                Description = "Public development ingress for the Foundry Copilot A2A adapter"
+                Description = "Public development ingress for the Foundry Copilot A2A adapter",
+                // Without a region the service picks the nearest cluster, which can create a
+                // second tunnel with the same ID and a new URL that APIM does not point at.
+                Region = region
             })
         .WithReference(adapter.GetEndpoint("http"), allowAnonymous: true)
         .WaitFor(adapter);
@@ -220,7 +232,8 @@ foreach (var setting in new Dictionary<string, string>
     ["ChatbotOrchestratorName"] = "VITE_ORCHESTRATOR_NAME",
     ["ChatbotTenantId"] = "VITE_ENTRA_TENANT_ID",
     ["ChatbotSpaClientId"] = "VITE_ENTRA_CLIENT_ID",
-    ["ChatbotApiClientId"] = "VITE_ADAPTER_API_CLIENT_ID"
+    ["ChatbotApiClientId"] = "VITE_ADAPTER_API_CLIENT_ID",
+    ["ChatbotSpeechInputEnabled"] = "VITE_SPEECH_INPUT_ENABLED"
 })
 {
     if (builder.Configuration[setting.Key] is { } value)

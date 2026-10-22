@@ -10,6 +10,7 @@ const paths = {
   'chevron-down': 'm7 10 5 5 5-5',
   'chevron-up': 'm7 14 5-5 5 5',
   check: 'm5 12 4 4L19 6',
+  mic: 'M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Zm-7 9a7 7 0 0 0 14 0m-7 7v3',
   attach: 'm8 12 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l9-9m-7 12 8-8',
   close: 'm6 6 12 12M6 18 18 6',
   trash: 'M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6m4-6v6',

@@ -63,6 +63,15 @@ button:focus-visible, a:focus-visible, summary:focus-visible, textarea:focus-vis
 .message-file { border-top: 1px solid #d7d7de; margin-top: 12px; padding-top: 10px; }
 .upload-note { margin: 10px 0 0; color: #775619; font-size: 11px; line-height: 1.6; text-align: center; }
 .attach-button { margin-right: auto; }
+.attach-button:has(+ .mic-button) { margin-right: 0; }
+.mic-button { margin-right: auto; }
+.mic-button:has(+ .speech-language) { margin-right: 0; }
+.speech-language { margin: 0 auto 0 -10px; max-width: 130px; height: 28px; padding: 0 4px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; }
+.speech-language:hover:not(:disabled) { background: #f4f4f6; }
+.speech-language:disabled { cursor: default; opacity: .6; }
+.mic-button[aria-pressed="true"] { background: #fde7e9; color: #c50f1f; }
+.mic-button[aria-pressed="true"] .chat-icon { animation: wait-pulse 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .mic-button[aria-pressed="true"] .chat-icon { animation: none; } }
 .nav-button, .help-menu summary {
   display: flex;
   align-items: center;

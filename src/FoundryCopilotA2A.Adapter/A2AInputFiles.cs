@@ -83,6 +83,33 @@ public static class A2AInputFiles
         return files;
     }
 
+    /// <summary>
+    /// Ties a terse question ("what are the action items?") to the attachment. The user's words
+    /// stay first and the hint stays short: Copilot Studio uses the message text to search the
+    /// uploaded file, and a long instruction preamble dilutes that search so the file is not read.
+    /// </summary>
+    public static string FramePrompt(string prompt, IReadOnlyList<A2AInputFile> files)
+    {
+        if (files.Count == 0)
+        {
+            return prompt;
+        }
+
+        var file = files[0];
+        var question = string.IsNullOrWhiteSpace(prompt) ? "Please summarize the attached file." : prompt.Trim();
+        return $"{question}\n\n(This is about the attached {Describe(file.MediaType)} \"{file.Name}\".)";
+    }
+
+    private static string Describe(string mediaType) => mediaType switch
+    {
+        "text/plain" => "text document",
+        "text/csv" => "CSV spreadsheet",
+        "application/pdf" => "PDF document",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => "Word document",
+        "image/png" or "image/jpeg" => "image",
+        _ => mediaType
+    };
+
     public static Activity CreateMessage(string prompt, IReadOnlyList<A2AInputFile> files) => new()
     {
         Type = ActivityTypes.Message,

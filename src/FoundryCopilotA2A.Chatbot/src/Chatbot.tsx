@@ -7,6 +7,7 @@ import { ChatSession } from './chatSession.ts'
 import ChatIcon from './ChatIcon.tsx'
 import ReplyBody from './ReplyBody.tsx'
 import { useAutoSizeTextarea } from './useAutoSizeTextarea.ts'
+import { browserRecognitionLanguage, savedSpeechLanguage, speechLanguages, speechLanguageStorageKey, useSpeechInput } from './speechInput.ts'
 import { useReplyActivity } from './replyActivity.ts'
 import { activityLines } from './waitStatus.ts'
 import { useChatScroll } from './useChatScroll.ts'
@@ -33,6 +34,11 @@ export default function Chatbot({ config, auth }: { config: ChatbotConfig; auth:
   const fileInput = useRef<HTMLInputElement>(null)
   const fileRead = useRef(0)
   const composer = useAutoSizeTextarea(draft)
+  const [speechLanguage, setSpeechLanguage] = useState(() => {
+    try { return savedSpeechLanguage(window.localStorage.getItem(speechLanguageStorageKey)) } catch { return '' }
+  })
+  const speech = useSpeechInput(draft, setDraft, setError, speechLanguage)
+  const showSpeechInput = config.speechInput && speech.supported
   const canSend = auth.signedIn && !auth.busy && !isSending && !readingFile && Boolean(draft.trim() || file)
   const lastTurn = turns.at(-1)
   const activity = useReplyActivity(lastTurn, config.agentName)
@@ -47,6 +53,7 @@ export default function Chatbot({ config, auth }: { config: ChatbotConfig; auth:
     if (!canSend) return
     const text = draft.trim()
     const files = file ? [file] : []
+    speech.cancel()
     setDraft('')
     clearFile()
     setError(undefined)
@@ -59,6 +66,7 @@ export default function Chatbot({ config, auth }: { config: ChatbotConfig; auth:
   }
 
   function newChat() {
+    speech.cancel()
     session.reset()
     setDraft('')
     setError(undefined)
@@ -292,6 +300,32 @@ export default function Chatbot({ config, auth }: { config: ChatbotConfig; auth:
                 <button type="button" className="icon-button attach-button" aria-label="Attach a file (experimental, maximum 5 MB)"
                   title="Attach one file, up to 5 MB (experimental)" disabled={!auth.signedIn || auth.busy || isSending || readingFile}
                   onClick={() => fileInput.current?.click()}><ChatIcon name="attach" /></button>
+                {showSpeechInput && <button type="button" className="icon-button mic-button"
+                  aria-label={speech.listening ? 'Stop dictation' : 'Dictate a message'} aria-pressed={speech.listening}
+                  title={speech.listening ? 'Stop dictation' : 'Dictate a message (speech to text)'}
+                  disabled={!auth.signedIn || auth.busy}
+                  onClick={() => {
+                    if (speech.listening) {
+                      speech.stop()
+                      return
+                    }
+                    setError(undefined)
+                    speech.start()
+                    composer.current?.focus()
+                  }}><ChatIcon name="mic" /></button>}
+                {showSpeechInput && <select className="speech-language" aria-label="Dictation language"
+                  title={speech.listening ? 'Stop dictation to change the language' : 'Dictation language'}
+                  value={speechLanguage} disabled={!auth.signedIn || auth.busy || speech.listening}
+                  onChange={(event) => {
+                    setSpeechLanguage(event.target.value)
+                    try {
+                      if (event.target.value) window.localStorage.setItem(speechLanguageStorageKey, event.target.value)
+                      else window.localStorage.removeItem(speechLanguageStorageKey)
+                    } catch { /* The choice still applies for this session. */ }
+                  }}>
+                  <option value="">Auto ({browserRecognitionLanguage() ?? 'browser'})</option>
+                  {speechLanguages.map((language) => <option key={language.value} value={language.value}>{language.label}</option>)}
+                </select>}
                 <span className="composer-shortcuts" id="composer-shortcuts">
                   <kbd>Enter</kbd> to send <span aria-hidden="true">&middot;</span> <kbd>Shift + Enter</kbd> for a new line
                 </span>

@@ -88,7 +88,10 @@ adapter. The allocated public URL is visible in the Aspire startup resource outp
 dashboard, and `aspire describe --include-hidden --format Json`. The tunnel ID is
 stable for this AppHost by default, so subsequent starts reuse it. Set
 `DevTunnel:TunnelId` in AppHost user secrets only when an existing tunnel must be
-reused; don't commit that environment-specific identifier.
+reused; don't commit that environment-specific identifier. Pin its region with
+`DevTunnel:Region` (a `DevTunnelRegion` name such as `UKSouth`; `devtunnel list` shows it
+as the ID suffix, e.g. `.uks1`). Otherwise a start from another network can create a
+same-named tunnel in a nearer cluster with a new URL that APIM doesn't point at.
 
 The tunnel permits anonymous transport so APIM and agent platforms can reach it,
 but the live adapter still requires a valid bearer token on protected routes.

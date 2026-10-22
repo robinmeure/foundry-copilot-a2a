@@ -57,3 +57,11 @@ for (const [name, changes, dev, origin] of [
 test('unknown authentication modes are configuration errors', () => {
   assert.throws(() => read({ ...live, VITE_CHATBOT_AUTH_MODE: 'disabled' }), /entra or anonymous/)
 })
+
+test('speech input is off unless explicitly enabled, and rejects ambiguous values', () => {
+  assert.equal(read(live).speechInput, false)
+  assert.equal(read({ ...live, VITE_SPEECH_INPUT_ENABLED: 'true' }).speechInput, true)
+  assert.equal(read({ ...live, VITE_SPEECH_INPUT_ENABLED: ' TRUE ' }).speechInput, true)
+  assert.equal(read({ ...live, VITE_SPEECH_INPUT_ENABLED: 'false' }).speechInput, false)
+  assert.throws(() => read({ ...live, VITE_SPEECH_INPUT_ENABLED: 'yes' }), /VITE_SPEECH_INPUT_ENABLED must be true or false/)
+})

@@ -379,6 +379,7 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
         // Copilot Studio keeps the transcript against the conversation id, so history is only
         // replayed when a new conversation has to be started for an existing A2A context, and
         // then only its most recent turns.
+        prompt = A2AInputFiles.FramePrompt(prompt, metadata.Files);
         var promptWithHistory = ConversationTranscript.Prepend(
             prompt, metadata.History, _maxReplayTurns, _maxReplayCharacters);
 

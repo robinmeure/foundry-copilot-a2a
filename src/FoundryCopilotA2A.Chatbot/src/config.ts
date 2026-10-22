@@ -4,6 +4,8 @@ interface ChatbotBaseConfig {
   adapterBaseUrl: string
   agentId: string
   agentName: string
+  /** Browser speech-to-text in the composer. Off unless explicitly enabled. */
+  speechInput: boolean
 }
 
 export type ChatbotConfig = ChatbotBaseConfig & (
@@ -30,6 +32,7 @@ export function readChatbotConfig(
     adapterBaseUrl,
     agentId,
     agentName: env.VITE_ORCHESTRATOR_NAME?.trim() || 'Orchestrator',
+    speechInput: readFlag(env.VITE_SPEECH_INPUT_ENABLED, 'VITE_SPEECH_INPUT_ENABLED'),
   }
   const authMode = env.VITE_CHATBOT_AUTH_MODE?.trim() || 'entra'
   if (authMode === 'anonymous') {
@@ -57,6 +60,14 @@ export function readChatbotConfig(
     spaClientId: identities.VITE_ENTRA_CLIENT_ID!,
     adapterApiClientId: identities.VITE_ADAPTER_API_CLIENT_ID!,
   }
+}
+
+function readFlag(value: string | undefined, name: string) {
+  const flag = value?.trim().toLowerCase() || 'false'
+  if (flag !== 'true' && flag !== 'false') {
+    throw new Error(`${name} must be true or false.`)
+  }
+  return flag === 'true'
 }
 
 function isLoopback(value: string) {
