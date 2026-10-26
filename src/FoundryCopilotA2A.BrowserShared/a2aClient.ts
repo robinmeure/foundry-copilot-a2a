@@ -26,6 +26,7 @@ export interface A2AHttpResponse {
 export interface A2AExchange {
   answer: string
   citations?: CitationBundle
+  cards?: AdaptiveCardBundle
   /** Opaque Copilot Studio conversation handles returned by this turn; see mergeConversationHandles. */
   conversationHandles: string[]
   durationMs: number
@@ -198,8 +199,8 @@ export interface SendMessageOptions {
   /** The diagnostic console loads traces by default; chat-only clients can opt out. */
   includeTrace?: boolean
   onRequest?: (request: A2AHttpRequest) => void
-  /** Complete current answer and citation snapshot, including data-only updates. */
-  onUpdate?: (answer: string, citations?: CitationBundle) => void
+  /** Complete current answer, citation and card snapshot, including data-only updates. */
+  onUpdate?: (answer: string, citations?: CitationBundle, cards?: AdaptiveCardBundle) => void
   onProgress?: (message: string) => void
   /** Task lifecycle is separate from answer text and informative progress. */
   onTaskStatus?: (status: A2ATaskStatus) => void
@@ -286,7 +287,7 @@ export async function sendMessage({
   })
 
   const contentType = response.headers.get('Content-Type') ?? ''
-  const { responseText, answer, citations, conversationHandles: receivedHandles, rpcError, taskError } =
+  const { responseText, answer, citations, cards, conversationHandles: receivedHandles, rpcError, taskError } =
     await readStreamingResponse(
     response,
     onUpdate,
@@ -344,6 +345,7 @@ export async function sendMessage({
   return {
     answer,
     citations,
+    cards,
     conversationHandles: receivedHandles,
     durationMs,
     request,
@@ -355,7 +357,7 @@ export async function sendMessage({
 
 async function readStreamingResponse(
   response: Response,
-  onUpdate?: (answer: string, citations?: CitationBundle) => void,
+  onUpdate?: (answer: string, citations?: CitationBundle, cards?: AdaptiveCardBundle) => void,
   onProgress?: (message: string) => void,
   onTaskStatus?: (status: A2ATaskStatus) => void,
   onAgent?: (agent: A2AAgent) => void,
@@ -370,7 +372,8 @@ async function readStreamingResponse(
   let responseText = ''
   let answer = ''
   let citations: CitationBundle | undefined
-  // Keep definitions across replacements to detect an id being repurposed within this turn.
+  let cards: AdaptiveCardBundle | undefined
+  // Remembers sources across replacements to detect an id being repurposed within this turn.
   let sourceRegistry: CitationBundle | undefined
   let rpcError: JsonRpcResponse['error']
   let taskError: Error | undefined
@@ -414,16 +417,17 @@ async function readStreamingResponse(
       if (!conversationHandles.includes(handle)) conversationHandles.unshift(handle)
     }
     for (const progress of chunk.progress) onProgress?.(progress)
-    if (chunk.text === undefined && !chunk.deltas.length) return
+    if (chunk.text === undefined && !chunk.deltas.length && !chunk.cardDeltas.length) return
     sourceRegistry = mergeCitationBundles(sourceRegistry, chunk.deltas.map((delta) => ({
       ...delta, citations: [],
     })))
     const replacesAnswer = chunk.text !== undefined && !chunk.append
     citations = mergeCitationBundles(replacesAnswer ? undefined : citations, chunk.deltas)
+    cards = mergeCardBundles(replacesAnswer ? undefined : cards, chunk.cardDeltas)
     if (chunk.text !== undefined) {
       answer = chunk.append ? answer + chunk.text : chunk.text
     }
-    onUpdate?.(answer, citations)
+    onUpdate?.(answer, citations, cards)
   }
 
   const processEvent = (event: string) => {
@@ -475,6 +479,7 @@ async function readStreamingResponse(
     responseText,
     answer,
     citations,
+    cards,
     conversationHandles: conversationHandles.slice(0, maxConversationHandles),
     rpcError,
     taskError,
@@ -511,6 +516,7 @@ function answerChunk(response: JsonRpcResponse) {
 
   const progress: string[] = []
   const deltas: CitationBundle[] = []
+  const cardDeltas: AdaptiveCardBundle[] = []
   const text: string[] = []
   const handles: string[] = []
   for (const part of parts) {
@@ -523,6 +529,7 @@ function answerChunk(response: JsonRpcResponse) {
     if (isConversationHandle(handle)) handles.push(handle)
     if (typeof part.text === 'string' && part.text.length > 0) text.push(part.text)
     deltas.push(...partDeltas)
+    cardDeltas.push(...cardDeltasFromPart(part))
   }
 
   // The answer parts of one event belong to a single chunk, so they are joined before the
@@ -533,6 +540,7 @@ function answerChunk(response: JsonRpcResponse) {
     progress,
     handles,
     deltas: progress.length && !text.length ? [] : deltas,
+    cardDeltas: progress.length && !text.length ? [] : cardDeltas,
     append: artifactUpdate?.append === true,
   }
 }
@@ -596,8 +604,14 @@ function delay(milliseconds: number) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 }
 import {
+  cardDeltasFromPart,
+  mergeCardBundles,
+  type AdaptiveCardBundle,
+} from './cards.ts'
+import {
   citationDeltasFromPart,
   mergeCitationBundles,
   type CitationBundle,
 } from './citations.ts'
 export * from './citations.ts'
+export * from './cards.ts'

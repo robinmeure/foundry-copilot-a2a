@@ -70,7 +70,7 @@ public class CopilotFileUploadProbeTests
         using var handler = new CaptureRequestHandler();
         using var httpClient = new HttpClient(handler);
         var client = new CopilotClient(
-            CopilotFileUploadProbe.CreateSettings(
+            CopilotProbeSession.CreateSettings(
                 "https://example.api.powerplatform.com/copilotstudio/dataverse-backed/authenticated/bots/test/conversations?api-version=2022-03-01-preview"),
             new ProbeHttpClientFactory(httpClient),
             _ => Task.FromResult("synthetic-test-token"), NullLogger.Instance, "test");
@@ -208,14 +208,14 @@ public class CopilotFileUploadProbeTests
     [InlineData("not-a-url")]
     public void SettingsRejectUnsafeConnectionWithoutEchoingIt(string url)
     {
-        var exception = Assert.Throws<CliException>(() => CopilotFileUploadProbe.CreateSettings(url));
+        var exception = Assert.Throws<CliException>(() => CopilotProbeSession.CreateSettings(url));
         Assert.DoesNotContain(url, exception.Message);
     }
 
     [Fact]
     public void SettingsAcceptPublicCloudConnection()
     {
-        var settings = CopilotFileUploadProbe.CreateSettings(
+        var settings = CopilotProbeSession.CreateSettings(
             "https://example.api.powerplatform.com/copilotstudio/dataverse-backed/authenticated/bots/test/conversations?api-version=2022-03-01-preview");
         Assert.NotNull(settings.DirectConnectUrl);
     }
@@ -235,12 +235,12 @@ public class CopilotFileUploadProbeTests
         var token = $"header.{encoded}.signature";
         if (accepted)
         {
-            CopilotFileUploadProbe.RequireDelegatedToken(token);
+            CopilotProbeSession.RequireDelegatedToken(token);
         }
         else
         {
             var exception = Assert.Throws<CliException>(() =>
-                CopilotFileUploadProbe.RequireDelegatedToken(token));
+                CopilotProbeSession.RequireDelegatedToken(token));
             Assert.DoesNotContain(token, exception.Message);
         }
     }
@@ -252,7 +252,7 @@ public class CopilotFileUploadProbeTests
     public void MalformedTokensFailWithoutEchoingThem(string token)
     {
         var exception = Assert.Throws<CliException>(() =>
-            CopilotFileUploadProbe.RequireDelegatedToken(token));
+            CopilotProbeSession.RequireDelegatedToken(token));
         Assert.DoesNotContain(token, exception.Message);
     }
 

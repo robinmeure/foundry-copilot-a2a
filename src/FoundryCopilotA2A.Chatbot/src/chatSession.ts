@@ -1,4 +1,4 @@
-import { mergeConversationHandles, sendMessage, type A2AAgent, type CitationBundle, type ConversationTurn } from '../../FoundryCopilotA2A.BrowserShared/a2aClient.ts'
+import { mergeConversationHandles, sendMessage, type A2AAgent, type AdaptiveCardBundle, type CitationBundle, type ConversationTurn } from '../../FoundryCopilotA2A.BrowserShared/a2aClient.ts'
 import { appendActivityUpdate } from '../../FoundryCopilotA2A.BrowserShared/activityUpdates.ts'
 import { parseConnectionRepairRequest } from '../../FoundryCopilotA2A.BrowserShared/connectionRepair.ts'
 import type { ChatbotConfig } from './config.ts'
@@ -10,6 +10,8 @@ export interface ChatTurn {
   prompt: string
   answer: string
   citations?: CitationBundle
+  /** Display-only cards for this session; never persisted, the answer text is the durable fallback. */
+  cards?: AdaptiveCardBundle
   progress?: string
   activityUpdates?: string[]
   responder?: A2AAgent
@@ -102,7 +104,7 @@ export class ChatSession {
       ...this.snapshot,
       isSending: false,
       turns: this.snapshot.turns.map((turn) => turn.status === 'sending'
-        ? { ...turn, status: 'failed', progress: undefined, citations: undefined,
+        ? { ...turn, status: 'failed', progress: undefined, citations: undefined, cards: undefined,
           error: 'Response stopped. The agent may still be working; this request will not be retried automatically.' }
         : turn),
     })
@@ -165,9 +167,9 @@ export class ChatSession {
         includeTrace: false,
         signal: controller.signal,
         onAgent: (responder) => update({ responder }),
-        onUpdate: (answer, citations) => {
+        onUpdate: (answer, citations, cards) => {
           if (answer && phase !== 'finalizing') phase = 'receiving'
-          update({ answer, citations, phase, ...(answer !== previousAnswer ? { progress: undefined } : {}) })
+          update({ answer, citations, cards, phase, ...(answer !== previousAnswer ? { progress: undefined } : {}) })
           previousAnswer = answer
         },
         onProgress: (progress) => {
@@ -188,7 +190,7 @@ export class ChatSession {
           update({ phase, progress: message })
         },
       })
-      update({ answer: exchange.answer, citations: exchange.citations, status: 'succeeded', progress: undefined })
+      update({ answer: exchange.answer, citations: exchange.citations, cards: exchange.cards, status: 'succeeded', progress: undefined })
       if (this.active === controller) {
         this.publish({ ...this.snapshot,
           conversationHandles: mergeConversationHandles(exchange.conversationHandles, conversationHandles) }, false)
@@ -198,6 +200,7 @@ export class ChatSession {
         status: 'failed',
         progress: undefined,
         citations: undefined,
+        cards: undefined,
         error: reason instanceof Error ? reason.message : 'Unable to send the message.',
       })
       // A failed turn may mean the remembered conversation is no longer usable; the next

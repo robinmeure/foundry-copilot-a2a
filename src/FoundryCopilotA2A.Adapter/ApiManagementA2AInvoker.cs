@@ -172,7 +172,8 @@ public sealed class ApiManagementA2AInvoker(
 
             yield return new CopilotInvocationUpdate(answer.Text, metadata.ContextId, requestId)
             {
-                Citations = answer.Citations
+                Citations = answer.Citations,
+                Cards = answer.Cards
             };
             yield break;
         }
@@ -208,7 +209,8 @@ public sealed class ApiManagementA2AInvoker(
                         requestId,
                         delta.IsInformative)
                     {
-                        Citations = delta.Citations
+                        Citations = delta.Citations,
+                        Cards = delta.Cards
                     };
                 }
             }
@@ -287,7 +289,8 @@ internal static class ServerSentEvents
     }
 }
 
-internal sealed record A2AStreamDelta(string Text, bool IsInformative, CitationBundle? Citations);
+internal sealed record A2AStreamDelta(
+    string Text, bool IsInformative, CitationBundle? Citations, AdaptiveCardBundle? Cards = null);
 
 /// <summary>
 /// Turns A2A streaming events into text deltas. Answer chunks normally arrive as appended
@@ -421,6 +424,7 @@ internal sealed class A2AStreamAccumulator
         }
 
         CitationBundle? citations = null;
+        AdaptiveCardBundle? cards = null;
         foreach (var part in parts.Where(part => !IsInformative(part)))
         {
             foreach (var name in new[] { "data", "metadata" })
@@ -428,6 +432,8 @@ internal sealed class A2AStreamAccumulator
                 if (part.TryGetProperty(name, out var container))
                 {
                     citations = AgentCitations.Merge(citations, AgentCitations.ReadContainer(container));
+                    cards = A2AResponseText.MergeCards(
+                        cards, AgentAdaptiveCards.ReadContainerLenient(container));
                 }
             }
         }
@@ -438,9 +444,9 @@ internal sealed class A2AStreamAccumulator
         {
             DeltaCount++;
         }
-        if (delta.Length > 0 || citations is not null)
+        if (delta.Length > 0 || citations is not null || cards is not null)
         {
-            deltas.Add(new A2AStreamDelta(delta, false, citations));
+            deltas.Add(new A2AStreamDelta(delta, false, citations, cards));
         }
 
         return deltas;
@@ -518,10 +524,11 @@ internal static class A2AResponseText
 {
     internal static string Extract(JsonElement root) => Read(root).Text;
 
-    internal static (string Text, CitationBundle? Citations) Read(JsonElement root)
+    internal static (string Text, CitationBundle? Citations, AdaptiveCardBundle? Cards) Read(JsonElement root)
     {
         var parts = ReadParts(root);
         CitationBundle? citations = null;
+        AdaptiveCardBundle? cards = null;
         foreach (var part in parts)
         {
             if (IsInformative(part))
@@ -533,10 +540,23 @@ internal static class A2AResponseText
                 if (part.TryGetProperty(name, out var container))
                 {
                     citations = AgentCitations.Merge(citations, AgentCitations.ReadContainer(container));
+                    cards = MergeCards(cards, AgentAdaptiveCards.ReadContainerLenient(container));
                 }
             }
         }
-        return (JoinPartText(parts), citations);
+        return (JoinPartText(parts), citations, cards);
+    }
+
+    internal static AdaptiveCardBundle? MergeCards(AdaptiveCardBundle? current, AdaptiveCardBundle? incoming)
+    {
+        try
+        {
+            return AgentAdaptiveCards.Merge(current, incoming);
+        }
+        catch (AdaptiveCardFormatException)
+        {
+            return current;
+        }
     }
 
     private static JsonElement[] ReadParts(JsonElement root)

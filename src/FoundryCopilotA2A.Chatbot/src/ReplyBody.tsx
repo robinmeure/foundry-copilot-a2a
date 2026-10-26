@@ -7,11 +7,12 @@ import ResponseActions from './ResponseActions.tsx'
 import { prepareResponseLinks, type ResponseLink } from './responseLinks.ts'
 import { prepareResponseAttribution } from './responseAttribution.ts'
 import ChatIcon from './ChatIcon.tsx'
+import AdaptiveCards from './AdaptiveCards.ts'
 
 export default function ReplyBody({ turn, agentName, lead, children }: {
   turn: ChatTurn; agentName: string; lead?: ReactNode; children: ReactNode
 }) {
-  const { answer, citations, status, responder } = turn
+  const { answer, citations, cards, status, responder } = turn
   const speaker = responder?.name ?? responder?.id ?? agentName
   const attribution = useMemo(() => prepareResponseAttribution(answer, speaker, status === 'sending'),
     [answer, speaker, status])
@@ -37,6 +38,7 @@ export default function ReplyBody({ turn, agentName, lead, children }: {
       </div>
       {lead}
       {presentation.text && <MarkdownAnswer text={presentation.text} responseLinks={presentation.sources} />}
+      <AdaptiveCards cards={cards} />
       {children}
       {status === 'succeeded' && (
         <ResponseActions answer={answer} citations={citations} responseLinks={presentation.sources} />

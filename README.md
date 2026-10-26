@@ -17,6 +17,20 @@ explains what every command does and why the project lives beside the applicatio
 For guidance on APIM versus adapter-owned OBO and app registrations as agents scale, see
 [Authentication placement and app registration strategy](docs/authentication-and-agent-scaling.md).
 
+Read-only Adaptive Cards (plan Phases 0-2) are implemented behind
+`Adapter:AdaptiveCardsEnabled` (default `false`). When enabled, the adapter extracts cards from
+Copilot Studio attachments, validates them (64 KiB per card, 5 cards, 256 KiB per turn), carries
+them in an A2A data part keyed `urn:foundry-copilot-a2a:adaptive-cards:v1`, and advertises that
+extension on the agent cards. Both browser clients render a static, display-only subset
+(TextBlock, RichTextBlock, FactSet, Container, ColumnSet) with an in-house renderer, and show the
+card's fallback text for anything with actions, inputs, images or unknown elements. Try it on the
+mock backend with the prompt `show card example`. The CLI's
+[`test-adaptive-cards`](src/FoundryCopilotA2A.Cli/README.md#verifying-adaptive-card-delivery)
+command checks a known fixture via the SDK and/or the A2A wire matrix. Live Copilot Studio
+delivery is still unverified; `Action.Submit` and native orchestrator pass-through remain
+separately gated. See the [research](docs/adaptive-cards-a2a-research.md) and
+[plan](docs/adaptive-cards-a2a-implementation-plan.md).
+
 ## Management summary
 
 ### What this is

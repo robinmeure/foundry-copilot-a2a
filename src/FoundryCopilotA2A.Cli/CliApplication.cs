@@ -75,6 +75,8 @@ internal sealed class CliApplication(CliContext context)
                     context, commandArguments, cancellationToken),
                 "test-copilot-file-upload" => await CopilotFileUploadProbe.RunAsync(
                     context, commandArguments, cancellationToken),
+                "test-adaptive-cards" => await AdaptiveCardProbe.RunAsync(
+                    context, commandArguments, cancellationToken),
                 "configure-citadel" => await CitadelCommands.ConfigureAsync(
                     context, commandArguments, cancellationToken),
                 "configure-hub" => await HubCommands.ConfigureAsync(
@@ -171,6 +173,8 @@ internal sealed class CliApplication(CliContext context)
               test-adapter  Exercise an adapter directly over A2A.
               test-copilot-file-upload
                             Probe file-grounded answers through the Copilot Studio SDK.
+              test-adaptive-cards
+                            Verify a known card through the SDK and/or the A2A wire matrix.
               start-tunnel  Expose the local adapter through an anonymous Dev Tunnel.
               configure-citadel
                             Publish a separate delegated-OAuth API in an existing APIM instance.
@@ -194,6 +198,36 @@ internal sealed class CliApplication(CliContext context)
     {
         var help = command switch
         {
+            "test-adaptive-cards" =>
+                """
+                test-adaptive-cards
+                    [--direct-connect-url-env <variable>]
+                    [--bearer-token-env <variable>] [--obo]
+                    [--tenant-id-env <variable>] [--client-id-env <variable>]
+                    [--client-secret-env <variable>]
+                    [--a2a-url-env <variable>] [--a2a-bearer-token-env <variable>]
+                    [--agent-id <configured-agent-id>]
+                    [--prompt <published-topic-trigger>] [--expected-marker <visible-text>]
+                    [--timeout-seconds <10-600>]
+
+                Supply an SDK direct-connect URL, a full A2A runtime URL, or both via environment
+                variables. Publish a deterministic topic that sends a real Adaptive Card with
+                the marker in a visible TextBlock. Defaults: prompt "show adaptive card test",
+                marker "A2A-CARD-PROBE-001", total timeout 300 seconds.
+
+                SDK authentication uses the same delegated-token/OBO options and defaults as
+                test-copilot-file-upload (Copilot Studio Client 1.8.77). A2A uses a SEPARATE
+                adapter/gateway-audience token; no token is copied between the two paths.
+                Without --a2a-bearer-token-env the A2A requests are anonymous (for mock use).
+                URLs require HTTPS, except HTTP loopback for A2A. Redirects are not followed.
+
+                A2A checks 1.0/0.3, JSON/SSE, ordinary answer text and card-envelope fallbacks.
+                With both paths it also compares card content against the SDK result.
+                Set Adapter:AdaptiveCardsEnabled=true on the tested adapter.
+                Only safe assertions/counts are printed, never payloads, URLs or credentials.
+                No settings, registrations or grants are changed. Browser rendering,
+                Action.Submit and native orchestrator pass-through are NOT verified.
+                """,
             "test-copilot-file-upload" =>
                 """
                 test-copilot-file-upload

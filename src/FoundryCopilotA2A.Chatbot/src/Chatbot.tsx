@@ -12,6 +12,7 @@ import { useReplyActivity } from './replyActivity.ts'
 import { activityLines } from './waitStatus.ts'
 import { useChatScroll } from './useChatScroll.ts'
 import '../../FoundryCopilotA2A.BrowserShared/citations.css'
+import '../../FoundryCopilotA2A.BrowserShared/cards.css'
 import { fileAccept, fileSizeLabel, readInputFile, type InputFile } from '../../FoundryCopilotA2A.BrowserShared/inputFiles.ts'
 
 export default function Chatbot({ config, auth }: { config: ChatbotConfig; auth: ChatAuthentication }) {

@@ -21,6 +21,7 @@ public sealed record CopilotInvocationResult(
 {
     public AgentResponder? Responder { get; init; }
     public CitationBundle? Citations { get; init; }
+    public AdaptiveCardBundle? Cards { get; init; }
 
     /// <inheritdoc cref="CopilotInvocationUpdate.ConversationHandle"/>
     public string? ConversationHandle { get; init; }
@@ -34,6 +35,7 @@ public sealed record CopilotInvocationUpdate(
 {
     public AgentResponder? Responder { get; init; }
     public CitationBundle? Citations { get; init; }
+    public AdaptiveCardBundle? Cards { get; init; }
 
     /// <summary>
     /// Opaque, protected reference to the Copilot Studio conversation. The client stores it with
@@ -60,6 +62,7 @@ public sealed class MockCopilotStudioInvoker(CopilotConversationHandles conversa
     /// <summary>Prompt that makes the mock reproduce a streamed Copilot Studio answer.</summary>
     public const string StreamProgressPrompt = "stream progress response";
     public const string CitationPrompt = "show citation example";
+    public const string CardPrompt = "show card example";
 
     /// <summary>The answer the mock streams token by token for <see cref="StreamProgressPrompt"/>.</summary>
     public static readonly string[] StreamedAnswerDeltas =
@@ -68,6 +71,25 @@ public sealed class MockCopilotStudioInvoker(CopilotConversationHandles conversa
     private int _invocationCount;
 
     public int InvocationCount => _invocationCount;
+
+    private static AdaptiveCardBundle MockCard(AgentResponder responder)
+    {
+        var content = JsonSerializer.SerializeToElement(new
+        {
+            type = "AdaptiveCard",
+            version = "1.5",
+            body = new object[]
+            {
+                new { type = "TextBlock", text = "Mock order status", weight = "Bolder" },
+                new { type = "FactSet", facts = new[] { new { title = "Order", value = "A-1001" } } }
+            }
+        });
+        return new AdaptiveCardBundle(
+        [
+            new AdaptiveCardItem(
+                "mock-card-1", 1, content, "Mock order status: Order A-1001", responder)
+        ]);
+    }
 
     public async IAsyncEnumerable<CopilotInvocationUpdate> StreamAsync(
         string prompt,
@@ -123,6 +145,20 @@ public sealed class MockCopilotStudioInvoker(CopilotConversationHandles conversa
                     "Example source (mock)",
                     "https://example.org/",
                     "[1]")
+            };
+            yield break;
+        }
+        if (string.Equals(prompt, CardPrompt, StringComparison.OrdinalIgnoreCase))
+        {
+            yield return new CopilotInvocationUpdate(
+                "Here is a mock card.", conversationId, "mock-card-answer")
+            {
+                ConversationHandle = handle
+            };
+            yield return new CopilotInvocationUpdate(
+                string.Empty, conversationId, "mock-card-payload")
+            {
+                Cards = MockCard(new AgentResponder("mock", "Mock Copilot Studio"))
             };
             yield break;
         }
@@ -680,7 +716,8 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
                     string.Equals(activity.Type, "message", StringComparison.OrdinalIgnoreCase);
                 var messageText = isMessage
                     ? string.IsNullOrWhiteSpace(activity.Text)
-                        ? connectionManagerText
+                        ? connectionManagerText ??
+                          CopilotStudioAdaptiveCards.Read(activity, responder)?.Cards[0].FallbackText
                         : activity.Text
                     : null;
                 var planThought = CopilotStudioPlanThought.Read(activity);
@@ -1470,6 +1507,26 @@ internal sealed class CopilotStudioActivitySummary
         };
 }
 
+internal static class CopilotStudioAdaptiveCards
+{
+    private const string ConnectionManagerActivityName = "connectors/connectionManagerCard";
+
+    public static AdaptiveCardBundle? Read(IActivity activity, AgentResponder responder)
+    {
+        // The OAuth/connection-manager card has its own handling and is never a display card.
+        if (activity.Attachments is null ||
+            string.Equals(activity.Name, ConnectionManagerActivityName, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return AgentAdaptiveCards.FromAttachments(
+            activity.Attachments.Select(a => (a.ContentType ?? string.Empty, (object?)a.Content)),
+            activity.Id ?? "activity",
+            responder);
+    }
+}
+
 internal static class CopilotStudioAttachmentText
 {
     private const string AdaptiveCardContentType = "application/vnd.microsoft.card.adaptive";
@@ -1576,15 +1633,17 @@ internal sealed class CopilotStudioAnswerStream
         IActivity activity, string? messageText, string conversationId, AgentResponder responder)
     {
         var citations = CopilotStudioCitations.Read(activity, responder);
+        var cards = CopilotStudioAdaptiveCards.Read(activity, responder);
         var chunk = Next(activity, messageText);
-        // The final activity may repeat streamed text but carry the only citation entities.
-        return chunk is null && citations is null
+        // The final activity may repeat streamed text but carry the only citation or card data.
+        return chunk is null && citations is null && cards is null
             ? null
             : new CopilotInvocationUpdate(
                 chunk?.Text ?? string.Empty, conversationId, activity.Id,
                 chunk?.IsInformative ?? false)
             {
-                Citations = citations
+                Citations = citations,
+                Cards = cards
             };
     }
 

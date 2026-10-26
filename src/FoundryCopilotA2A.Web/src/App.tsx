@@ -19,6 +19,7 @@ import {
   type AdapterTrace,
   type AdapterTraceSpan,
   type CitationBundle,
+  type AdaptiveCardBundle,
   type CopilotAgent,
   type CopilotAgentCatalog,
   listAgents,
@@ -52,6 +53,8 @@ import {
 } from './flowModel'
 import './App.css'
 import '../../FoundryCopilotA2A.BrowserShared/citations.css'
+import '../../FoundryCopilotA2A.BrowserShared/cards.css'
+import AdaptiveCards from './AdaptiveCards.ts'
 import Sources from './Sources.ts'
 import { toConversationHistory } from './conversationHistory.ts'
 
@@ -71,6 +74,7 @@ interface TurnRecord {
   prompt: string
   answer?: string
   citations?: CitationBundle
+  cards?: AdaptiveCardBundle
   progress?: string
   activityUpdates?: string[]
   error?: string
@@ -402,7 +406,7 @@ function App({ config }: AppProps) {
         conversationHandles: previousHandles,
         chainTargetAgentId: plan.targetAgentId,
         onRequest: (request) => updateTurn(turnId, { request, status: 'sending' }),
-        onUpdate: (answer, citations) => updateTurn(turnId, { answer, citations, progress: undefined }),
+        onUpdate: (answer, citations, cards) => updateTurn(turnId, { answer, citations, cards, progress: undefined }),
         onProgress: (progress) => recordActivityUpdate(turnId, progress),
         onTaskStatus: ({ state, message }) => updateTurn(turnId, { progress: message ?? taskStatusLabel(state) }),
         onResponse: (response, durationMs) => {
@@ -420,6 +424,7 @@ function App({ config }: AppProps) {
       updateTurn(turnId, {
         answer: exchange.answer,
         citations: exchange.citations,
+        cards: exchange.cards,
         progress: undefined,
         status: 'succeeded',
       })
@@ -488,6 +493,7 @@ function App({ config }: AppProps) {
               ...turn,
               error,
               citations: undefined,
+              cards: undefined,
               progress: undefined,
               status: 'failed',
               durationMs:
@@ -750,6 +756,7 @@ function TurnBlock({
         <article className="message assistant">
           <span>Specialist · {turn.agentName}</span>
           <AssistantMessage answer={turn.answer} />
+          {turn.status === 'succeeded' && <AdaptiveCards cards={turn.cards} />}
           {turn.status === 'succeeded' && <Sources citations={turn.citations} />}
           {turn.error && <p role="alert" className="failure-message">{turn.error}</p>}
           <button

@@ -12,6 +12,7 @@ public sealed class CopilotStudioAdapterChatClient(
     IAgentInvoker invoker,
     A2ARequestMetadataAccessor metadataAccessor,
     IdempotencyStore idempotencyStore,
+    IOptions<AdapterOptions> adapterOptions,
     ILogger<CopilotStudioAdapterChatClient> logger) : IChatClient
 {
     public async Task<ChatResponse> GetResponseAsync(
@@ -104,7 +105,8 @@ public sealed class CopilotStudioAdapterChatClient(
             var responseUpdate = new ChatResponseUpdate(
                 ChatRole.Assistant,
                 CreateResponseContents(
-                    text, responder, update.Citations, update.IsInformative, update.ConversationHandle))
+                    text, responder, update.Citations, update.IsInformative, update.ConversationHandle,
+                    update.Cards))
             {
                 AuthorName = responder.Name,
                 ConversationId = metadata.ContextId ?? update.ConversationId,
@@ -163,12 +165,19 @@ public sealed class CopilotStudioAdapterChatClient(
         System.Diagnostics.Activity? activity,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        await foreach (var update in invoker.StreamAsync(prompt, metadata, cancellationToken))
+        await foreach (var rawUpdate in invoker.StreamAsync(prompt, metadata, cancellationToken))
         {
+            var update = !adapterOptions.Value.AdaptiveCardsEnabled && rawUpdate.Cards is not null
+                ? rawUpdate with { Cards = null }
+                : rawUpdate;
             RequireResponder(update.Responder);
             if (update.Citations is not null)
             {
                 AgentCitations.Validate(update.Citations);
+            }
+            if (update.Cards is not null)
+            {
+                AgentAdaptiveCards.Validate(update.Cards);
             }
             if (CopilotStudioResponseClassifier.IsUnsupportedHarnessResponse(update.Text))
             {
@@ -176,7 +185,10 @@ public sealed class CopilotStudioAdapterChatClient(
                 logger.LogWarning(
                     "Agent {AgentId} returned the retired enhanced task completion response.",
                     metadata.AgentId);
-                yield return update with { Text = CopilotStudioResponseClassifier.Guidance, Citations = null };
+                yield return update with
+                {
+                    Text = CopilotStudioResponseClassifier.Guidance, Citations = null, Cards = null
+                };
                 continue;
             }
 
@@ -195,7 +207,8 @@ public sealed class CopilotStudioAdapterChatClient(
                 WithResponderHeader(result.Text, responder),
                 responder,
                 result.Citations,
-                conversationHandle: result.ConversationHandle))
+                conversationHandle: result.ConversationHandle,
+                cards: result.Cards))
         {
             AuthorName = responder.Name
         })
@@ -238,7 +251,8 @@ public sealed class CopilotStudioAdapterChatClient(
         AgentResponder responder,
         CitationBundle? citations,
         bool isInformative = false,
-        string? conversationHandle = null)
+        string? conversationHandle = null,
+        AdaptiveCardBundle? cards = null)
     {
         List<AIContent> contents = [];
         if (!string.IsNullOrEmpty(text))
@@ -249,6 +263,10 @@ public sealed class CopilotStudioAdapterChatClient(
         if (!isInformative && citations is { Sources.Count: > 0 })
         {
             contents.Add(AgentCitations.ToContent(citations));
+        }
+        if (!isInformative && cards is { Cards.Count: > 0 })
+        {
+            contents.Add(AgentAdaptiveCards.ToContent(cards));
         }
         return contents;
     }
@@ -556,6 +574,7 @@ public sealed class IdempotencyStore : IDisposable
             string? responseId = null;
             AgentResponder? responder = null;
             CitationBundle? citations = null;
+            AdaptiveCardBundle? cards = null;
             string? conversationHandle = null;
 
             try
@@ -565,7 +584,9 @@ public sealed class IdempotencyStore : IDisposable
                     .WithCancellation(timeoutSource.Token))
                 {
                     if (string.IsNullOrEmpty(update.Text) &&
-                        (update.IsInformative || update.Citations is not { Sources.Count: > 0 }))
+                        (update.IsInformative ||
+                         (update.Citations is not { Sources.Count: > 0 } &&
+                          update.Cards is not { Cards.Count: > 0 })))
                     {
                         continue;
                     }
@@ -575,6 +596,7 @@ public sealed class IdempotencyStore : IDisposable
                         text.Append(update.Text);
                         responder = update.Responder;
                         citations = AgentCitations.Merge(citations, update.Citations);
+                        cards = A2AResponseText.MergeCards(cards, update.Cards);
                     }
                     conversationId = update.ConversationId ?? conversationId;
                     responseId = update.ResponseId ?? responseId;
@@ -592,6 +614,7 @@ public sealed class IdempotencyStore : IDisposable
                 {
                     Responder = responder,
                     Citations = citations,
+                    Cards = cards,
                     ConversationHandle = conversationHandle
                 });
             }

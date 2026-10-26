@@ -37,6 +37,12 @@ public sealed class AdapterOptions
     /// </summary>
     public bool AllowAnonymousDevelopmentMode { get; set; }
 
+    /// <summary>
+    /// Forwards validated display-only Adaptive Cards in a dedicated data part and advertises the
+    /// extension. Off by default; the text answer is unchanged either way.
+    /// </summary>
+    public bool AdaptiveCardsEnabled { get; set; }
+
     /// <summary>Exposes a deterministic failing agent for local error-state UX testing.</summary>
     public bool EnableFailureMock { get; set; }
 

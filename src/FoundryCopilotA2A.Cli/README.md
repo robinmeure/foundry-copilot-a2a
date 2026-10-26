@@ -106,6 +106,7 @@ only replaces APIs carrying its ownership marker. The Bicep equivalent is
 | --- | --- | --- |
 | `test-adapter` | Reads the agent card and sends an A2A 1.0 message directly to the adapter, using device code or a token read from an environment variable when authentication is enabled. | Verifies the direct A2A contract and actual answer, not only process health. |
 | `test-copilot-file-upload` | Sends a synthetic TXT data-URI attachment directly through Copilot Studio Client 1.8.77, with a separate no-file control and a follow-up requiring facts only present in the file. | Investigates actual file reading on the existing SDK channel, independently of the adapter's text-only A2A input. |
+| `test-adaptive-cards` | Checks a deterministic card fixture through the direct SDK and/or all four A2A 1.0/0.3 JSON/SSE combinations, including text and card-envelope fallbacks. | Separates real attachment delivery from text echoes and optionally verifies that the adapter or transparent APIM route preserves SDK card content. |
 | `test-foundry` | Validates the adapter card, force-creates or updates a named anonymous `remote-a2a` Foundry connection, creates a new version of the named test prompt agent, invokes it with required tool use, and checks the returned answer. | Provides a disposable mock/repro cloud smoke test that proves Foundry can discover and invoke a reachable adapter. It is not the secured native-chain setup. |
 | `test-citadel` | Checks APIM card discovery, CORS, unauthenticated rejection, JSON-RPC/SSE behavior, answer content, caller-scoped traces, and optional OBO evidence. | Verifies the complete browser/APIM/adapter contract rather than treating HTTP 200 as success. |
 
@@ -134,12 +135,101 @@ the cargo and unique identifiers in the summary response, then a different hidde
 a follow-up without reattaching the file. It never prints connection URLs, tokens, file contents,
 or provider responses. Ctrl+C cancels execution; `--timeout-seconds` bounds the SDK probe
 (default 300, range 10-600, excluding initial sign-in).
+The shared SDK probe transport buffers each response under a 2 MiB limit and cancellation
+before the SDK deserializes it, including conversation-start responses.
 
 Success establishes only that the tested agent read this small TXT payload through
 `ExecuteAsync`; it does not certify other formats/limits, other agents, or A2A forwarding.
 The Activity attachment schema alone does not establish server-side support. A failed candidate
 payload, sign-in card, request failure, or ungrounded answer is not universal proof that file input
 is unsupported. The Direct Line `/upload` endpoint is a different API, not a substitute used here.
+
+### Verifying Adaptive Card delivery
+
+Publish a dedicated Copilot Studio test topic triggered by `show adaptive card test`. Use
+a **message that sends a card**, not an input-collecting form or a request for model-generated
+JSON. The card should be static, contain no personal data/actions, and use this fixture:
+
+```json
+{
+  "type": "AdaptiveCard",
+  "version": "1.5",
+  "fallbackText": "Adaptive card test: A2A-CARD-PROBE-001",
+  "body": [
+    { "type": "TextBlock", "text": "A2A-CARD-PROBE-001", "wrap": true }
+  ]
+}
+```
+
+Point the SDK and adapter at the same published agent/topic. Set
+`Adapter__AdaptiveCardsEnabled=true` in the adapter process environment and restart your
+test instance (or set `Adapter:AdaptiveCardsEnabled` in its local configuration).
+Use the CLI's `run-adapter`/`run-mock` commands for startup; no new shell scripts are needed.
+
+With existing credentials and URLs securely populated in environment variables:
+
+```powershell
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- test-adaptive-cards `
+  --direct-connect-url-env COPILOT_STUDIO_DIRECT_CONNECT_URL `
+  --bearer-token-env COPILOT_STUDIO_BEARER_TOKEN `
+  --a2a-url-env ADAPTIVE_CARD_A2A_URL `
+  --a2a-bearer-token-env ADAPTER_BEARER_TOKEN
+```
+
+`ADAPTIVE_CARD_A2A_URL` is the **full runtime URL**, for example
+`https://adapter.example/a2a-agents/test-agent/a2a`, not an Agent Card discovery URL.
+For the router endpoint, add `--agent-id <configured-agent-id>` when needed.
+SDK and A2A bearer tokens have different audiences; the command never forwards the SDK
+token to the adapter. A gateway route must use its own appropriately scoped token.
+`--obo` and backend-credential options work as in the file probe above. These apply only
+to SDK authentication; `--a2a-bearer-token-env` remains separate.
+
+Either URL option can be omitted to test just the other path:
+
+- **SDK only:** starts a fresh conversation, sends the topic trigger via the existing
+  string `AskQuestionAsync` overload, and requires a normal card attachment with the marker
+  in a visible TextBlock. Startup/welcome cards, text echoes, JSON in text, user messages,
+  hidden markers and sign-in cards do not pass.
+- **A2A only:** sends four isolated requests (1.0/0.3, nonstreaming/streaming). Requires the
+  keyed card envelope, identity/revision/content type, usable fallback and an ordinary
+  text answer. Drains SSE through EOF, including late cards/errors; nonterminal tasks fail.
+- **Both:** also compares marker-card JSON against the direct SDK result, ignoring object
+  property order. Keep the fixture deterministic across conversations.
+
+`--prompt` and `--expected-marker` override the synthetic topic/marker defaults.
+`--timeout-seconds` bounds the entire card command, including authentication and SSE
+body reads (default 300, range 10-600). Ctrl+C cancels. Responses are capped at 2 MiB,
+cards at 64 KiB/depth 32, with five cards/256 KiB per accumulated A2A answer. Redirects
+are rejected; A2A HTTP is permitted only on loopback. The SDK transport buffers each
+response under the same byte limit and cancellation, including conversation startup,
+so synchronous SDK JSON deserialization cannot bypass the deadline. Success prints assertions/counts,
+not card contents, answers, URLs, conversation IDs or credentials. Interactive device-code
+sign-in may display its required sign-in instructions.
+
+For a local **mock-only** wire check, first run the mock with the feature enabled:
+
+```powershell
+$env:Adapter__AdaptiveCardsEnabled = 'true'
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- run-mock
+```
+
+In another terminal:
+
+```powershell
+$env:ADAPTIVE_CARD_A2A_URL = 'http://localhost:5099/a2a/copilot-studio'
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- test-adaptive-cards `
+  --a2a-url-env ADAPTIVE_CARD_A2A_URL `
+  --prompt 'show card example' --expected-marker 'Mock order status'
+```
+
+Repeat the live wire check using the transparent APIM runtime URL/token if configured.
+A wire pass against the mock is **not** proof of live Copilot Studio delivery.
+The command does not publish topics, change consent/settings, execute card actions or test
+browser rendering. To finish Phase 3, send the fixture trigger in **both Chatbot and Web**
+against the live route, verify the card is rendered rather than printed as JSON, and check
+the usable text fallback. Live delivery remains experimental until those checks and the
+live SDK/wire probes pass. Native Foundry/Copilot Studio delegation and `Action.Submit`
+remain separately gated.
 
 ## Safety and ownership model
 

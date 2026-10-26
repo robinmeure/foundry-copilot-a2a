@@ -408,10 +408,16 @@ IResult BuildChainAgentCard(string agentId, AgentCatalog catalog)
             streaming = true,
             pushNotifications = false,
             stateTransitionHistory = false,
-            extensions = new[]
-            {
-                new { uri = AgentCitations.ExtensionUri, description = AgentCitations.Description, required = false }
-            }
+            extensions = adapterOptions.AdaptiveCardsEnabled
+                ? new[]
+                {
+                    new { uri = AgentCitations.ExtensionUri, description = AgentCitations.Description, required = false },
+                    new { uri = AgentAdaptiveCards.ExtensionUri, description = AgentAdaptiveCards.Description, required = false }
+                }
+                : new[]
+                {
+                    new { uri = AgentCitations.ExtensionUri, description = AgentCitations.Description, required = false }
+                }
         },
         securitySchemes,
         security,
@@ -468,7 +474,18 @@ var agentCard = new AgentCard
                 Uri = AgentCitations.ExtensionUri,
                 Description = AgentCitations.Description,
                 Required = false
-            }
+            },
+            .. adapterOptions.AdaptiveCardsEnabled
+                ? new[]
+                {
+                    new AgentExtension
+                    {
+                        Uri = AgentAdaptiveCards.ExtensionUri,
+                        Description = AgentAdaptiveCards.Description,
+                        Required = false
+                    }
+                }
+                : Array.Empty<AgentExtension>()
         ]
     },
     SupportedInterfaces =
@@ -506,7 +523,18 @@ routerCardEndpoints.AddEndpointFilter(async (context, next) =>
                 Uri = AgentCitations.ExtensionUri,
                 Description = AgentCitations.Description,
                 Required = false
-            }
+            },
+            .. adapterOptions.AdaptiveCardsEnabled
+                ? new[]
+                {
+                    new A2A.V0_3.AgentExtension
+                    {
+                        Uri = AgentAdaptiveCards.ExtensionUri,
+                        Description = AgentAdaptiveCards.Description,
+                        Required = false
+                    }
+                }
+                : Array.Empty<A2A.V0_3.AgentExtension>()
         ];
     }
     else if (result is IValueHttpResult { Value: System.Text.Json.Nodes.JsonObject blendedCard } &&

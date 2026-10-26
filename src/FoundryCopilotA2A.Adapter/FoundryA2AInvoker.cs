@@ -57,7 +57,8 @@ public sealed class FoundryA2AInvoker(
             result.ConversationId,
             result.ResponseId)
         {
-            Citations = result.Citations
+            Citations = result.Citations,
+            Cards = result.Cards
         };
     }
 
@@ -123,7 +124,8 @@ public sealed class FoundryA2AInvoker(
             metadata.ContextId,
             requestId)
         {
-            Citations = answer.Citations
+            Citations = answer.Citations,
+            Cards = answer.Cards
         };
     }
 
