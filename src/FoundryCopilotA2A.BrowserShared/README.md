@@ -56,6 +56,47 @@ completed event still finish at EOF. Completion with no answer remains an explic
 Text append/replacement behavior is unchanged; the client never simulates token streaming
 when an upstream agent returns one final answer.
 
+## Structured plan activity v1
+
+`sendMessage` requests `urn:foundry-copilot-a2a:dynamic-plan:v1` through the
+`A2A-Extensions` header. A2A 0.3 callers use `X-A2A-Extensions` instead. The adapter
+acknowledges activation using the matching response header; unactivated callers still
+receive text status summaries. Both adapter CORS and the shared APIM policy allow/expose
+these headers. Existing gateways must receive the updated policy before using this frontend.
+
+`onPlanUpdate(event)` receives validated, deduplicated plan events from
+`status.message.parts[].data[extensionUri]`; `onTaskStatus` also includes optional
+`planUpdates`. Both wire versions are supported. The envelope has `schemaVersion: "1"`,
+`eventId`, `sequence`, the full `DynamicPlan*` name, `originatingAgent`, `value` and
+`detailsFiltered`. Event identity is scoped by originating agent and plan ID; conflicting
+replays and unsupported/malformed recognized payloads fail explicitly.
+
+Both frontends nest the activity timeline under the first text progress update, independently
+of answer text. A neutral "Agent activity" parent is used for plan-only streams.
+Expandable activity rows keep details and filtering notices out of the main reading path.
+Details render as escaped plain text (never HTML, links or remote fetches), with keyboard
+access to bounded scrollable content. Expanding the chatbot's update disclosure reveals the
+child activity timeline; stream updates do not reset the user's disclosure choices.
+Late final-plan events remain visible after the answer. A completed step, `isFinalPlan`,
+or an artifact's `lastChunk` does not complete the overall request.
+
+The adapter includes bounded, best-effort-redacted arguments and observations. It omits
+thoughts, identity envelopes and sensitive-key fields, masks recognized credentials/email
+addresses and strips URL query/fragment/credentials. Redaction is not a general DLP guarantee:
+provider free text may still contain sensitive business content. Keep access restricted to
+the authorized caller. `detailsFiltered` explicitly signals omitted/redacted/truncated fields.
+Limits: 256 events per invocation, 16 KiB per envelope, 4096-character shared detail budget,
+512 characters per detail string, 16 object members, 8 array items and nesting depth 5.
+Exceeding event/envelope limits fails explicitly; detail limits truncate with a notice.
+
+Plan details stay in memory for the open chat only. They are not copied with answers, stored
+in browser history, or sent in follow-up model prompts. Ordinary status and artifact behavior
+is unchanged. Adapter-managed APIM relays request and preserve the extension; native
+model-mediated orchestration may discard intermediate events and is not guaranteed.
+
+With the mock backend, send **`show plan example`** to exercise all four event types, filtered
+details, an answer and a final plan arriving after it. No Azure resources are required.
+
 ## Structured citations v1
 
 The canonical wire representation is an A2A data part alongside answer text:

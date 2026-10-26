@@ -15,7 +15,8 @@ public sealed class A2ARequestContextMiddleware(
         A2ARequestMetadataAccessor metadataAccessor,
         AgentIsolationKeyContext isolationKeyContext,
         AgentCatalog agentCatalog,
-        ApiManagementAgentRegistry apiManagementAgents)
+        ApiManagementAgentRegistry apiManagementAgents,
+        PlanExtensionContext planExtension)
     {
         string? routeAgentId = null;
         var isRuntimeRequest =
@@ -23,6 +24,15 @@ public sealed class A2ARequestContextMiddleware(
             TryResolveRuntimeAgent(context.Request.Path, out routeAgentId);
         if (isRuntimeRequest)
         {
+            var extensionHeader = context.Request.Headers["A2A-Version"] == "1.0"
+                ? AgentPlanUpdates.Header : AgentPlanUpdates.LegacyHeader;
+            planExtension.Active = context.Request.Headers[extensionHeader].ToString()
+                .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                .Contains(AgentPlanUpdates.ExtensionUri, StringComparer.Ordinal);
+            if (planExtension.Active)
+            {
+                context.Response.Headers[extensionHeader] = AgentPlanUpdates.ExtensionUri;
+            }
             if (routeAgentId is not null)
             {
                 context.Items[AdapterConstants.RouteAgentItem] =
@@ -189,6 +199,7 @@ public sealed class A2ARequestContextMiddleware(
             if (isRuntimeRequest)
             {
                 isolationKeyContext.Current = null;
+                planExtension.Active = false;
             }
         }
     }

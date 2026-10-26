@@ -1,0 +1,74 @@
+.a2a-plan-timeline {
+  min-width: 0;
+  margin: 8px 0 4px;
+  color: inherit;
+  font-size: inherit;
+  line-height: 1.55;
+  white-space: normal;
+}
+
+.a2a-plan { margin: 0; }
+.a2a-plan + .a2a-plan { margin-top: 8px; }
+.a2a-plan summary {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  column-gap: 8px;
+  min-height: 28px;
+  padding: 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  list-style: none;
+  overflow-wrap: anywhere;
+}
+.a2a-plan summary::-webkit-details-marker { display: none; }
+.a2a-plan summary::before {
+  content: "";
+  align-self: flex-start;
+  flex: 0 0 5px;
+  height: 5px;
+  margin: 6px 2px 0 0;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(-45deg);
+}
+.a2a-plan details[open] > summary::before,
+.a2a-plan[open] > summary::before { transform: rotate(45deg); }
+.a2a-plan summary:hover { background: var(--plan-hover, #ededf0); }
+.a2a-plan summary:focus-visible,
+.a2a-plan-details pre:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.a2a-plan-title { font-weight: 600; }
+.a2a-plan-count {
+  color: var(--plan-muted, var(--muted, #6d6d76));
+  font-size: 0.92em;
+  font-variant-numeric: tabular-nums;
+}
+.a2a-plan-events {
+  margin: 4px 0 4px 7px;
+  padding: 0 0 0 12px;
+  border-left: 1px solid var(--plan-border, #dedee5);
+  list-style: none;
+}
+.a2a-plan-event { min-width: 0; padding: 0; }
+.a2a-plan-event + .a2a-plan-event { margin-top: 2px; }
+.a2a-plan-label { flex: 1 1 12ch; min-width: 0; overflow-wrap: anywhere; font-weight: 400; }
+.a2a-plan-plain { display: block; padding: 4px 4px 4px 20px; }
+.a2a-plan-filtered { color: var(--plan-muted, var(--muted, #6d6d76)); font-size: 0.92em; }
+.a2a-plan-detail-body { margin: 4px 4px 12px 20px; min-width: 0; }
+.a2a-plan-note { display: block; margin-bottom: 8px; font-size: 0.92em; }
+.a2a-plan-details pre {
+  margin: 0;
+  max-height: 12rem;
+  padding: 12px;
+  border: 1px solid var(--plan-border, #dedee5);
+  border-radius: 4px;
+  color: inherit;
+  background: var(--plan-detail-background, #fff);
+  font-size: 0.92em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--plan-border, #dedee5) transparent;
+}
+.a2a-plan-announcement { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

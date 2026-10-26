@@ -1,5 +1,6 @@
 import { mergeConversationHandles, sendMessage, type A2AAgent, type AdaptiveCardBundle, type CitationBundle, type ConversationTurn } from '../../FoundryCopilotA2A.BrowserShared/a2aClient.ts'
 import { appendActivityUpdate } from '../../FoundryCopilotA2A.BrowserShared/activityUpdates.ts'
+import { appendPlanUpdate, type PlanUpdate } from '../../FoundryCopilotA2A.BrowserShared/planUpdates.ts'
 import { parseConnectionRepairRequest } from '../../FoundryCopilotA2A.BrowserShared/connectionRepair.ts'
 import type { ChatbotConfig } from './config.ts'
 import { readConversations, writeConversations, type ConversationPersistence, type SavedConversation } from './conversationStore.ts'
@@ -14,6 +15,8 @@ export interface ChatTurn {
   cards?: AdaptiveCardBundle
   progress?: string
   activityUpdates?: string[]
+  /** Sanitized plan details remain in memory only, never browser history or model input. */
+  planUpdates?: PlanUpdate[]
   responder?: A2AAgent
   error?: string
   status: 'sending' | 'succeeded' | 'failed'
@@ -189,6 +192,7 @@ export class ChatSession {
           }
           update({ phase, progress: message })
         },
+        onPlanUpdate: (event) => update(turn => ({ planUpdates: appendPlanUpdate(turn.planUpdates, event) })),
       })
       update({ answer: exchange.answer, citations: exchange.citations, cards: exchange.cards, status: 'succeeded', progress: undefined })
       if (this.active === controller) {

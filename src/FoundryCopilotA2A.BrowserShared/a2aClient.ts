@@ -1,4 +1,5 @@
 import { readTaskStatus, taskStatusError, type A2ATaskStatus } from './taskStatus.ts'
+import { appendPlanUpdate, planExtensionKey, type PlanUpdate } from './planUpdates.ts'
 import { readResponseAgent, type A2AAgent } from './agentMetadata.ts'
 import { validateFile, type InputFile } from './inputFiles.ts'
 export { taskStatusLabel, type A2ATaskStatus } from './taskStatus.ts'
@@ -204,6 +205,7 @@ export interface SendMessageOptions {
   onProgress?: (message: string) => void
   /** Task lifecycle is separate from answer text and informative progress. */
   onTaskStatus?: (status: A2ATaskStatus) => void
+  onPlanUpdate?: (update: PlanUpdate) => void
   /** Last reported responder identity; deduplicated across token chunks. */
   onAgent?: (agent: A2AAgent) => void
   onResponse?: (response: A2AHttpResponse, durationMs: number) => void
@@ -226,6 +228,7 @@ export async function sendMessage({
   onUpdate,
   onProgress,
   onTaskStatus,
+  onPlanUpdate,
   onAgent,
   onResponse,
   onTrace,
@@ -261,6 +264,7 @@ export async function sendMessage({
     url,
     headers: {
       'A2A-Version': '1.0',
+      'A2A-Extensions': planExtensionKey,
       Authorization: 'Bearer [redacted]',
       'Content-Type': 'application/json',
       'X-Copilot-Agent': agentId,
@@ -294,6 +298,7 @@ export async function sendMessage({
     onProgress,
     onTaskStatus,
     onAgent,
+    onPlanUpdate,
   )
   const responseBody = parseResponseBody(responseText, contentType)
   const jsonRpcResponse = asJsonRpcResponse(responseBody)
@@ -361,6 +366,7 @@ async function readStreamingResponse(
   onProgress?: (message: string) => void,
   onTaskStatus?: (status: A2ATaskStatus) => void,
   onAgent?: (agent: A2AAgent) => void,
+  onPlanUpdate?: (update: PlanUpdate) => void,
 ) {
   if (!response.body) {
     throw new Error('The adapter returned a streaming response without a body.')
@@ -378,6 +384,7 @@ async function readStreamingResponse(
   let rpcError: JsonRpcResponse['error']
   let taskError: Error | undefined
   let currentAgent: A2AAgent | undefined
+  let planUpdates: PlanUpdate[] = []
   const conversationHandles: string[] = []
 
   const processData = (data: string) => {
@@ -410,6 +417,11 @@ async function readStreamingResponse(
       onTaskStatus?.(taskStatus)
       taskError = taskStatusError(taskStatus)
       if (taskError) return
+      for (const update of taskStatus.planUpdates ?? []) {
+        const next = appendPlanUpdate(planUpdates, update)
+        if (next.length > planUpdates.length) onPlanUpdate?.(update)
+        planUpdates = next
+      }
     }
     const chunk = answerChunk(rpcResponse)
     if (!chunk) return

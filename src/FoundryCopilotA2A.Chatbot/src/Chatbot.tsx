@@ -9,7 +9,6 @@ import ReplyBody from './ReplyBody.tsx'
 import { useAutoSizeTextarea } from './useAutoSizeTextarea.ts'
 import { browserRecognitionLanguage, savedSpeechLanguage, speechLanguages, speechLanguageStorageKey, useSpeechInput } from './speechInput.ts'
 import { useReplyActivity } from './replyActivity.ts'
-import { activityLines } from './waitStatus.ts'
 import { useChatScroll } from './useChatScroll.ts'
 import '../../FoundryCopilotA2A.BrowserShared/citations.css'
 import '../../FoundryCopilotA2A.BrowserShared/cards.css'
@@ -225,8 +224,7 @@ export default function Chatbot({ config, auth }: { config: ChatbotConfig; auth:
                   </div>
                   <div className="assistant-message" aria-busy={turn.status === 'sending'}>
                     <div className="assistant-content">
-                      <ReplyBody turn={turn} agentName={config.agentName}
-                        lead={turn.status !== 'sending' && <ActivityTrail updates={turn.activityUpdates} />}>
+                      <ReplyBody turn={turn} agentName={config.agentName}>
                       {turn.status === 'sending' && activity && (
                         <p className="wait-line" title={activity.detail}>
                           <span className="wait-dot" aria-hidden="true" />
@@ -350,24 +348,5 @@ export default function Chatbot({ config, auth }: { config: ChatbotConfig; auth:
         </div>
       </div>
     </div>
-  )
-}
-
-/** The finished turn's updates as one collapsed line; expanding shows every step in order. */
-function ActivityTrail({ updates }: { updates?: readonly string[] }) {
-  const lines = activityLines(updates)
-  if (!lines.length) return null
-
-  return (
-    <details className="activity-trail">
-      <summary>
-        <ChatIcon name="chevron-down" />
-        <span className="activity-trail-count">{lines.length === 1 ? '1 update' : `${lines.length} updates`}</span>
-        <span className="activity-trail-last">{lines.at(-1)}</span>
-      </summary>
-      <ol>
-        {lines.map((line, index) => <li key={`${index}:${line}`}>{line}</li>)}
-      </ol>
-    </details>
   )
 }

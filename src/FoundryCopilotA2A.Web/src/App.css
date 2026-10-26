@@ -294,7 +294,14 @@ dd {
   border-bottom-left-radius: 4px;
 }
 
-.activity-updates ol {
+.activity-updates {
+  --plan-border: #cbd7e5;
+  --plan-muted: #526580;
+  --plan-hover: #e1e9f3;
+  --plan-detail-background: #f6f8fc;
+}
+
+.activity-updates > ol {
   margin: 0;
   padding: 12px 17px 12px 38px;
   border-radius: 16px;
@@ -303,14 +310,14 @@ dd {
   background: #edf2f8;
 }
 
-.activity-updates li {
+.activity-updates > ol > li {
   padding-left: 3px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.45;
 }
 
-.activity-updates li + li {
+.activity-updates > ol > li + li {
   margin-top: 8px;
 }
 

@@ -1,6 +1,8 @@
 import { InteractionRequiredAuthError } from '@azure/msal-browser'
 import { useIsAuthenticated, useMsal } from '@azure/msal-react'
 import { appendActivityUpdate } from '../../FoundryCopilotA2A.BrowserShared/activityUpdates.ts'
+import { appendPlanUpdate, type PlanUpdate } from '../../FoundryCopilotA2A.BrowserShared/planUpdates.ts'
+import PlanTimeline from './PlanTimeline.ts'
 import { parseConnectionRepairRequest } from '../../FoundryCopilotA2A.BrowserShared/connectionRepair.ts'
 import { parseConsentRequest } from '../../FoundryCopilotA2A.BrowserShared/consent.ts'
 import {
@@ -77,6 +79,7 @@ interface TurnRecord {
   cards?: AdaptiveCardBundle
   progress?: string
   activityUpdates?: string[]
+  planUpdates?: PlanUpdate[]
   error?: string
   agentName: string
   route: {
@@ -409,6 +412,8 @@ function App({ config }: AppProps) {
         onUpdate: (answer, citations, cards) => updateTurn(turnId, { answer, citations, cards, progress: undefined }),
         onProgress: (progress) => recordActivityUpdate(turnId, progress),
         onTaskStatus: ({ state, message }) => updateTurn(turnId, { progress: message ?? taskStatusLabel(state) }),
+        onPlanUpdate: (event) => setTurns(current => current.map(turn => turn.id === turnId
+          ? { ...turn, planUpdates: appendPlanUpdate(turn.planUpdates, event) } : turn)),
         onResponse: (response, durationMs) => {
           receivedResponse = true
           updateTurn(turnId, { response, durationMs })
@@ -750,7 +755,8 @@ function TurnBlock({
 
       <HopStrip turn={turn} onOpenEntry={onOpenEntry} />
 
-      <ActivityUpdates updates={turn.activityUpdates} />
+      <ActivityUpdates updates={turn.activityUpdates} planUpdates={turn.planUpdates}
+        finished={turn.status === 'succeeded' || turn.status === 'failed'} />
 
       {turn.answer !== undefined ? (
         <article className="message assistant">
@@ -1013,14 +1019,20 @@ function participantForSource(source: string) {
     : normalized
 }
 
-function ActivityUpdates({ updates }: { updates?: readonly string[] }) {
-  if (!updates?.length) return null
+function ActivityUpdates({ updates, planUpdates, finished }: {
+  updates?: readonly string[]; planUpdates?: PlanUpdate[]; finished: boolean
+}) {
+  const lines = updates?.length ? updates : planUpdates?.length ? ['Agent activity'] : []
+  if (!lines.length) return null
 
   return (
     <article className="message assistant activity-updates" aria-label="Agent updates">
       <span>Agent updates</span>
       <ol>
-        {updates.map((update, index) => <li key={`${index}:${update}`}>{update}</li>)}
+        {lines.map((update, index) => <li key={index}>
+          {update}
+          {index === 0 && <PlanTimeline updates={planUpdates} finished={finished} />}
+        </li>)}
       </ol>
     </article>
   )

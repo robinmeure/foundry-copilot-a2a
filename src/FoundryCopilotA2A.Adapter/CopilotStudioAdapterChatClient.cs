@@ -106,7 +106,7 @@ public sealed class CopilotStudioAdapterChatClient(
                 ChatRole.Assistant,
                 CreateResponseContents(
                     text, responder, update.Citations, update.IsInformative, update.ConversationHandle,
-                    update.Cards))
+                    update.Cards, update.PlanUpdate))
             {
                 AuthorName = responder.Name,
                 ConversationId = metadata.ContextId ?? update.ConversationId,
@@ -165,12 +165,26 @@ public sealed class CopilotStudioAdapterChatClient(
         System.Diagnostics.Activity? activity,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        var planCount = 0;
         await foreach (var rawUpdate in invoker.StreamAsync(prompt, metadata, cancellationToken))
         {
             var update = !adapterOptions.Value.AdaptiveCardsEnabled && rawUpdate.Cards is not null
                 ? rawUpdate with { Cards = null }
                 : rawUpdate;
             RequireResponder(update.Responder);
+            if (update.PlanUpdate is not null)
+            {
+                if (++planCount > AgentPlanUpdates.MaxEvents)
+                {
+                    throw new AdapterRequestException("The plan stream exceeds the event limit.");
+                }
+                AgentPlanUpdates.Validate(update.PlanUpdate);
+                update = update with
+                {
+                    IsInformative = true,
+                    Text = AgentPlanUpdates.Summary(update.PlanUpdate)
+                };
+            }
             if (update.Citations is not null)
             {
                 AgentCitations.Validate(update.Citations);
@@ -252,9 +266,14 @@ public sealed class CopilotStudioAdapterChatClient(
         CitationBundle? citations,
         bool isInformative = false,
         string? conversationHandle = null,
-        AdaptiveCardBundle? cards = null)
+        AdaptiveCardBundle? cards = null,
+        AgentPlanUpdate? planUpdate = null)
     {
         List<AIContent> contents = [];
+        if (planUpdate is not null)
+        {
+            contents.Add(AgentPlanUpdates.ToContent(planUpdate));
+        }
         if (!string.IsNullOrEmpty(text))
         {
             contents.Add(CreateResponseContent(
@@ -583,7 +602,7 @@ public sealed class IdempotencyStore : IDisposable
                 await foreach (var update in factory(timeoutSource.Token)
                     .WithCancellation(timeoutSource.Token))
                 {
-                    if (string.IsNullOrEmpty(update.Text) &&
+                    if (update.PlanUpdate is null && string.IsNullOrEmpty(update.Text) &&
                         (update.IsInformative ||
                          (update.Citations is not { Sources.Count: > 0 } &&
                           update.Cards is not { Cards.Count: > 0 })))
@@ -591,7 +610,7 @@ public sealed class IdempotencyStore : IDisposable
                         continue;
                     }
 
-                    if (!update.IsInformative)
+                    if (!update.IsInformative && update.PlanUpdate is null)
                     {
                         text.Append(update.Text);
                         responder = update.Responder;

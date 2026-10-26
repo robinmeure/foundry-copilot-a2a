@@ -36,6 +36,7 @@ public sealed record CopilotInvocationUpdate(
     public AgentResponder? Responder { get; init; }
     public CitationBundle? Citations { get; init; }
     public AdaptiveCardBundle? Cards { get; init; }
+    public AgentPlanUpdate? PlanUpdate { get; init; }
 
     /// <summary>
     /// Opaque, protected reference to the Copilot Studio conversation. The client stores it with
@@ -63,6 +64,7 @@ public sealed class MockCopilotStudioInvoker(CopilotConversationHandles conversa
     public const string StreamProgressPrompt = "stream progress response";
     public const string CitationPrompt = "show citation example";
     public const string CardPrompt = "show card example";
+    public const string PlanPrompt = "show plan example";
 
     /// <summary>The answer the mock streams token by token for <see cref="StreamProgressPrompt"/>.</summary>
     public static readonly string[] StreamedAnswerDeltas =
@@ -132,6 +134,43 @@ public sealed class MockCopilotStudioInvoker(CopilotConversationHandles conversa
             "mock mode does not analyze file contents";
 
         await Task.Yield();
+        if (string.Equals(prompt, PlanPrompt, StringComparison.OrdinalIgnoreCase))
+        {
+            var responder = new AgentResponder("mock", "Mock Copilot Studio");
+            var names = new[]
+            {
+                "DynamicPlanReceived", "DynamicPlanStepTriggered", "DynamicPlanStepBindUpdate",
+                "DynamicPlanStepFinished", "DynamicPlanReceived"
+            };
+            for (var index = 0; index < names.Length; index++)
+            {
+                if (index == 4)
+                {
+                    yield return new CopilotInvocationUpdate(
+                        "Here is the mock research answer.", conversationId, "mock-plan-answer")
+                    { ConversationHandle = handle };
+                }
+                var plan = AgentPlanUpdates.ReadActivity(new Activity
+                {
+                    Type = "event", Name = names[index], Id = $"mock-plan-event-{index}",
+                    Value = JsonSerializer.SerializeToElement(new
+                    {
+                        planIdentifier = $"mock-plan-{invocation}",
+                        stepId = "search-1", taskDialogId = "Knowledge search",
+                        state = index >= 3 ? "completed" : "inProgress",
+                        steps = index == 4 ? Array.Empty<string>() : ["Knowledge search"],
+                        isFinalPlan = index == 4,
+                        arguments = new { search_query = "Example research question", apiKey = "mock-secret" },
+                        observation = new { search_result = new { title = "Example record", text = "A synthetic result." } }
+                    })
+                }, responder, index + 1)!;
+                yield return new CopilotInvocationUpdate(
+                    AgentPlanUpdates.Summary(plan), conversationId, plan.EventId, IsInformative: true)
+                { PlanUpdate = plan };
+                await Task.Delay(150, cancellationToken);
+            }
+            yield break;
+        }
         if (string.Equals(prompt, CitationPrompt, StringComparison.OrdinalIgnoreCase))
         {
             yield return new CopilotInvocationUpdate(
@@ -685,6 +724,7 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
         var collectionSummary = new CopilotStudioActivitySummary();
         var answerStream = new CopilotStudioAnswerStream();
         var progress = new CopilotStudioProgress();
+        var planSequence = 0;
         var streamStarted = Stopwatch.GetTimestamp();
         var firstActivityRecorded = false;
         var firstProgressRecorded = false;
@@ -720,7 +760,8 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
                           CopilotStudioAdaptiveCards.Read(activity, responder)?.Cards[0].FallbackText
                         : activity.Text
                     : null;
-                var planThought = CopilotStudioPlanThought.Read(activity);
+                var planUpdate = AgentPlanUpdates.ReadActivity(activity, responder, planSequence + 1);
+                if (planUpdate is not null) planSequence++;
 
                 // A suppressed final message is still observed, so a fully streamed turn is never
                 // misreported as an empty response.
@@ -738,10 +779,11 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
                     yield return new AnswerStreamItem(null, card);
                 }
 
-                var update = planThought?.ToUpdate(
-                    conversationId,
-                    activity.Id) ??
-                    answerStream.NextUpdate(
+                var update = planUpdate is not null
+                    ? new CopilotInvocationUpdate(
+                        AgentPlanUpdates.Summary(planUpdate), conversationId, activity.Id, IsInformative: true)
+                        { PlanUpdate = planUpdate }
+                    : answerStream.NextUpdate(
                         activity,
                         messageText,
                         conversationId,

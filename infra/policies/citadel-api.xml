@@ -12,6 +12,8 @@
         <header>Authorization</header>
         <header>Content-Type</header>
         <header>A2A-Version</header>
+        <header>A2A-Extensions</header>
+        <header>X-A2A-Extensions</header>
         <header>X-Copilot-Agent</header>
         <header>X-A2A-Chain-Target</header>
         <header>X-Correlation-ID</header>
@@ -19,6 +21,8 @@
         <header>tracestate</header>
       </allowed-headers>
       <expose-headers>
+        <header>A2A-Extensions</header>
+        <header>X-A2A-Extensions</header>
         <header>X-Trace-Id</header>
         <header>X-Correlation-ID</header>
         <header>WWW-Authenticate</header>

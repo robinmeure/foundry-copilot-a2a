@@ -57,9 +57,12 @@ builder.Services.AddCors(options =>
                 "Authorization",
                 "Content-Type",
                 "A2A-Version",
+                AgentPlanUpdates.Header,
+                AgentPlanUpdates.LegacyHeader,
                 AdapterConstants.AgentHeaderName,
                 AdapterConstants.ChainTargetHeaderName)
-            .WithExposedHeaders(AdapterConstants.TraceHeaderName);
+            .WithExposedHeaders(AdapterConstants.TraceHeaderName,
+                AgentPlanUpdates.Header, AgentPlanUpdates.LegacyHeader);
     });
 });
 
@@ -197,12 +200,12 @@ var hostedAgent = builder.AddAIAgent(
             name: AdapterConstants.AgentName,
             description: "A2A facade for a Copilot Studio specialist agent."));
 
-#pragma warning disable MEAI001 // AgentRunMode is experimental.
-// Message mode makes the hosting layer aggregate the whole run into a single event, which
-// defeats streaming. Task mode forwards each update as an artifact delta as it is produced.
-hostedAgent.AddA2AServer(options =>
-    options.AgentRunMode = AgentRunMode.AllowBackgroundIfSupported);
-#pragma warning restore MEAI001
+builder.Services.AddSingleton<PlanExtensionContext>();
+builder.Services.AddKeyedSingleton<IAgentHandler>(
+    AdapterConstants.AgentName, PlanStreamingAgentHandler.Create);
+
+// The keyed handler preserves task/session isolation and separates plan status from artifacts.
+hostedAgent.AddA2AServer();
 
 var app = builder.Build();
 
@@ -412,11 +415,13 @@ IResult BuildChainAgentCard(string agentId, AgentCatalog catalog)
                 ? new[]
                 {
                     new { uri = AgentCitations.ExtensionUri, description = AgentCitations.Description, required = false },
+                    new { uri = AgentPlanUpdates.ExtensionUri, description = AgentPlanUpdates.Description, required = false },
                     new { uri = AgentAdaptiveCards.ExtensionUri, description = AgentAdaptiveCards.Description, required = false }
                 }
                 : new[]
                 {
-                    new { uri = AgentCitations.ExtensionUri, description = AgentCitations.Description, required = false }
+                    new { uri = AgentCitations.ExtensionUri, description = AgentCitations.Description, required = false },
+                    new { uri = AgentPlanUpdates.ExtensionUri, description = AgentPlanUpdates.Description, required = false }
                 }
         },
         securitySchemes,
@@ -475,6 +480,7 @@ var agentCard = new AgentCard
                 Description = AgentCitations.Description,
                 Required = false
             },
+            new AgentExtension { Uri = AgentPlanUpdates.ExtensionUri, Description = AgentPlanUpdates.Description, Required = false },
             .. adapterOptions.AdaptiveCardsEnabled
                 ? new[]
                 {
@@ -524,6 +530,7 @@ routerCardEndpoints.AddEndpointFilter(async (context, next) =>
                 Description = AgentCitations.Description,
                 Required = false
             },
+            new A2A.V0_3.AgentExtension { Uri = AgentPlanUpdates.ExtensionUri, Description = AgentPlanUpdates.Description, Required = false },
             .. adapterOptions.AdaptiveCardsEnabled
                 ? new[]
                 {

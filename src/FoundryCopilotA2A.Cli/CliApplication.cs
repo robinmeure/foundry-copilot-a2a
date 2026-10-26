@@ -79,6 +79,8 @@ internal sealed class CliApplication(CliContext context)
                     context, commandArguments, cancellationToken),
                 "configure-citadel" => await CitadelCommands.ConfigureAsync(
                     context, commandArguments, cancellationToken),
+                "update-a2a-cors" => await A2ACorsCommands.RunAsync(
+                    context, commandArguments, cancellationToken),
                 "configure-hub" => await HubCommands.ConfigureAsync(
                     context, commandArguments, cancellationToken),
                 "set-hub-backend" => await HubCommands.SetBackendAsync(
@@ -178,6 +180,8 @@ internal sealed class CliApplication(CliContext context)
               start-tunnel  Expose the local adapter through an anonymous Dev Tunnel.
               configure-citadel
                             Publish a separate delegated-OAuth API in an existing APIM instance.
+              update-a2a-cors
+                            Preview or apply extension headers to explicit existing API CORS policies.
               configure-hub
                             Publish the API Hub that exchanges hub tokens for adapter tokens.
               set-hub-backend
@@ -313,6 +317,16 @@ internal sealed class CliApplication(CliContext context)
                 access_as_user scope, so the browser requests a hub-audience token. Existing
                 adapter permissions and redirect URIs are preserved; remove them separately once
                 every caller uses the hub.
+                """,
+            "update-a2a-cors" =>
+                """
+                update-a2a-cors --subscription-id <subscription-id> --resource-group <rg>
+                  --service-name <apim-name> --api-ids <api-id,api-id> [--apply]
+
+                Defaults to a read-only preview. Adds A2A-Extensions and X-A2A-Extensions
+                to allowed/exposed CORS headers without changing origins, authentication or
+                routing. Requires an existing API-level CORS policy; writes use ETags and
+                verify the complete saved policy. Tokens and policy bodies are never printed.
                 """,
             "configure-hub" =>
                 """

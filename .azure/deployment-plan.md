@@ -1,10 +1,69 @@
 # Foundry Copilot A2A Hub Deployment Plan
 
-> Status: Deployed - manual Copilot Studio completion pending
-> Mode: MODIFY - add a separate deployment without changing the existing Citadel stack
-> Scope: New development resource group, APIM OBO hub, isolated Entra applications, and standby handler hosting
+> Status: Deployed - incremental A2A CORS policy update verified
+> Mode: MODIFY - update only existing CORS extension-header lists
+> Scope: Six approved APIs on the original Citadel gateway; historical provisioning record retained below
 
 ## 1. Summary
+
+### Current incremental operation (2026-10-26)
+
+The earlier provisioning record below is historical and remains unchanged. The user approved
+updating **only the original Citadel gateway identified in section 3**. Inspection found that
+the deployed adapter API has no API-level or inherited CORS policy. The user explicitly
+approved leaving it unchanged and updating only the **six existing CORS policies** (hub and
+local routes). The newer hub gateway and all Echo APIs are also excluded.
+No app-code deployment, resource creation, authentication change, backend switch,
+origin change or credential operation is authorized.
+
+Recipe: Azure CLI-authenticated ARM policy update through the repository operational CLI.
+Run `update-a2a-cors` in preview mode, then with `--apply` for the same explicit API list.
+Only two headers are added to each API-level CORS allowed/exposed list:
+`A2A-Extensions` and `X-A2A-Extensions`. Preserve all other live policy content, use ETags,
+verify read-back, and probe real gateway OPTIONS responses for existing allowed origins.
+
+All validation checks pass:
+- [x] Core validation: CLI build/tests, authenticated target discovery, read-only live-policy preview.
+- [x] Docker/Bicep resource deployment: not applicable; no containers or resource templates change.
+- [x] Azure policy/RBAC validation: inspect relevant assignments and effective policy write permission.
+- [x] Verify selected APIs and unchanged boundaries before execution.
+
+#### Incremental validation proof (2026-10-26)
+
+- `dotnet test .\tests\FoundryCopilotA2A.Cli.Tests\FoundryCopilotA2A.Cli.Tests.csproj --configuration Research --no-restore`:
+  build succeeded; all **287 tests passed**, including 15 policy-updater tests.
+- `update-a2a-cors` preview: **6 of 6** approved policies need the two headers. All policies
+  read successfully with usable ETags; no writes were made during validation.
+- Target API IDs: `copilot-studio-hub`, `copilot-studio-local`,
+  `copilot-studio-local-ai-search-vragen`, `copilot-studio-local-orchestrator`,
+  `copilot-studio-local-reverser-classic`, `copilot-studio-local-tweede-kamer-classic`.
+- Existing origins on all six policies: `http://localhost:5173` and `http://localhost:5174`.
+- ARM effective permissions at the selected service include `Microsoft.ApiManagement/service/*`
+  and `*`, with no excluding `notActions`. Policy assignment discovery including inherited
+  assignments at the resource group returned no assignments.
+- Static role verification, Bicep compile/validate/what-if, quotas and container builds:
+  **not applicable** to this in-place XML update; no infrastructure templates, role assignments,
+  identities, SKUs or application deployments change.
+- The initial seven-target preview failed safely on the missing API policy, before writes.
+  The user approved excluding that API. An XML comparison test failure was fixed by
+  separating preservation of original whitespace from structural read-back comparison.
+  Subsequent tests and the scoped preview pass; no unresolved preflight failures remain.
+
+#### Incremental deployment result (2026-10-26)
+
+- `update-a2a-cors --apply` updated all six selected API policies with exact `If-Match`
+  ETags and immediate whole-policy structural read-back verification.
+- Both `A2A-Extensions` and `X-A2A-Extensions` are allowed and exposed. Existing origins,
+  authentication, routing and unrelated policy content were preserved; operation policies
+  were not written.
+- A second preview reported **0 of 6 policies would change**.
+- Live gateway OPTIONS checks passed: **14 allowed-origin preflights** across seven
+  runtime routes (both hub routes plus five local routes), covering both configured origins,
+  POST, Authorization, Content-Type and both extension headers.
+- **7 disallowed-origin checks** confirmed no CORS allowance for an unapproved origin.
+- Gateway: https://apim-fca2a-dev-mignfln6vyhra.azure-api.net
+- The deployed adapter API with no CORS policy, Echo API, newer hub gateway, application
+  code, identities, credentials and all other resources remain unchanged.
 
 Create a new, self-contained development deployment for the API Hub pattern. The
 deployment is separate from the existing `rg-fca2a-dev-fysujtwxarfsq` stack and

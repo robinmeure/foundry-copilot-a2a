@@ -1687,13 +1687,16 @@ Copilot Studio can also send `DynamicPlanStepFinished` event activities before a
 error message. When such an event contains a structured plan-step error, the adapter retains only
 its bounded error code and message. A matching generic final reply is enriched with that message,
 and the sanitized trace records the failed step instead of treating the HTTP 200 SSE envelope as
-a successful turn. Plan arguments and arbitrary event payloads are not copied into the response
-or trace.
+a successful turn. Arbitrary raw event envelopes are not copied into the response or trace.
 
-Nonempty bounded `thought` values on `DynamicPlan*` events are forwarded as informative
-`Thought: ...` updates. Both browser applications retain the latest bounded update history and
-keep it visible after success or failure, while excluding it from the final answer and follow-up
-conversation history. Traces record only the thought count, not the thought text.
+`DynamicPlanReceived`, `DynamicPlanStepTriggered`, `DynamicPlanStepBindUpdate` and
+`DynamicPlanStepFinished` are forwarded as working-status messages, with structured data when
+the optional `urn:foundry-copilot-a2a:dynamic-plan:v1` extension is activated. Arguments and
+observations are bounded and redacted; thoughts are not forwarded. Both frontends show a
+collapsible timeline with expandable details, retained after the answer but excluded from
+copied answers, browser persistence and follow-up prompts. Redaction is best effort, not a
+general DLP guarantee. See the [wire contract and limits](src/FoundryCopilotA2A.BrowserShared/README.md#structured-plan-activity-v1).
+Send `show plan example` to the mock backend to test it without Azure resources.
 
 For a matching connector authentication failure, the adapter maps the failed plan
 `taskDialogId` to its advertised tool display name and derives the current orchestrator's
@@ -1705,19 +1708,18 @@ repair responses are excluded from follow-up history.
 Progress is marked with `metadata.isInformative` on its part so a caller can show it while the
 turn runs without it becoming part of the answer. The non-streaming `SendMessage` response never
 contains it. Before the first answer text, a Copilot Studio turn also reports its own activity as
-progress: `Working...` on the first typing indicator, `Planning: …` when the dynamic plan arrives,
-and `Running …`/`Finished …` as plan steps start and complete. Step names come from the plan's tool
-display names. Repeated messages are suppressed, and nothing is reported once the answer starts.
+progress: `Working...` on the first typing indicator. Plan status updates are separate from
+informative artifact text and continue after answer text starts; final plans never finish the
+A2A task. Structured event delivery is independent of text-summary deduplication.
 
-`SendStreamingMessage` is served in A2A task mode, configured through `AgentRunMode` where the A2A
-server is registered. This matters: in the default message mode the hosting layer aggregates the
-whole run into a single event, which removes the streaming entirely. Task mode emits each chunk as
-an `artifactUpdate` with `append` and `lastChunk`, so a client appends chunks as they arrive and
-treats `append: false` as a restart of that artifact. Task status updates carry generic lifecycle
-text and are not part of the answer. Plain `SendMessage` still returns a single message, so callers
-that do not stream are unaffected. The adapter's outbound Foundry and discovered-APIM invokers
-currently use `SendMessage`, so those replies arrive as one answer rather than token deltas.
-The browsers do not simulate streaming for a final-only response.
+`SendStreamingMessage` uses a custom keyed `IAgentHandler`, preserving `AIHostAgent` session
+isolation and the A2A server's task-store isolation. It emits answer `artifactUpdate` chunks
+with `append`/`lastChunk`, and immediate plan `statusUpdate` messages. Plain `SendMessage`
+still returns one answer message. Text-only clients remain supported; activated clients use
+`A2A-Extensions` (1.0) or `X-A2A-Extensions` (0.3), acknowledged in the matching response header.
+The shared APIM CORS policy must be updated on existing gateways before using the new frontend.
+Adapter-managed APIM streams preserve plan data; native Foundry/model-mediated chains may not.
+The browsers do not simulate streaming for final-only responses.
 
 Both browser apps handle task status separately from answer text. Failed, canceled, rejected,
 input-required, and auth-required states remain errors even after partial text. A completed

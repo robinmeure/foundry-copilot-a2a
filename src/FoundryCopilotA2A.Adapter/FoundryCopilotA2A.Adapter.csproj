@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <PackageReference Include="Azure.Identity" Version="1.17.0" />
+    <PackageReference Include="A2A" Version="1.0.0-preview2" Aliases="global,A2AV1" />
     <PackageReference Include="A2A.V0_3Compat" Version="1.0.0-preview2" />
     <PackageReference Include="Microsoft.Agents.AI" Version="1.19.0" />
     <PackageReference Include="Microsoft.Agents.AI.Hosting" Version="1.19.0-preview.260822.1" />

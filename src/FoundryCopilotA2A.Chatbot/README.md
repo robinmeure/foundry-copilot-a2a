@@ -174,9 +174,16 @@ remote content automatically. Links open in a new tab without replacing the conv
 User messages and progress remain plain text; Copy response and conversation history retain
 the original Markdown source.
 
-Bounded Copilot Studio dynamic-plan `thought` values are displayed as persistent
-`Thought: ...` entries in the status line and the collapsed updates trail, including when the turn fails. They remain
-informative progress and are excluded from copied answers and follow-up conversation history.
+Copilot Studio `DynamicPlan*` events appear as a child timeline under the first progress update,
+inside the existing update disclosure, rather than as a separate answer section. The summary
+shows the activity count; expand an activity row to inspect bounded/redacted arguments and
+observations. When no text progress was received, an "Agent activity" parent keeps the events
+accessible. The disclosure is available during and after the answer,
+including failed turns and post-answer final plans. Thought text is not forwarded. Plan details
+are memory-only: they are excluded from copied answers, saved browser history and follow-up
+prompts. See the [shared plan contract](../FoundryCopilotA2A.BrowserShared/README.md#structured-plan-activity-v1).
+Send `show plan example` in mock mode to try it. Existing APIM gateways need the updated shared
+CORS policy allowing the extension negotiation headers.
 
 When a connector returns an authentication failure, the chatbot displays an allowlisted
 **Open connection settings** action for the affected tool. The repair response remains visible

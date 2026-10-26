@@ -87,6 +87,16 @@ in the explicitly selected tenant. No client secret or new consent grant is crea
 
 ### Provider and gateway configuration
 
+For an existing deployment, use `update-a2a-cors --subscription-id <id> --resource-group <rg>
+--service-name <apim> --api-ids <comma-separated-api-ids>` to preview the extension-header update.
+Add `--apply` only after checking the preview. This command adds `A2A-Extensions` and
+`X-A2A-Extensions` to allowed/exposed CORS headers in the live API policies. It preserves
+origins, JWT/OBO rules, backend routing and operation policies, uses ETag concurrency checks,
+and verifies each saved policy. It does not create APIs, create missing API policies, or
+alter inherited CORS. Every selected API must already have its own CORS policy; all targets
+are checked before any writes. XML-escaped ARM policy format preserves policy expressions.
+If a batch fails, earlier verified changes remain applied; rerun preview before retrying.
+
 | Command | What it does | Why it is here |
 | --- | --- | --- |
 | `enable-foundry-a2a` | Adds or replaces the agent card on an existing Foundry prompt agent, enables its incoming A2A protocol, validates the published card, and can run a smoke prompt. | Makes a Foundry prompt agent callable through the same A2A boundary used by the adapter. |

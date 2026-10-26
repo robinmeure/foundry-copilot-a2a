@@ -195,13 +195,15 @@ kbd { font: inherit; font-weight: 600; }
 .activity-trail > summary .chat-icon { width: 14px; height: 14px; flex-shrink: 0; transform: rotate(-90deg); transition: transform .15s ease-out; }
 .activity-trail[open] > summary .chat-icon { transform: none; }
 .activity-trail-count { flex-shrink: 0; font-weight: 600; }
+.activity-trail-plan-count { flex-shrink: 0; }
+.activity-trail-plan-count::before { content: "·"; margin-right: 6px; }
 .activity-trail-last { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .activity-trail-last::before { content: "·"; margin-right: 6px; }
-.activity-trail ol { margin: 6px 0 0 8px; padding: 0 0 0 16px; border-left: 1px solid #e3e3e8; list-style: none; line-height: 1.55; }
-.activity-trail li { position: relative; overflow-wrap: anywhere; }
-.activity-trail li::before { content: ""; position: absolute; left: -19.5px; top: .6em; width: 6px; height: 6px; border-radius: 50%; background: #c9c9d0; }
-.activity-trail li:last-child::before { background: #aa7a00; }
-.activity-trail li + li { margin-top: 5px; }
+.activity-trail > ol { margin: 6px 0 0 8px; padding: 0 0 0 16px; border-left: 1px solid #e3e3e8; list-style: none; line-height: 1.55; }
+.activity-trail > ol > li { position: relative; overflow-wrap: anywhere; }
+.activity-trail > ol > li::before { content: ""; position: absolute; left: -19.5px; top: .6em; width: 6px; height: 6px; border-radius: 50%; background: #c9c9d0; }
+.activity-trail > ol > li:last-child::before { background: #aa7a00; }
+.activity-trail > ol > li + li { margin-top: 5px; }
 .response-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
 .copy-button, .sources-button { display: flex; align-items: center; gap: 7px; padding: 8px 5px; border: 0; border-radius: 3px; color: var(--muted); background: transparent; font-size: 11px; }
 .copy-button { margin-left: -5px; }

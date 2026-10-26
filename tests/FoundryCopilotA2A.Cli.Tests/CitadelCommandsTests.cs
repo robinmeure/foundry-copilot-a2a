@@ -28,6 +28,11 @@ public sealed class CitadelCommandsTests
             cors.Descendants("origin").Select(origin => origin.Value));
         Assert.Contains(cors.Descendants("header"), header => header.Value == "X-Copilot-Agent");
         Assert.Contains(cors.Descendants("header"), header => header.Value == "X-A2A-Chain-Target");
+        foreach (var name in new[] { "A2A-Extensions", "X-A2A-Extensions" })
+        {
+            Assert.Contains(cors.Element("allowed-headers")!.Elements(), header => header.Value == name);
+            Assert.Contains(cors.Element("expose-headers")!.Elements(), header => header.Value == name);
+        }
         Assert.Contains(cors.Element("expose-headers")!.Elements(), header => header.Value == "X-Trace-Id");
         Assert.Equal("false", policy.Descendants("forward-request").Single().Attribute("buffer-response")!.Value);
         Assert.Empty(policy.Descendants("retry"));

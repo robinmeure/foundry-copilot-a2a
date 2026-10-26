@@ -138,6 +138,7 @@ public sealed class ApiManagementA2AInvoker(
                 new AuthenticationHeaderValue("Bearer", metadata.BearerToken);
         }
         request.Headers.Add("A2A-Version", "1.0");
+        request.Headers.Add(AgentPlanUpdates.Header, AgentPlanUpdates.ExtensionUri);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json", 0.5));
         request.Content = new StringContent(body, Encoding.UTF8, "application/json");
@@ -210,7 +211,8 @@ public sealed class ApiManagementA2AInvoker(
                         delta.IsInformative)
                     {
                         Citations = delta.Citations,
-                        Cards = delta.Cards
+                        Cards = delta.Cards,
+                        PlanUpdate = delta.PlanUpdate
                     };
                 }
             }
@@ -290,7 +292,8 @@ internal static class ServerSentEvents
 }
 
 internal sealed record A2AStreamDelta(
-    string Text, bool IsInformative, CitationBundle? Citations, AdaptiveCardBundle? Cards = null);
+    string Text, bool IsInformative, CitationBundle? Citations, AdaptiveCardBundle? Cards = null,
+    AgentPlanUpdate? PlanUpdate = null);
 
 /// <summary>
 /// Turns A2A streaming events into text deltas. Answer chunks normally arrive as appended
@@ -405,6 +408,15 @@ internal sealed class A2AStreamAccumulator
                 string.IsNullOrWhiteSpace(detail)
                     ? $"API Management A2A task ended with state {state}."
                     : $"API Management A2A task ended with state {state}: {detail}");
+        }
+
+        var plans = parts.Where(part => part.TryGetProperty("data", out _))
+            .Select(part => AgentPlanUpdates.ReadContainer(part.GetProperty("data")))
+            .OfType<AgentPlanUpdate>().ToArray();
+        if (plans.Length > 0)
+        {
+            return plans.Select(plan => new A2AStreamDelta(
+                AgentPlanUpdates.Summary(plan), true, null, PlanUpdate: plan));
         }
 
         // Status text is lifecycle chatter, except when a completed task carries its only answer

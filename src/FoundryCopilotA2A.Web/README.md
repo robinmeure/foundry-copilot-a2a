@@ -7,9 +7,14 @@ Copilot Studio produces it, and progress such as "Generating plan..." is shown w
 runs without becoming part of the answer. The adapter remains responsible for token validation
 and the Copilot Studio OBO exchange.
 
-Bounded Copilot Studio dynamic-plan `thought` values arrive as informative `Thought: ...`
-updates. The console keeps a bounded **Agent updates** history visible for successful and failed
-turns; those updates never enter the answer or follow-up history.
+Copilot Studio `DynamicPlan*` events render as a child timeline under the first agent update,
+not a separate answer section. If there are no text updates, an "Agent activity" parent is
+shown. The timeline remains available after the answer, including failed turns.
+Expand each activity row to inspect its details. Arguments and observations are
+bounded and redacted, with a filtering notice; thought text is not forwarded. Plan details stay
+in memory and never enter copied answers or follow-up history.
+See the [shared plan contract](../FoundryCopilotA2A.BrowserShared/README.md#structured-plan-activity-v1).
+With the mock backend, send `show plan example` to try it.
 
 Connector authentication failures include an allowlisted link to the current agent's Copilot
 Studio **Connection Settings** page. The console renders it as a dedicated repair action and does

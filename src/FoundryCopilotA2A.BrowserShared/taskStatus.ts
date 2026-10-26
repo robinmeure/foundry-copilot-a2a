@@ -1,3 +1,5 @@
+import { readPlanUpdate, type PlanUpdate } from './planUpdates.ts'
+
 export type A2ATaskState =
   | 'submitted' | 'working' | 'completed' | 'failed' | 'canceled'
   | 'rejected' | 'input-required' | 'auth-required' | 'unknown'
@@ -5,6 +7,7 @@ export type A2ATaskState =
 export interface A2ATaskStatus {
   state: A2ATaskState
   message?: string
+  planUpdates?: PlanUpdate[]
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -39,6 +42,7 @@ export function readTaskStatus(result: unknown): A2ATaskStatus | undefined {
       throw new Error('The adapter returned an unsupported A2A task state.')
   }
   let message: string | undefined
+  const planUpdates: PlanUpdate[] = []
   if (status.message != null) {
     if (!isRecord(status.message) || !Array.isArray(status.message.parts) ||
         status.message.parts.some((part) => !isRecord(part) ||
@@ -48,8 +52,12 @@ export function readTaskStatus(result: unknown): A2ATaskStatus | undefined {
     message = status.message.parts
       .map((part: Record<string, unknown>) => typeof part.text === 'string' ? part.text : '')
       .join('').trim() || undefined
+    for (const part of status.message.parts) {
+      const update = readPlanUpdate(part.data)
+      if (update) planUpdates.push(update)
+    }
   }
-  return { state, ...(message ? { message } : {}) }
+  return { state, ...(message ? { message } : {}), ...(planUpdates.length ? { planUpdates } : {}) }
 }
 
 export function taskStatusLabel(state: A2ATaskState): string {
