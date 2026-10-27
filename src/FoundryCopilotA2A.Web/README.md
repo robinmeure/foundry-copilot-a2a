@@ -75,6 +75,13 @@ dotnet run --project src/FoundryCopilotA2A.Cli -- register-spa --api-client-id <
 
 MSAL caches the user's tokens in browser session storage; the backend app registration's client
 secret is used only by the adapter and must never be placed in a Vite environment variable.
+Before protected requests, the console asks MSAL for a token for the current account and
+adapter scope. Tokens with two minutes or less remaining, missing expiry, or an empty bearer
+trigger one forced silent renewal. Refresh tokens are managed internally by MSAL, not read or
+stored separately by application code. Trace polling reacquires a token on every request after
+the streamed answer, rather than reusing the original message's token. Renewal failures are
+shown without falling back to stale tokens or automatically resending a message. Interactive
+sign-in may still be required when the Entra session or consent policy requires it.
 
 Set `VITE_GATEWAY_BASE_URL=https://<apim-host>/<api-path>` to enable Citadel blocks
 and make APIM the initial route. Keep `VITE_ADAPTER_BASE_URL` pointed at the actual

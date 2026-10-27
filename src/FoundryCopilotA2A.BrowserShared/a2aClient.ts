@@ -187,6 +187,8 @@ export interface JsonRpcResponse {
 export interface SendMessageOptions {
   adapterBaseUrl: string
   accessToken: string
+  /** Reacquire before trace requests, which may follow a long-running streamed answer. */
+  getAccessToken?: () => Promise<string>
   agentId: string
   contextId: string
   text: string
@@ -215,6 +217,7 @@ export interface SendMessageOptions {
 export async function sendMessage({
   adapterBaseUrl,
   accessToken,
+  getAccessToken,
   agentId,
   contextId,
   text,
@@ -311,7 +314,7 @@ export async function sendMessage({
   const durationMs = Math.round(performance.now() - startedAt)
   onResponse?.(exchangeResponse, durationMs)
   const { trace, traceError } = includeTrace
-    ? await resolveResponseTrace(response, adapterBaseUrl, accessToken, onTrace)
+    ? await resolveResponseTrace(response, adapterBaseUrl, accessToken, onTrace, getAccessToken)
     : { trace: undefined, traceError: undefined }
   if (!response.ok) {
     throw new Error(
@@ -562,13 +565,14 @@ async function resolveResponseTrace(
   adapterBaseUrl: string,
   accessToken: string,
   onTrace?: (trace?: AdapterTrace, error?: string) => void,
+  getAccessToken?: () => Promise<string>,
 ) {
   const traceId = response.headers.get('X-Trace-Id')
   let trace: AdapterTrace | undefined
   let traceError: string | undefined
   if (traceId) {
     try {
-      trace = await loadTrace(adapterBaseUrl, accessToken, traceId)
+      trace = await loadTrace(adapterBaseUrl, accessToken, traceId, getAccessToken)
       if (trace.truncated) {
         traceError = 'The adapter trace reached its retention limit; some diagnostics are unavailable.'
       }
@@ -587,11 +591,13 @@ async function loadTrace(
   adapterBaseUrl: string,
   accessToken: string,
   traceId: string,
+  getAccessToken?: () => Promise<string>,
 ): Promise<AdapterTrace> {
   let latest: AdapterTrace | undefined
   for (let attempt = 0; attempt < 20; attempt += 1) {
+    const bearer = getAccessToken ? await getAccessToken() : accessToken
     const response = await fetch(`${adapterBaseUrl}/api/traces/${traceId}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
+      headers: bearer ? { Authorization: `Bearer ${bearer}` } : {},
     })
     if (!response.ok) {
       throw new Error(`Unable to load adapter trace (HTTP ${response.status}).`)

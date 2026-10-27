@@ -1,5 +1,6 @@
 import { InteractionRequiredAuthError } from '@azure/msal-browser'
 import { useIsAuthenticated, useMsal } from '@azure/msal-react'
+import { acquireFreshAccessToken } from '../../FoundryCopilotA2A.BrowserShared/authentication.ts'
 import { appendActivityUpdate } from '../../FoundryCopilotA2A.BrowserShared/activityUpdates.ts'
 import { appendPlanUpdate, type PlanUpdate } from '../../FoundryCopilotA2A.BrowserShared/planUpdates.ts'
 import PlanTimeline from './PlanTimeline.ts'
@@ -381,12 +382,12 @@ function App({ config }: AppProps) {
     let receivedResponse = false
     let failedTraceEntryId: string | undefined
     try {
-      let token
+      const getAccessToken = () => acquireFreshAccessToken(
+        request => instance.acquireTokenSilent(request), { ...loginRequest, account },
+      )
+      let accessToken
       try {
-        token = await instance.acquireTokenSilent({
-          ...loginRequest,
-          account,
-        })
+        accessToken = await getAccessToken()
       } catch (reason) {
         if (!(reason instanceof InteractionRequiredAuthError)) {
           throw reason
@@ -401,7 +402,8 @@ function App({ config }: AppProps) {
 
       const exchange = await sendMessage({
         adapterBaseUrl: plan.apiBaseUrl,
-        accessToken: token.accessToken,
+        accessToken,
+        getAccessToken,
         agentId: plan.entryAgentId,
         contextId: requestContextId,
         text,
@@ -650,7 +652,9 @@ function App({ config }: AppProps) {
           getAccessToken={async () => {
             if (!account) return undefined
             try {
-              return (await instance.acquireTokenSilent({ ...loginRequest, account })).accessToken
+              return await acquireFreshAccessToken(
+                request => instance.acquireTokenSilent(request), { ...loginRequest, account },
+              )
             } catch (reason) {
               if (!(reason instanceof InteractionRequiredAuthError)) throw reason
               throw new Error('Adapter configuration needs renewed sign-in consent. Sign in again, then refresh status.')

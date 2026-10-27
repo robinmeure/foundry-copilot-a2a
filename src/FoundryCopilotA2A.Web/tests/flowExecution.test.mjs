@@ -24,6 +24,64 @@ const agents = [
 const traceId = '1234567890abcdef1234567890abcdef'
 const token = 'unit-test-user-token'
 
+test('reacquires a token for every trace poll after streaming, without resending the message', async (t) => {
+  const calls = []
+  let acquisitions = 0
+  let polls = 0
+  const previousWindow = globalThis.window
+  globalThis.window = { setTimeout: callback => { callback(); return 1 } }
+  t.after(() => {
+    if (previousWindow === undefined) delete globalThis.window
+    else globalThis.window = previousWindow
+  })
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push({ url, init })
+    if (init.method === 'POST') {
+      assert.equal(acquisitions, 0)
+      assert.equal(new Headers(init.headers).get('Authorization'), `Bearer ${token}`)
+      return new Response(
+        `data: ${JSON.stringify({ result: { message: { parts: [{ text: 'Stream completed' }] } } })}\n\n`,
+        { headers: { 'Content-Type': 'text/event-stream', 'X-Trace-Id': traceId } },
+      )
+    }
+    polls++
+    assert.equal(new Headers(init.headers).get('Authorization'), `Bearer renewed-${polls}`)
+    return Response.json({ traceId, complete: polls === 2, spans: [] })
+  })
+  const exchange = await sendMessage({
+    adapterBaseUrl: config.adapterBaseUrl, accessToken: token,
+    getAccessToken: async () => `renewed-${++acquisitions}`,
+    agentId: 'orchestrator', contextId: 'conversation', text: 'Hello',
+  })
+  assert.equal(exchange.answer, 'Stream completed')
+  assert.equal(exchange.trace?.complete, true)
+  assert.equal(exchange.traceError, undefined)
+  assert.equal(acquisitions, 2)
+  assert.equal(calls.filter(call => call.init.method === 'POST').length, 1)
+  assert.equal(JSON.stringify(exchange).includes('renewed-'), false)
+})
+
+test('trace renewal failure preserves the answer and never falls back to the original bearer', async (t) => {
+  const calls = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push({ url, init })
+    return new Response(
+      `data: ${JSON.stringify({ result: { message: { parts: [{ text: 'Completed answer' }] } } })}\n\n`,
+      { headers: { 'Content-Type': 'text/event-stream', 'X-Trace-Id': traceId } },
+    )
+  })
+  const exchange = await sendMessage({
+    adapterBaseUrl: config.adapterBaseUrl, accessToken: token,
+    getAccessToken: async () => { throw new Error('Renew sign-in for diagnostics.') },
+    agentId: 'orchestrator', contextId: 'conversation', text: 'Hello',
+  })
+  assert.equal(exchange.answer, 'Completed answer')
+  assert.equal(exchange.trace, undefined)
+  assert.equal(exchange.traceError, 'Renew sign-in for diagnostics.')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].init.method, 'POST')
+})
+
 for (const preset of ['direct', 'apim', 'native', 'native-direct']) {
   test(`${preset} flow uses one endpoint for catalog, streaming invocation, and protected trace`, async (t) => {
     const validation = validateFlow(createFlowPreset(preset, config, agents), config, agents)
