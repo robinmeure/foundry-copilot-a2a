@@ -1,7 +1,7 @@
 import { InteractionRequiredAuthError, InteractionStatus } from '@azure/msal-browser'
 import { useMsal } from '@azure/msal-react'
 import { useRef, useState } from 'react'
-import { createDelegatedLoginRequest } from '../../FoundryCopilotA2A.BrowserShared/authentication.ts'
+import { acquireFreshAccessToken, createDelegatedLoginRequest } from '../../FoundryCopilotA2A.BrowserShared/authentication.ts'
 import type { ChatbotConfig } from './config.ts'
 import Chatbot from './Chatbot.tsx'
 
@@ -14,6 +14,7 @@ export interface ChatAuthentication {
   signIn?: () => Promise<void>
   signOut?: () => Promise<void>
   getAccessToken: () => Promise<string>
+  getKnowledgeAccessToken?: (claims?: string) => Promise<string>
 }
 
 export function AuthenticatedChatbot({ config }: {
@@ -58,11 +59,24 @@ export function AuthenticatedChatbot({ config }: {
       if (!account) throw new Error('Sign in before sending a message.')
       const request = { ...loginRequest, account }
       try {
-        return (await instance.acquireTokenSilent(request)).accessToken
+        return await acquireFreshAccessToken(request => instance.acquireTokenSilent(request), request)
       } catch (reason) {
         if (!(reason instanceof InteractionRequiredAuthError)) throw reason
         await instance.acquireTokenRedirect(request)
         throw new Error('Sign-in navigation did not complete. Sign in again before sending.')
+      }
+    },
+    getKnowledgeAccessToken: async (claims) => {
+      if (!account) throw new Error('Sign in before using the document backend.')
+      if (!config.knowledgeApiClientId) throw new Error('Configure VITE_KNOWLEDGE_API_CLIENT_ID for the backend API audience.')
+      const request = { account, scopes: [`api://${config.knowledgeApiClientId}/access_as_user`],
+        ...(claims ? { claims, forceRefresh: true } : {}) }
+      try {
+        return await acquireFreshAccessToken(request => instance.acquireTokenSilent(request), request)
+      } catch (reason) {
+        if (!(reason instanceof InteractionRequiredAuthError)) throw reason
+        await instance.acquireTokenRedirect(request)
+        throw new Error('Complete sign-in before using the document backend.')
       }
     },
   }

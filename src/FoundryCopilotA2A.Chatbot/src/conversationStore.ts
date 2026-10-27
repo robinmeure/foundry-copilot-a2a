@@ -2,6 +2,8 @@ import { mergeConversationHandles } from '../../FoundryCopilotA2A.BrowserShared/
 import { parseCitationBundle } from '../../FoundryCopilotA2A.BrowserShared/citations.ts'
 import { validateFile } from '../../FoundryCopilotA2A.BrowserShared/inputFiles.ts'
 import type { ChatTurn } from './chatSession.ts'
+import { parseSavedChatActions } from './graphActions.ts'
+import { validateKnowledgeFile } from './knowledgeClient.ts'
 
 export interface SavedConversation {
   contextId: string
@@ -34,9 +36,12 @@ function readTurn(value: unknown): ChatTurn {
     if (!Array.isArray(turn.files) || turn.files.length > 1) throw new Error('Invalid saved attachment.')
     return turn.files.map((value: unknown) => {
       const file = record(value)
-      if (typeof file.size !== 'number') throw new Error('Invalid saved file size.')
-      const metadata = { name: text(file.name), mediaType: text(file.mediaType), size: file.size }
-      validateFile(metadata)
+      if (typeof file.size !== 'number' || !Number.isSafeInteger(file.size)) throw new Error('Invalid saved file size.')
+      if (file.kind !== undefined && file.kind !== 'knowledge') throw new Error('Invalid saved file kind.')
+      const metadata = { name: text(file.name), mediaType: text(file.mediaType), size: file.size,
+        ...(file.kind === 'knowledge' ? { kind: 'knowledge' as const } : {}) }
+      if (metadata.kind === 'knowledge') validateKnowledgeFile(metadata)
+      else validateFile(metadata)
       return metadata
     })
   })()
@@ -49,10 +54,13 @@ function readTurn(value: unknown): ChatTurn {
     if (!Array.isArray(turn.activityUpdates) || turn.activityUpdates.length > 100) throw new Error('Invalid saved activity updates.')
     return turn.activityUpdates.map(text)
   })()
+  // Malformed saved action cards are dropped rather than rejecting the whole history.
+  const actions = turn.status === 'succeeded' ? parseSavedChatActions(turn.actions) : undefined
   return {
     id: text(turn.id), prompt: text(turn.prompt), answer: text(turn.answer),
     startedAt: turn.startedAt, status: turn.status === 'succeeded' ? 'succeeded' : 'failed',
     phase: 'finalizing', files, responder, activityUpdates,
+    ...(actions ? { actions } : {}),
     citations: turn.citations === undefined ? undefined : parseCitationBundle(turn.citations),
     error: turn.status === 'sending'
       ? 'This reply was interrupted. The agent may still be working.'
@@ -99,7 +107,9 @@ export function writeConversations(
         id: turn.id, prompt: turn.prompt, answer: turn.answer, startedAt: turn.startedAt,
         status: turn.status, error: turn.error, citations: turn.citations, responder: turn.responder,
         activityUpdates: turn.activityUpdates,
-        files: turn.files?.map(({ name, mediaType, size }) => ({ name, mediaType, size })),
+        files: turn.files?.map(({ name, mediaType, size, kind }) => ({ name, mediaType, size, kind })),
+        actions: turn.actions?.map(({ id, kind, title, summary, details, expiresAt, state, message, webLink, error, errorCode }) =>
+          ({ id, kind, title, summary, details, expiresAt, state, message, webLink, error, errorCode })),
       })),
     })),
   })

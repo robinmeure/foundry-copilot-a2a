@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { ChatSession } from '../src/chatSession.ts'
+import { agUiAnswer, agUiFrames, agUiResponse, runError, runFinished, runStarted, stepFinished, stepStarted, textContent, textEnd, textStart } from './agUi.mjs'
 import { citationExtensionKey } from '../../FoundryCopilotA2A.BrowserShared/citations.ts'
+import { acquireFreshAccessToken } from '../../FoundryCopilotA2A.BrowserShared/authentication.ts'
 
 const config = {
   authMode: 'entra', agentId: 'orchestrator', agentName: 'Orchestrator',
@@ -14,6 +16,123 @@ const response = (text = 'Answer') => new Response(
   event({ message: { parts: [{ text }] } }),
   { headers: { 'Content-Type': 'text/event-stream', 'X-Trace-Id': 'no-chat-diagnostics' } },
 )
+
+for (const mode of ['adapter', 'knowledge']) {
+  test(`${mode} sends renew an expired MSAL token after an idle tab, before any API request`, async (t) => {
+    let clock = Date.parse('2026-01-01T12:00:00Z')
+    t.mock.method(Date, 'now', () => clock)
+    let cached = { accessToken: 'original-bearer', expiresOn: new Date(clock + 600_000) }
+    const request = {
+      account: { homeAccountId: 'current-user' },
+      scopes: [`api://${mode}/access_as_user`],
+    }
+    const acquisitions = []
+    const getToken = () => acquireFreshAccessToken(async value => {
+      acquisitions.push(value)
+      if (value.forceRefresh) {
+        cached = { accessToken: 'renewed-bearer', expiresOn: new Date(clock + 3_600_000) }
+      }
+      return cached
+    }, request)
+    const bearers = []
+    t.mock.method(globalThis, 'fetch', async (_url, init) => {
+      bearers.push(new Headers(init.headers).get('Authorization'))
+      return mode === 'adapter' ? response() : agUiAnswer({
+        answer: 'Knowledge answer', warnings: [],
+        citations: { schemaVersion: '1', sources: [], citations: [] },
+      })
+    })
+    const chat = new ChatSession(config)
+    const knowledge = mode === 'knowledge'
+      ? { baseUrl: 'https://knowledge.example.test', sources: [], token: getToken } : undefined
+    const adapterToken = knowledge
+      ? async () => { throw new Error('Knowledge requests must not acquire an adapter token') } : getToken
+    await chat.send('Before idle', adapterToken, [], knowledge)
+    clock += 3_600_000
+    await chat.send('After idle', adapterToken, [], knowledge)
+    assert.deepEqual(bearers, ['Bearer original-bearer', 'Bearer renewed-bearer'])
+    assert.deepEqual(acquisitions, [request, request, { ...request, forceRefresh: true }])
+    assert.deepEqual(chat.getSnapshot().turns.map(turn => turn.status), ['succeeded', 'succeeded'])
+  })
+}
+
+test('knowledge mode ingests locally then calls backend chat, without an agent token or A2A request', async (t) => {
+  const calls = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push(url)
+    assert.equal(new Headers(init.headers).get('Authorization'), 'Bearer knowledge-only')
+    return url.endsWith('/documents') ? Response.json({ id: 'document', chunks: 1 }) :
+      agUiAnswer({ answer: 'Knowledge answer', warnings: ['Mail unavailable'], citations: {
+        schemaVersion: '1', sources: [], citations: [],
+      } })
+  })
+  const chat = new ChatSession(config)
+  await chat.send('question', async () => { throw new Error('Agent token must not be requested') }, [], {
+    baseUrl: 'http://localhost:5100', file: new File(['fixture'], 'fixture.txt'),
+    sources: [], token: async () => 'knowledge-only',
+  })
+  assert.equal(calls.length, 2)
+  assert.ok(calls[0].endsWith('/documents'))
+  assert.ok(calls[1].endsWith('/api/chat/stream'))
+  assert.equal(chat.getSnapshot().turns[0].status, 'succeeded')
+  assert.equal(chat.getSnapshot().turns[0].responder.id, 'knowledge')
+  assert.equal(chat.getSnapshot().turns[0].responder.name, 'Local orchestrator · Knowledge API')
+  assert.deepEqual(chat.getSnapshot().turns[0].activityUpdates, ['Mail unavailable'])
+})
+
+test('indexed document is announced before answering, even if answering fails', async (t) => {
+  let indexed = 0
+  t.mock.method(globalThis, 'fetch', async url => {
+    if (url.endsWith('/documents')) {
+      assert.equal(indexed, 0)
+      return Response.json({ id: 'document', chunks: 1 })
+    }
+    assert.equal(indexed, 1)
+    return Response.json({ detail: 'Answer service unavailable.' }, { status: 503 })
+  })
+  const chat = new ChatSession(config)
+  await chat.send('question', token, [], {
+    baseUrl: 'http://localhost:5100', file: new File(['fixture'], 'fixture.txt'),
+    sources: [], token, onDocumentIndexed: () => { indexed++ },
+  })
+  assert.equal(indexed, 1)
+  assert.equal(chat.getSnapshot().turns[0].status, 'failed')
+})
+
+test('failed or cancelled uploads are never announced as indexed', async (t) => {
+  let indexed = 0
+  let calls = 0
+  t.mock.method(globalThis, 'fetch', async () => {
+    calls++
+    return Response.json({ detail: 'Indexing failed.' }, { status: 422 })
+  })
+  const options = { baseUrl: 'http://localhost:5100', file: new File(['fixture'], 'fixture.txt'),
+    sources: [], token, onDocumentIndexed: () => { indexed++ } }
+  const failed = new ChatSession(config)
+  await failed.send('question', token, [], options)
+  assert.equal(indexed, 0)
+  assert.equal(calls, 1)
+  assert.equal(failed.getSnapshot().turns[0].status, 'failed')
+
+  let finishUpload
+  let started
+  const uploading = new Promise(resolve => { started = resolve })
+  t.mock.method(globalThis, 'fetch', async () => {
+    calls++
+    started()
+    return new Promise(resolve => { finishUpload = resolve })
+  })
+  const cancelled = new ChatSession(config)
+  const sending = cancelled.send('question', token, [], options)
+  await uploading
+  cancelled.stop()
+  finishUpload(Response.json({ id: 'document', chunks: 1 }))
+  await sending
+  assert.equal(indexed, 0)
+  assert.equal(calls, 2, 'cancelling during ingestion must not start an answer request')
+  assert.equal(cancelled.getSnapshot().turns[0].status, 'failed')
+  assert.match(cancelled.getSnapshot().turns[0].error, /Response stopped/)
+})
 
 test('every turn uses only the configured orchestrator, user token and existing streaming handler', async (t) => {
   const requests = []
@@ -305,4 +424,50 @@ test('stop drops partial citations and ignores late updates while preserving ear
   assert.deepEqual(requests[2].params.message.metadata.history, [
     { role: 'user', text: 'Successful' }, { role: 'assistant', text: '**Answer** [7]' },
   ])
+})
+
+test('knowledge mode streams live tool statuses and answer text, then keeps the final answer', async (t) => {
+  const reading = { message: 'Reading your latest Inbox messages', state: 'started', tool: 'graph_list_recent_mail' }
+  const frames = [
+    agUiFrames([runStarted(),
+      stepStarted('Checking your profile and time zone', { message: 'Checking your profile and time zone', state: 'started' })]),
+    agUiFrames([stepStarted('graph_list_recent_mail', reading)]),
+    agUiFrames([stepFinished('graph_list_recent_mail', { ...reading, message: 'Read 6 Inbox messages', state: 'completed' })]),
+    agUiFrames([textStart, textContent('You have ')]),
+    agUiFrames([textContent('six messages.')]),
+    agUiFrames([textEnd, stepFinished('Checking your profile and time zone'),
+      runFinished({ answer: 'You have six new messages.', warnings: ['Teams unavailable'],
+        citations: { schemaVersion: '1', sources: [], citations: [] } })]),
+  ]
+  const encoder = new TextEncoder()
+  t.mock.method(globalThis, 'fetch', async () => new Response(new ReadableStream({
+    pull(controller) { const next = frames.shift(); if (next) controller.enqueue(encoder.encode(next)); else controller.close() },
+  }), { headers: { 'Content-Type': 'text/event-stream' } }))
+  const chat = new ChatSession(config)
+  const seen = []
+  chat.subscribe(() => {
+    const turn = chat.getSnapshot().turns[0]
+    if (turn) seen.push({ progress: turn.progress, answer: turn.answer, phase: turn.phase })
+  })
+  await chat.send('Any new mail?', async () => '', [], { baseUrl: 'http://localhost:5100', sources: ['mail'], token: async () => '' })
+
+  assert.ok(seen.some(state => state.progress === 'Reading your latest Inbox messages...' && state.phase === 'working'))
+  assert.ok(seen.some(state => state.progress === 'Read 6 Inbox messages'))
+  assert.ok(seen.some(state => state.answer === 'You have six messages.' && state.phase === 'receiving' && !state.progress))
+  const turn = chat.getSnapshot().turns[0]
+  assert.equal(turn.status, 'succeeded')
+  assert.equal(turn.answer, 'You have six new messages.')
+  assert.deepEqual(turn.activityUpdates, ['Read 6 Inbox messages', 'Teams unavailable'])
+})
+
+test('a failed knowledge stream drops unvalidated partial text', async (t) => {
+  t.mock.method(console, 'error', () => undefined)
+  t.mock.method(globalThis, 'fetch', async () => agUiResponse([runStarted(), textStart, textContent('Partial'),
+    runError({ status: 502, code: 'model_unavailable', message: 'The model is unavailable.' })]))
+  const chat = new ChatSession(config)
+  await chat.send('question', async () => '', [], { baseUrl: 'http://localhost:5100', sources: [], token: async () => '' })
+  const turn = chat.getSnapshot().turns[0]
+  assert.equal(turn.status, 'failed')
+  assert.equal(turn.answer, '')
+  assert.equal(turn.error, 'The model is unavailable.')
 })

@@ -5,6 +5,8 @@ import { parseConnectionRepairRequest } from '../../FoundryCopilotA2A.BrowserSha
 import type { ChatbotConfig } from './config.ts'
 import { readConversations, writeConversations, type ConversationPersistence, type SavedConversation } from './conversationStore.ts'
 import { validateFile, type InputFile, type InputFileMetadata } from '../../FoundryCopilotA2A.BrowserShared/inputFiles.ts'
+import { cancelAction, confirmAction, KnowledgeApiError, knowledgeChatStream, uploadDocument, type KnowledgeToken } from './knowledgeClient.ts'
+import { isActionExpired, type ChatAction } from './graphActions.ts'
 
 export interface ChatTurn {
   id: string
@@ -22,7 +24,9 @@ export interface ChatTurn {
   status: 'sending' | 'succeeded' | 'failed'
   phase: 'sending' | 'waiting' | 'accepted' | 'working' | 'receiving' | 'finalizing'
   startedAt: number
-  files?: InputFileMetadata[]
+  files?: (InputFileMetadata & { kind?: 'knowledge' })[]
+  /** Proposed Microsoft Graph changes; persisted with the turn so pending cards survive reloads. */
+  actions?: ChatAction[]
 }
 
 interface ChatSnapshot {
@@ -113,10 +117,12 @@ export class ChatSession {
     })
   }
 
-  async send(prompt: string, getAccessToken: () => Promise<string>, files: readonly InputFile[] = []) {
+  async send(prompt: string, getAccessToken: () => Promise<string>, files: readonly InputFile[] = [],
+    knowledge?: { baseUrl: string; file?: File; sources: readonly string[]; agents?: readonly string[]; token: KnowledgeToken;
+      onDocumentIndexed?: () => void }) {
     if (files.length > 1) throw new Error('Attach only one file per message.')
     for (const file of files) validateFile(file)
-    const text = prompt.trim() || (files.length ? 'Please summarize the attached file.' : '')
+    const text = prompt.trim() || (files.length || knowledge?.file ? 'Please summarize the attached file.' : '')
     if (!text) throw new Error('Enter a message before sending.')
     if (this.active) throw new Error('Wait for the current reply or stop it before sending again.')
     const controller = new AbortController()
@@ -135,7 +141,9 @@ export class ChatSession {
       contextId,
       isSending: true,
       turns: [...turns, { id, prompt: text, answer: '', status: 'sending', phase: 'sending', startedAt: Date.now(),
-        files: files.map(({ name, mediaType, size }) => ({ name, mediaType, size })) }],
+        ...(knowledge ? { responder: { id: 'knowledge', name: 'Local orchestrator · Knowledge API' } } : {}),
+        files: knowledge?.file ? [{ name: knowledge.file.name, mediaType: knowledge.file.type, size: knowledge.file.size, kind: 'knowledge' }]
+          : files.map(({ name, mediaType, size }) => ({ name, mediaType, size })) }],
     })
 
     const update = (
@@ -153,6 +161,37 @@ export class ChatSession {
     let phase: ChatTurn['phase'] = 'sending'
     let previousAnswer = ''
     try {
+      if (knowledge) {
+        if (knowledge.file) {
+          update({ progress: 'Extracting, chunking and indexing your document...', phase: 'working' })
+          await uploadDocument(knowledge.baseUrl, contextId, knowledge.file, knowledge.token, controller.signal)
+          if (controller.signal.aborted) return
+          knowledge.onDocumentIndexed?.()
+        }
+        update({ progress: 'Connecting to the local orchestrator...', phase: 'working' })
+        let streamed = ''
+        const response = await knowledgeChatStream(knowledge.baseUrl, contextId, text,
+          { sources: knowledge.sources, agents: knowledge.agents }, knowledge.token,
+          controller.signal, {
+            onStatus: ({ message, state }) => update(turn => ({
+              ...(streamed ? {} : { progress: state === 'started' ? `${message}...` : message, phase: 'working' as const }),
+              ...(state === 'started' ? {} : { activityUpdates: appendActivityUpdate(turn.activityUpdates, message) }),
+            })),
+            onDelta: (delta) => {
+              streamed += delta
+              update({ answer: streamed, phase: 'receiving', progress: undefined })
+            },
+            onRestart: () => {
+              streamed = ''
+              update({ answer: '', progress: 'Signing in again...', phase: 'working' })
+            },
+          })
+        update(turn => ({ answer: response.answer, citations: response.citations, status: 'succeeded', phase: 'finalizing',
+          responder: { id: 'knowledge', name: 'Local orchestrator · Knowledge API' }, progress: undefined,
+          activityUpdates: response.warnings.reduce(appendActivityUpdate, turn.activityUpdates ?? []),
+          ...(response.actions.length ? { actions: response.actions.map(action => ({ ...action, state: 'pending' as const })) } : {}) }))
+        return
+      }
       const accessToken = await getAccessToken()
       if (controller.signal.aborted) return
       if (this.config.authMode === 'entra' && !accessToken.trim()) {
@@ -205,6 +244,8 @@ export class ChatSession {
         progress: undefined,
         citations: undefined,
         cards: undefined,
+        // Streamed knowledge text is unvalidated until the final event, so a failed turn drops it.
+        ...(knowledge ? { answer: '' } : {}),
         error: reason instanceof Error ? reason.message : 'Unable to send the message.',
       })
       // A failed turn may mean the remembered conversation is no longer usable; the next
@@ -215,6 +256,44 @@ export class ChatSession {
         this.active = undefined
         this.publish({ ...this.snapshot, isSending: false })
       }
+    }
+  }
+
+  /**
+   * Confirms or cancels a proposed Graph change at most once. The result is applied wherever the
+   * conversation now lives, so switching chats mid-request cannot lose or misplace it.
+   */
+  async resolveAction(contextId: string, turnId: string, actionId: string, decision: 'confirm' | 'cancel',
+    knowledge: { baseUrl: string; token: KnowledgeToken }) {
+    const action = this.findTurns(contextId)?.find(turn => turn.id === turnId)?.actions?.find(entry => entry.id === actionId)
+    if (!action || action.state !== 'pending' || (decision === 'confirm' && isActionExpired(action))) return
+    this.updateAction(contextId, turnId, actionId, { state: decision === 'confirm' ? 'confirming' : 'cancelling',
+      error: undefined, errorCode: undefined })
+    try {
+      const result = await (decision === 'confirm' ? confirmAction : cancelAction)(
+        knowledge.baseUrl, actionId, contextId, knowledge.token)
+      this.updateAction(contextId, turnId, actionId, { state: result.status, message: result.message, webLink: result.webLink })
+    } catch (reason) {
+      this.updateAction(contextId, turnId, actionId, { state: 'failed',
+        error: reason instanceof Error && reason.message ? reason.message : 'The action could not be completed.',
+        errorCode: reason instanceof KnowledgeApiError ? reason.code : undefined })
+    }
+  }
+
+  private findTurns(contextId: string) {
+    return contextId === this.snapshot.contextId ? this.snapshot.turns
+      : this.snapshot.conversations.find(conversation => conversation.contextId === contextId)?.turns
+  }
+
+  private updateAction(contextId: string, turnId: string, actionId: string, change: Partial<ChatAction>) {
+    const patch = (turns: ChatTurn[]) => turns.map(turn => turn.id === turnId && turn.actions
+      ? { ...turn, actions: turn.actions.map(action => action.id === actionId ? { ...action, ...change } : action) }
+      : turn)
+    if (contextId === this.snapshot.contextId) {
+      this.publish({ ...this.snapshot, turns: patch(this.snapshot.turns) })
+    } else if (this.snapshot.conversations.some(conversation => conversation.contextId === contextId)) {
+      this.publish({ ...this.snapshot, conversations: this.snapshot.conversations.map(conversation =>
+        conversation.contextId === contextId ? { ...conversation, turns: patch(conversation.turns) } : conversation) })
     }
   }
 

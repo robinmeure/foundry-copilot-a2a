@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { ChatSession } from '../src/chatSession.ts'
 import { readInputFile, maxFileBytes } from '../../FoundryCopilotA2A.BrowserShared/inputFiles.ts'
+import { agUiAnswer } from './agUi.mjs'
 
 const config = { authMode: 'anonymous', agentId: 'mock', agentName: 'Mock', adapterBaseUrl: 'http://localhost:5099' }
 const token = async () => ''
@@ -73,6 +74,38 @@ test('saved conversations reopen with their original IDs and transcript and can 
   assert.equal(chat.getSnapshot().conversations[0].contextId, second)
   chat.clearSavedHistory()
   assert.equal(new ChatSession(config, persistence).getSnapshot().conversations.length, 0)
+})
+
+for (const [name, size, mediaType] of [['large.pdf', 20 * 1024 * 1024, 'application/pdf'], ['notes.md', 10, '']]) {
+  test(`Knowledge upload metadata for ${name} survives persistence and reload`, async (t) => {
+    t.mock.method(globalThis, 'fetch', async (_url, init) => init.body instanceof FormData
+      ? Response.json({ id: 'document', name, chunks: 1 })
+      : agUiAnswer({ answer: 'Indexed answer', warnings: [], citations: { schemaVersion: '1', sources: [], citations: [] } }))
+    const disk = storage()
+    const persistence = { key: 'knowledge', storage: disk }
+    const chat = new ChatSession(config, persistence)
+    await chat.send('Summarize', token, [], { baseUrl: 'http://localhost:5100', sources: [], token,
+      file: new File([new Uint8Array(size)], name, { type: mediaType }) })
+    assert.equal(chat.getSnapshot().turns[0].status, 'succeeded')
+    const restored = new ChatSession(config, persistence).getSnapshot()
+    assert.equal(restored.storageError, undefined)
+    assert.equal(restored.contextId, chat.getSnapshot().contextId)
+    assert.deepEqual(restored.turns[0].files, [{ name, mediaType, size, kind: 'knowledge' }])
+    assert.equal(restored.turns[0].answer, 'Indexed answer')
+    assert.ok(disk.getItem('knowledge').length < 2_000, 'only metadata is saved, never file bytes')
+  })
+}
+
+test('online attachment metadata still rejects files exceeding the experimental limit', async (t) => {
+  mockReplies(t)
+  const disk = storage()
+  const persistence = { key: 'online', storage: disk }
+  const chat = new ChatSession(config, persistence)
+  await chat.send('Summarize', token, [await readInputFile(new File(['hello'], 'notes.txt'))])
+  const saved = JSON.parse(disk.getItem('online'))
+  saved.conversations[0].turns[0].files[0].size = maxFileBytes + 1
+  disk.setItem('online', JSON.stringify(saved))
+  assert.match(new ChatSession(config, persistence).getSnapshot().storageError, /5 MB/)
 })
 
 test('account storage partitions do not show another account history', async (t) => {

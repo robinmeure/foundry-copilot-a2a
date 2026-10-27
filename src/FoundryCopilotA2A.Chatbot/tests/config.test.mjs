@@ -65,3 +65,13 @@ test('speech input is off unless explicitly enabled, and rejects ambiguous value
   assert.equal(read({ ...live, VITE_SPEECH_INPUT_ENABLED: 'false' }).speechInput, false)
   assert.throws(() => read({ ...live, VITE_SPEECH_INPUT_ENABLED: 'yes' }), /VITE_SPEECH_INPUT_ENABLED must be true or false/)
 })
+
+test('knowledge backend is opt-in and anonymous mode refuses a remote backend', () => {
+  assert.equal(read(live).knowledgeBaseUrl, undefined)
+  const config = read({ ...live, VITE_KNOWLEDGE_BASE_URL: 'http://localhost:5100',
+    VITE_KNOWLEDGE_API_CLIENT_ID: 'knowledge-api' })
+  assert.equal(config.knowledgeApiClientId, 'knowledge-api')
+  assert.equal(config.knowledgeBaseUrl, 'http://localhost:5100')
+  assert.throws(() => read({ ...live, VITE_CHATBOT_AUTH_MODE: 'anonymous',
+    VITE_KNOWLEDGE_BASE_URL: 'https://remote.test' }), /loopback backend/)
+})

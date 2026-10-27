@@ -14,6 +14,18 @@ Operational setup, provider wiring, APIM publication, and end-to-end smoke tests
 in the versioned [Foundry Copilot A2A CLI](src/FoundryCopilotA2A.Cli/README.md). Its README
 explains what every command does and why the project lives beside the application code.
 
+The dedicated chatbot distinguishes **Online orchestrator (Copilot Studio)** from the opt-in
+**[Local orchestrator (Knowledge API)](src/FoundryCopilotA2A.KnowledgeApi/README.md)**.
+The local orchestrator uses Microsoft Agent Framework with Azure OpenAI Responses and
+Microsoft Graph SDK tools for mail, calendar, To Do, Planner, Teams and people. It can also
+consult explicitly approved APIM A2A knowledge agents through the existing adapter. The
+model chooses tools by intent or answers general questions directly; device/SharePoint
+document search remains user- and conversation-scoped. "Local" refers to where orchestration
+runs, not offline inference. Online is the default; mock mode needs no Azure resources.
+Local follow-ups use bounded, persisted Agent Framework dialogue history without replaying
+private tool evidence. Shared-registration API Hub access supports explicit `SameAudience`
+token reuse; separate API audiences continue to use OBO.
+
 For guidance on APIM versus adapter-owned OBO and app registrations as agents scale, see
 [Authentication placement and app registration strategy](docs/authentication-and-agent-scaling.md).
 

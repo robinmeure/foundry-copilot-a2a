@@ -6,6 +6,8 @@ interface ChatbotBaseConfig {
   agentName: string
   /** Browser speech-to-text in the composer. Off unless explicitly enabled. */
   speechInput: boolean
+  knowledgeBaseUrl?: string
+  knowledgeApiClientId?: string
 }
 
 export type ChatbotConfig = ChatbotBaseConfig & (
@@ -33,9 +35,14 @@ export function readChatbotConfig(
     agentId,
     agentName: env.VITE_ORCHESTRATOR_NAME?.trim() || 'Orchestrator',
     speechInput: readFlag(env.VITE_SPEECH_INPUT_ENABLED, 'VITE_SPEECH_INPUT_ENABLED'),
+    knowledgeBaseUrl: readEndpoint(env.VITE_KNOWLEDGE_BASE_URL, 'VITE_KNOWLEDGE_BASE_URL'),
+    knowledgeApiClientId: env.VITE_KNOWLEDGE_API_CLIENT_ID?.trim(),
   }
   const authMode = env.VITE_CHATBOT_AUTH_MODE?.trim() || 'entra'
   if (authMode === 'anonymous') {
+    if (base.knowledgeBaseUrl && !isLoopback(base.knowledgeBaseUrl)) {
+      throw new Error('Anonymous knowledge mode requires a loopback backend.')
+    }
     if (!isDevelopment || gateway || !isLoopback(adapterBaseUrl) || !isLoopback(pageOrigin)) {
       throw new Error('Anonymous mode is only allowed in local development with a loopback browser origin and direct loopback adapter, without a gateway.')
     }
