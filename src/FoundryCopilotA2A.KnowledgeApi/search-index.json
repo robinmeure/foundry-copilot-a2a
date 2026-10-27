@@ -1,0 +1,19 @@
+{
+  "name": "asrlocalrag",
+  "fields": [
+    { "name": "id", "type": "Edm.String", "key": true },
+    { "name": "scope", "type": "Edm.String", "filterable": true },
+    { "name": "userId", "type": "Edm.String", "filterable": true },
+    { "name": "documentId", "type": "Edm.String", "filterable": true },
+    { "name": "title", "type": "Edm.String", "searchable": true },
+    { "name": "content", "type": "Edm.String", "searchable": true },
+    { "name": "locator", "type": "Edm.String" },
+    { "name": "url", "type": "Edm.String" },
+    { "name": "expiresAt", "type": "Edm.DateTimeOffset", "filterable": true },
+    { "name": "contentVector", "type": "Collection(Edm.Single)", "searchable": true, "dimensions": 3072, "vectorSearchProfile": "rag" }
+  ],
+  "vectorSearch": {
+    "algorithms": [{ "name": "hnsw", "kind": "hnsw", "hnswParameters": { "metric": "cosine" } }],
+    "profiles": [{ "name": "rag", "algorithm": "hnsw" }]
+  }
+}

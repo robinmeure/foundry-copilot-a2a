@@ -4,3 +4,4 @@
 .env
 appsettings.Local.json
 *.user
+**/.knowledge-data/
