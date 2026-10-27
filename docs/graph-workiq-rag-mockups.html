@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Microsoft 365 grounding - design mockups</title>
+  <style>
+    :root { font: 15px/1.55 "Segoe UI", system-ui, sans-serif; color: #2b2b2e; background: #f7f7f9; --muted: #60606b; --line: #dedee4; --accent: #efb008; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    button, input, select, textarea { font: inherit; }
+    button, input[type=checkbox] { cursor: pointer; }
+    button, a, input, select, textarea { outline-offset: 4px; }
+    :focus-visible { outline: 2px solid #8b6200; }
+    ::selection { background: #f8df97; color: #292518; }
+    a { color: #745200; text-underline-offset: 3px; }
+    button { color: inherit; }
+    button:hover { background: #f5efdf; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    [hidden] { display: none !important; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { font-size: 23px; line-height: 1.2; letter-spacing: -.035em; }
+    h2 { font-size: 28px; line-height: 1.2; letter-spacing: -.025em; margin-bottom: 12px; }
+    h3 { font-size: 17px; margin-bottom: 8px; }
+    small, .muted { color: var(--muted); }
+    small { font-size: 12px; }
+    .demo { padding: 10px 24px; background: #fff5d9; border-bottom: 1px solid #e6d7ac; color: #604700; font-size: 12px; }
+    .shell { display: grid; grid-template-columns: 224px minmax(0, 1fr); min-height: calc(100dvh - 40px); }
+    aside { background: white; border-right: 1px solid var(--line); padding: 30px 20px; display: flex; flex-direction: column; gap: 26px; }
+    .brand-dot { color: #9b6b00; }
+    aside h1 { margin-bottom: 6px; }
+    nav { display: grid; gap: 6px; }
+    nav button { border: 0; background: transparent; text-align: left; padding: 12px; border-radius: 4px; font-size: 14px; }
+    nav button[aria-current=page] { background: #f8edcd; font-weight: 600; }
+    .account { margin-top: auto; font-size: 13px; padding-top: 30px; }
+    main { min-width: 0; }
+    .topbar { padding: 19px 32px; display: flex; justify-content: space-between; align-items: center; gap: 20px; background: #fff; border-bottom: 1px solid var(--line); font-size: 13px; }
+    .topbar select { max-width: 280px; }
+    .surface { padding: 38px clamp(20px, 4vw, 64px); max-width: 1340px; margin: auto; }
+    .intro { max-width: 72ch; margin-bottom: 28px; }
+    .split { display: grid; grid-template-columns: minmax(0, 1fr) 285px; gap: 32px; align-items: start; }
+    .sheet { background: white; padding: 24px; border: 1px solid var(--line); border-radius: 6px; }
+    .note { padding: 16px 18px; background: #fff8e5; color: #624b13; border: 1px solid #e6d7ac; border-radius: 4px; font-size: 13px; }
+    .note p:last-child { margin-bottom: 0; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 22px; }
+    button.primary, button.secondary { padding: 10px 16px; border-radius: 4px; font-size: 13px; font-weight: 600; }
+    button.primary { background: var(--accent); border: 1px solid #ce9705; color: #292518; }
+    button.primary:hover { background: #dda200; }
+    button.secondary { background: white; border: 1px solid #bcbcc7; }
+    button.secondary:hover { background: #f5efdf; }
+    label { display: block; font-size: 13px; font-weight: 600; }
+    input[type=search], select, textarea { border: 1px solid #bcbcc7; border-radius: 4px; padding: 9px 11px; background: white; color: #2b2b2e; }
+    input[type=search] { width: 100%; margin: 7px 0 16px; }
+    input[type=checkbox] { accent-color: #936500; width: 16px; height: 16px; flex-shrink: 0; }
+    .scope { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 12px 0 24px; }
+    .scope label { display: flex; align-items: center; gap: 6px; font-weight: 400; }
+    .live { display: inline-block; color: #315947; background: #ecf4ef; padding: 2px 7px; font-size: 11px; border-radius: 3px; }
+    .question { margin: 20px 0 24px auto; max-width: 70ch; padding: 16px 20px; background: #eeedf2; border-radius: 5px; }
+    .answer { max-width: 72ch; }
+    .answer li { margin: 10px 0; }
+    .ref { font-size: 12px; border: 1px solid #c9b981; border-radius: 3px; background: #fff9e9; padding: 1px 6px; text-decoration: none; white-space: nowrap; }
+    .coverage { display: flex; gap: 10px; align-items: start; padding: 12px 0; font-size: 12px; border-top: 1px solid var(--line); }
+    .composer { padding: 16px; background: white; border: 1px solid #bcbcc7; border-radius: 6px; margin-top: 28px; }
+    .composer textarea { width: 100%; resize: vertical; border: 0; min-height: 70px; padding: 0; }
+    textarea::placeholder, input::placeholder { color: #666670; opacity: 1; }
+    .composer .actions { justify-content: space-between; margin-top: 8px; }
+    .source-list { list-style: none; margin: 0; padding: 0; }
+    .source-list li { padding: 15px 0; border-bottom: 1px solid var(--line); font-size: 13px; overflow-wrap: anywhere; }
+    .source-list small { display: block; margin-top: 4px; }
+    .source-list li:last-child { border-bottom: 0; }
+    .upload { border: 1px dashed #9a8b63; background: #fdfbf5; padding: 32px 24px; text-align: center; border-radius: 4px; margin: 22px 0; }
+    .upload svg { width: 30px; height: 30px; color: #886000; margin-bottom: 12px; }
+    .upload input { max-width: 100%; font-size: 13px; margin-top: 10px; }
+    .upload label { margin-top: 16px; }
+    .choices { display: flex; flex-wrap: wrap; gap: 12px; padding-bottom: 22px; border-bottom: 1px solid var(--line); }
+    .choices button { flex: 1; min-width: 180px; }
+    .row { display: flex; justify-content: space-between; gap: 18px; align-items: center; padding: 17px 0; border-bottom: 1px solid var(--line); }
+    .row > div { min-width: 0; overflow-wrap: anywhere; }
+    .row small { display: block; }
+    .status { font-size: 12px; white-space: nowrap; }
+    .ready { color: #286044; }
+    .pending { color: #745200; }
+    .steps { padding-left: 20px; font-size: 13px; }
+    .steps li { margin: 10px 0; padding-left: 5px; }
+    .breadcrumb { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0; color: var(--muted); font-size: 13px; }
+    .file-row { display: grid; grid-template-columns: 25px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 16px 8px; border-bottom: 1px solid var(--line); }
+    .file-row label { font-weight: 400; overflow-wrap: anywhere; }
+    .file-row small { display: block; }
+    .file-row:has(input:checked) { background: #fff9e9; }
+    .file-row > small { text-align: right; }
+    .empty { padding: 24px 0; color: var(--muted); }
+    .access { display: grid; gap: 18px; }
+    .access section { border-bottom: 1px solid var(--line); padding-bottom: 20px; }
+    .access h3 { margin-bottom: 5px; }
+    .access p { max-width: 72ch; }
+    .toast { font-size: 13px; color: #315947; min-height: 24px; margin-top: 15px; }
+    .mobile-title { display: none; }
+    @media (max-width: 1050px) { .split { grid-template-columns: minmax(0, 1fr); } .split > .evidence { max-width: none; } }
+    @media (max-width: 700px) {
+      .shell { grid-template-columns: minmax(0, 1fr); }
+      aside { padding: 16px; border-right: 0; border-bottom: 1px solid var(--line); gap: 15px; }
+      aside h1 { font-size: 20px; }
+      aside .account, aside .brand-caption { display: none; }
+      nav { display: flex; overflow-x: auto; gap: 3px; }
+      nav button { white-space: nowrap; padding: 9px 10px; font-size: 12px; }
+      .topbar { padding: 14px 20px; flex-wrap: wrap; gap: 8px; }
+      .topbar select { max-width: 100%; width: 100%; }
+      .surface { padding: 26px 18px; }
+      .sheet { padding: 18px; }
+      h2 { font-size: 25px; }
+      .file-row { grid-template-columns: 22px minmax(0, 1fr); }
+      .file-row > small { display: none; }
+      .row { align-items: start; }
+      .demo { padding: 10px 16px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="demo"><strong>Design prototype.</strong> All names, content, counts, and permission states are synthetic. No sign-in, Graph call, upload, indexing, or model request takes place.</div>
+  <div class="shell">
+    <aside aria-label="Prototype navigation">
+      <div><h1>Workplace chat<span class="brand-dot">.</span></h1><small class="brand-caption">Your sources. One conversation.</small></div>
+      <nav aria-label="Mockup screens">
+        <button type="button" data-view="chat" aria-current="page">Chat &amp; evidence</button>
+        <button type="button" data-view="upload">Add documents</button>
+        <button type="button" data-view="sharepoint">SharePoint picker</button>
+        <button type="button" data-view="library">Source library</button>
+        <button type="button" data-view="access">Access &amp; recovery</button>
+      </nav>
+      <div class="note">Documents are copied to this app's search index.<br><br>Mail, calendar, Teams, and people are retrieved live for each question.</div>
+      <div class="account"><strong>Alex Morgan</strong><br><small>Example organization<br>Delegated user session (illustration)</small></div>
+    </aside>
+    <main>
+      <header class="topbar">
+        <span id="location">New conversation / Launch readiness</span>
+        <label for="provider">Answer provider</label>
+        <select id="provider">
+          <option>Foundry model + WebAPI retrieval</option>
+          <option>Copilot Studio + WebAPI evidence</option>
+        </select>
+      </header>
+
+      <section class="surface" id="chat" aria-labelledby="chat-title">
+        <div class="split">
+          <div>
+            <h2 id="chat-title" tabindex="-1">Ground the answer in your work.</h2>
+            <p class="muted intro">Choose the sources for this question. Turning a source on does not grant new permissions.</p>
+            <fieldset style="border:0;padding:0;margin:0">
+              <legend style="font-size:13px;font-weight:600">Question sources</legend>
+              <div class="scope">
+                <label><input type="checkbox" checked> Documents</label>
+                <label><input type="checkbox" checked> Mail <span class="live">Live</span></label>
+                <label><input type="checkbox" checked> Calendar <span class="live">Live</span></label>
+                <label><input type="checkbox" checked> Teams <span class="live">Live</span></label>
+                <label><input type="checkbox"> People <span class="live">Live</span></label>
+              </div>
+            </fieldset>
+            <div class="question">What is blocking the launch, and what should we cover in tomorrow's review?</div>
+            <article class="answer" aria-label="Synthetic example answer">
+              <h3>The open dependency is the security review.</h3>
+              <p>The launch brief lists security approval as the final gate. The latest project email says the review is still pending. <a href="#evidence-doc" class="ref">1</a> <a href="#evidence-mail" class="ref">2</a></p>
+              <p>For the review, focus on:</p>
+              <ul>
+                <li><strong>Confirming the approval owner.</strong> The project discussion asks for an explicit sign-off owner. <a href="#evidence-teams" class="ref">3</a></li>
+                <li><strong>Agreeing the decision date.</strong> Tomorrow's calendar entry is a readiness review, not a confirmed approval. <a href="#evidence-calendar" class="ref">4</a></li>
+              </ul>
+              <p class="muted">I found no evidence of a final approval in the sources returned for this example question.</p>
+              <div class="coverage"><strong>Coverage</strong><span>Documents, mail, calendar, and Teams returned evidence. People was off. This is not an exhaustive tenant search.</span></div>
+            </article>
+            <div class="composer">
+              <label for="question">Follow-up question</label>
+              <textarea id="question" placeholder="Ask about the sources in this conversation..."></textarea>
+              <div class="actions">
+                <button class="secondary" type="button" data-view="upload">Add documents</button>
+                <button class="primary" type="button" id="ask-demo">Preview answer state</button>
+              </div>
+            </div>
+            <p class="toast" id="chat-notice" role="status"></p>
+          </div>
+          <section class="sheet evidence" aria-labelledby="evidence-title">
+            <h3 id="evidence-title">Evidence for this answer</h3>
+            <small>Fixture snapshot / not live tenant data</small>
+            <ol class="source-list">
+              <li id="evidence-doc"><strong>1. Launch brief.pdf</strong><small>SharePoint / Product / Launch<br>Page 4, section: Release gates<br>Indexed copy; access must be rechecked</small></li>
+              <li id="evidence-mail"><strong>2. RE: Launch readiness</strong><small>Mail / Project delivery<br>Retrieved for this question</small></li>
+              <li id="evidence-teams"><strong>3. Approval ownership</strong><small>Teams / Project channel<br>Retrieved for this question</small></li>
+              <li id="evidence-calendar"><strong>4. Readiness review</strong><small>Calendar / Tomorrow, 10:00<br>Times use your configured timezone</small></li>
+            </ol>
+            <p class="muted" style="font-size:12px;margin-top:18px">Production citations open the original source only after authorization. The model cannot invent source links.</p>
+          </section>
+        </div>
+      </section>
+
+      <section class="surface" id="upload" aria-labelledby="upload-title" hidden>
+        <h2 id="upload-title" tabindex="-1">Add documents to this conversation.</h2>
+        <p class="muted intro">Choose a local document or select files you can read in SharePoint. Both paths use the same WebAPI ingestion pipeline.</p>
+        <div class="split">
+          <div class="sheet">
+            <div class="choices">
+              <button type="button" class="primary" id="local-choice">Upload from this device</button>
+              <button type="button" class="secondary" data-view="sharepoint">Choose from SharePoint</button>
+            </div>
+            <div class="upload">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M4 15v5h16v-5"/></svg>
+              <h3>A document, not a provider attachment.</h3>
+              <p class="muted">The WebAPI extracts text (using Document Intelligence for scanned or table-heavy PDFs), creates chunks, requests embeddings, and writes the index.</p>
+              <label for="local-file">Preview a filename (file contents are not read)</label>
+              <input type="file" id="local-file" accept=".pdf,.docx,.txt,.md,.csv">
+            </div>
+            <div class="row"><div><strong id="upload-name">Launch brief.pdf</strong><small>Illustrative file / private to Alex + this conversation</small></div><span class="status pending" id="upload-status">Not imported</span></div>
+            <div class="actions"><button class="primary" type="button" id="ingest-demo">Preview completed ingestion</button><button class="secondary" type="button" data-view="library">View source library</button></div>
+            <p class="toast" id="upload-notice" role="status"></p>
+          </div>
+          <section class="evidence">
+            <h3>What happens after import?</h3>
+            <ol class="steps"><li>Validate file and scan for threats.</li><li>Choose an extractor: Document Intelligence layout for scanned or table-heavy PDFs, local parsers for simple files.</li><li>Keep headings, pages, and tables; split large tables by rows with the header repeated.</li><li>Chunk and embed in the WebAPI.</li><li>Index text, vectors, and ownership.</li><li>Make the document available to chat.</li></ol>
+                        <div class="note">Proposed MVP: PDF (including scanned), DOCX, TXT, Markdown, CSV; 20 MiB and 300 pages per file. These are new RAG limits, not existing attachment limits.</div>
+          </section>
+        </div>
+      </section>
+
+      <section class="surface" id="sharepoint" aria-labelledby="picker-title" hidden>
+        <h2 id="picker-title" tabindex="-1">Choose documents from SharePoint.</h2>
+        <p class="muted intro">A proposed custom picker, backed by delegated Graph calls. Only selected files are copied; browsing a library does not import it.</p>
+        <div class="split">
+          <div class="sheet">
+            <label for="site">Site</label>
+            <select id="site" style="width:100%;margin-top:7px"><option>Product team (example site)</option><option>Operations (empty fixture)</option></select>
+            <div class="breadcrumb"><span>Product team</span><span aria-hidden="true">/</span><span>Documents</span><span aria-hidden="true">/</span><strong>Launch</strong></div>
+            <label for="file-search">Find a document</label>
+            <input type="search" id="file-search" placeholder="Filter these example documents">
+            <div id="picker-files">
+              <div class="file-row" data-name="Launch brief.pdf"><input id="file-a" type="checkbox" checked><label for="file-a">Launch brief.pdf<small>PDF / Updated today / readable in this fixture</small></label><small>840 KB</small></div>
+              <div class="file-row" data-name="Decision log.docx"><input id="file-b" type="checkbox"><label for="file-b">Decision log.docx<small>Word / Updated yesterday</small></label><small>126 KB</small></div>
+              <div class="file-row" data-name="Release checklist.csv"><input id="file-c" type="checkbox"><label for="file-c">Release checklist.csv<small>CSV / Updated 3 days ago</small></label><small>18 KB</small></div>
+            </div>
+            <p id="picker-empty" class="empty" hidden>No matching documents. Try a different name or site.</p>
+            <p class="muted" style="font-size:12px;margin-top:20px">Import copies document text and embeddings into the app's dedicated index. It does not change the original file or share it with other app users.</p>
+            <div class="actions"><button class="primary" type="button" id="import-demo">Preview import of 1 document</button><button class="secondary" type="button" data-view="upload">Back</button></div>
+            <p class="toast" id="picker-notice" role="status"></p>
+          </div>
+          <section class="evidence">
+            <h3>Access stays with the user.</h3>
+            <p class="muted">The backend checks tenant, user, drive, item, file type, size, and download access. A selected item ID is not proof of permission.</p>
+            <div class="note">A revoked or unavailable document is excluded before text reaches the model. Temporary Graph failures are shown as incomplete coverage, not silently ignored.</div>
+            <div class="actions"><button class="secondary" type="button" data-view="access">Preview consent &amp; failure states</button></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="surface" id="library" aria-labelledby="library-title" hidden>
+        <h2 id="library-title" tabindex="-1">Sources in this conversation.</h2>
+        <p class="muted intro">Only documents marked Ready can enter retrieval. Microsoft 365 activity is queried live; it is not silently added to this library.</p>
+        <div class="split">
+          <div class="sheet">
+            <div class="row"><div><strong>Launch brief.pdf</strong><small>SharePoint / private copy / 18 illustrative chunks</small></div><span class="status ready">Ready</span></div>
+            <div class="row"><div><strong>Decision log.docx</strong><small>SharePoint / download succeeded</small></div><span class="status pending">Embedding</span></div>
+            <div class="row"><div><strong>Quarterly figures.pdf</strong><small>Upload / scanned, 12 pages / Document Intelligence layout analysis in progress</small></div><span class="status pending">Analyzing layout</span></div>
+            <div class="row"><div><strong>Archive scan.pdf</strong><small>Password-protected. Remove the password and upload again.</small></div><span class="status">Needs action</span></div>
+            <div class="row" id="revoked-row"><div><strong>Previous roadmap.pdf</strong><small>Source access revoked. Excluded from all retrieval.</small></div><span class="status">Blocked</span></div>
+            <div class="actions"><button type="button" class="primary" data-view="upload">Add documents</button><button type="button" class="secondary" id="delete-demo">Preview removing blocked copy</button></div>
+            <p class="toast" id="delete-notice" role="status"></p>
+          </div>
+          <section class="evidence">
+            <h3>Private by default.</h3>
+            <p class="muted">Scope: example tenant + Alex + current conversation. Other users cannot search these chunks.</p>
+            <p class="muted">Removing a source blocks retrieval immediately; physical chunk and temporary-file cleanup follows. Previous chat messages may still contain quoted material.</p>
+            <div class="note">Retention proposal: document copies expire after 7 days unless removed earlier. Final retention and chat-history policies require approval.</div>
+          </section>
+        </div>
+      </section>
+
+      <section class="surface" id="access" aria-labelledby="access-title" hidden>
+        <h2 id="access-title" tabindex="-1">Access is explicit. Gaps stay visible.</h2>
+        <p class="muted intro">Illustrative recovery states, not the tenant's current grants. Production sign-in and consent use Microsoft Entra, not a custom password form.</p>
+        <div class="access sheet">
+          <section><h3>Connect Microsoft 365</h3><p class="muted">Sign in to the approved tenant. Consent is requested for enabled workloads, not for all tenant content at once. Tenant policy may require administrator approval.</p><button type="button" class="secondary" data-demo-message="Production would open Microsoft Entra sign-in. No authentication was started.">Preview sign-in</button></section>
+          <section><h3>Teams requires approval</h3><p class="muted">The configured Teams operation needs a grant that is not available. Ask an administrator to approve the reviewed permission set, or answer without Teams.</p><button type="button" class="secondary" data-demo-message="Preview only: Teams would be explicitly excluded and the answer would show incomplete coverage.">Preview answering without Teams</button></section>
+          <section><h3>SharePoint access changed</h3><p class="muted">A previously imported file can no longer be read. Its chunks are blocked before generation. Reconnect if a sign-in challenge caused this; otherwise choose another document.</p><button type="button" class="secondary" data-view="sharepoint">Choose another document</button></section>
+          <section><h3>Calendar temporarily unavailable</h3><p class="muted">A throttled or failed workload does not count as an empty result. Honor the retry window, or explicitly continue with a visible coverage warning.</p><button type="button" class="secondary" data-demo-message="Preview only: retry would honor the service Retry-After value.">Preview retry</button></section>
+          <section><h3>No grounded answer found</h3><p class="muted">Do not turn an empty retrieval result into a confident answer. Offer a narrower question, another date range, or an additional document.</p><button type="button" class="secondary" data-view="upload">Add a source</button></section>
+        </div>
+        <p class="toast" id="access-notice" role="status"></p>
+      </section>
+    </main>
+  </div>
+  <script>
+    const screens = [...document.querySelectorAll('main > section.surface')];
+    function show(id) {
+      const screen = screens.find(item => item.id === id);
+      if (!screen) throw new Error('Unknown prototype screen: ' + id);
+      screens.forEach(item => { item.hidden = item !== screen; });
+      document.querySelectorAll('nav [data-view]').forEach(button => {
+        if (button.dataset.view === id) button.setAttribute('aria-current', 'page');
+        else button.removeAttribute('aria-current');
+      });
+      document.getElementById('location').textContent = screen.querySelector('h2').textContent;
+      screen.querySelector('h2').focus();
+    }
+    document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => show(button.dataset.view)));
+    document.querySelectorAll('[data-demo-message]').forEach(button => button.addEventListener('click', () => {
+      document.getElementById('access-notice').textContent = button.dataset.demoMessage;
+    }));
+    document.getElementById('local-choice').addEventListener('click', () => document.getElementById('local-file').click());
+    document.getElementById('local-file').addEventListener('change', event => {
+      const file = event.target.files[0];
+      if (!file) return;
+      document.getElementById('upload-name').textContent = file.name;
+      document.getElementById('upload-status').textContent = 'Not imported';
+      document.getElementById('upload-status').className = 'status pending';
+      document.getElementById('upload-notice').textContent = 'Filename preview only. The selected file was not read or uploaded.';
+    });
+    document.getElementById('ingest-demo').addEventListener('click', () => {
+      document.getElementById('upload-status').textContent = 'Ready (fixture)';
+      document.getElementById('upload-status').className = 'status ready';
+      document.getElementById('upload-notice').textContent = 'Completed-state preview. No parsing, embedding, or indexing ran.';
+    });
+    function filterFiles() {
+      const query = document.getElementById('file-search').value.toLowerCase();
+      const emptySite = document.getElementById('site').selectedIndex === 1;
+      const rows = [...document.querySelectorAll('.file-row')];
+      rows.forEach(row => { row.hidden = emptySite || !row.dataset.name.toLowerCase().includes(query); });
+      document.getElementById('picker-empty').hidden = rows.some(row => !row.hidden);
+      const count = rows.filter(row => !row.hidden && row.querySelector('input').checked).length;
+      const button = document.getElementById('import-demo');
+      button.textContent = `Preview import of ${count} document${count === 1 ? '' : 's'}`;
+      button.disabled = count === 0;
+    }
+    document.getElementById('file-search').addEventListener('input', filterFiles);
+    document.getElementById('site').addEventListener('change', () => {
+      document.querySelectorAll('.file-row input').forEach(input => { input.checked = false; });
+      document.querySelector('.breadcrumb').hidden = document.getElementById('site').selectedIndex === 1;
+      filterFiles();
+    });
+    document.querySelectorAll('.file-row input').forEach(input => input.addEventListener('change', filterFiles));
+    document.getElementById('import-demo').addEventListener('click', () => {
+      document.getElementById('picker-notice').textContent = 'Import selection preview. Production would reauthorize each item and create an ingestion job; nothing was copied here.';
+    });
+    document.getElementById('delete-demo').addEventListener('click', event => {
+      document.getElementById('revoked-row').hidden = true;
+      event.target.disabled = true;
+      document.getElementById('delete-notice').textContent = 'Removal state preview. No stored content exists in this prototype.';
+    });
+    document.getElementById('ask-demo').addEventListener('click', () => {
+      document.getElementById('chat-notice').textContent = 'Example answer shown above. No question or source content was sent to a model.';
+    });
+    document.getElementById('provider').addEventListener('change', event => {
+      document.getElementById('chat-notice').textContent = 'Selected: ' + event.target.value + '. Production must verify evidence and citation support for this provider.';
+    });
+  </script>
+</body>
+</html>
