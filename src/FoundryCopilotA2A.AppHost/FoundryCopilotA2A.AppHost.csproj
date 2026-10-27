@@ -1,4 +1,4 @@
-<Project Sdk="Aspire.AppHost.Sdk/13.5.3">
+<Project Sdk="Aspire.AppHost.Sdk/13.6.4">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -10,12 +10,13 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Aspire.Hosting.DevTunnels" Version="13.5.3" />
-    <PackageReference Include="Aspire.Hosting.JavaScript" Version="13.5.3" />
+    <PackageReference Include="Aspire.Hosting.DevTunnels" Version="13.6.4" />
+    <PackageReference Include="Aspire.Hosting.JavaScript" Version="13.6.4" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\FoundryCopilotA2A.Adapter\FoundryCopilotA2A.Adapter.csproj" />
+    <ProjectReference Include="..\FoundryCopilotA2A.KnowledgeApi\FoundryCopilotA2A.KnowledgeApi.csproj" />
   </ItemGroup>
 
 </Project>

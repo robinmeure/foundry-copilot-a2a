@@ -3,6 +3,7 @@ using Aspire.Hosting.DevTunnels;
 using Microsoft.Extensions.Configuration;
 
 var builder = DistributedApplication.CreateBuilder(args);
+builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true).AddEnvironmentVariables();
 
 var adapterPort = builder.Configuration.GetValue("AdapterPort", 5099);
 var frontendPort = builder.Configuration.GetValue("FrontendPort", 5173);
@@ -22,6 +23,51 @@ if (requestTimeoutSeconds <= 0)
 }
 var frontendOrigin = $"http://localhost:{frontendPort}";
 var chatbotOrigin = $"http://localhost:{chatbotPort}";
+var knowledgePort = builder.Configuration.GetValue("KnowledgePort", 5100);
+if (knowledgePort is < 1 or > 65535 || new[] { adapterPort, frontendPort, chatbotPort }.Contains(knowledgePort))
+    throw new InvalidOperationException("KnowledgePort must be a distinct port between 1 and 65535.");
+string ResolveParameterDefault(string name, string fallback = "") =>
+    builder.Configuration[$"Parameters:{name}"] is { Length: > 0 } configured
+        ? configured
+        : fallback;
+
+var openAiEndpoint = builder.AddParameter("openai-endpoint", ResolveParameterDefault("openai-endpoint"), publishValueAsDefault: true);
+var chatDeployment = builder.AddParameter("chat-deployment", ResolveParameterDefault("chat-deployment", "gpt-6.1-sol"), publishValueAsDefault: true);
+var embeddingDeployment = builder.AddParameter("embedding-deployment", ResolveParameterDefault("embedding-deployment", "text-embedding-3-large"), publishValueAsDefault: true);
+var searchEndpoint = builder.AddParameter("search-endpoint", ResolveParameterDefault("search-endpoint"), publishValueAsDefault: true);
+var searchIndex = builder.AddParameter("search-index", ResolveParameterDefault("search-index", "asrlocalrag"), publishValueAsDefault: true);
+var speechEndpoint = builder.AddParameter("speech-endpoint", ResolveParameterDefault("speech-endpoint"), publishValueAsDefault: true);
+var speechVoice = builder.AddParameter("speech-voice", ResolveParameterDefault("speech-voice", "nl-NL-FennaNeural"), publishValueAsDefault: true);
+var documentEndpoint = builder.AddParameter("document-intelligence-endpoint", ResolveParameterDefault("document-intelligence-endpoint"), publishValueAsDefault: true);
+var knowledgeBackend = builder.Configuration["KnowledgeBackend"] ?? "Mock";
+var knowledge = builder.AddProject<Projects.FoundryCopilotA2A_KnowledgeApi>("knowledge", launchProfileName: "http")
+    .WithEndpoint("http", endpoint => endpoint.Port = knowledgePort)
+    .WithHttpHealthCheck("/health")
+    .WithEnvironment("Knowledge__Backend", knowledgeBackend)
+    .WithEnvironment("Knowledge__AllowedOrigins__0", chatbotOrigin)
+    .WithEnvironment("OpenAI__Endpoint", openAiEndpoint)
+    .WithEnvironment("OpenAI__ChatDeployment", chatDeployment)
+    .WithEnvironment("OpenAI__EmbeddingDeployment", embeddingDeployment)
+    .WithEnvironment("Search__Endpoint", searchEndpoint)
+    .WithEnvironment("Search__Index", searchIndex)
+    .WithEnvironment("Speech__Endpoint", speechEndpoint)
+    .WithEnvironment("Speech__Voice", speechVoice)
+    .WithEnvironment("DocumentIntelligence__Endpoint", documentEndpoint)
+    .WithEnvironment("DocumentIntelligence__ModelId", builder.Configuration["DocumentIntelligenceModel"] ?? "prebuilt-read");
+if (builder.Configuration.GetValue("KnowledgeKamervragen:Enabled", false))
+{
+    knowledge
+        .WithEnvironment("Kamervragen__Enabled", "true")
+        .WithEnvironment("Kamervragen__Endpoint", builder.Configuration["KnowledgeKamervragen:Endpoint"])
+        .WithEnvironment("Kamervragen__Index", builder.Configuration["KnowledgeKamervragen:Index"] ?? "kamervragen-openai");
+}
+if (knowledgeBackend == "Azure")
+{
+    knowledge
+        .WithEnvironment("Authentication__TenantId", builder.AddParameter("knowledge-tenant-id"))
+        .WithEnvironment("Authentication__ClientId", builder.AddParameter("knowledge-client-id"))
+        .WithEnvironment("Authentication__ClientSecret", builder.AddParameter("knowledge-client-secret", secret: true));
+}
 var useLiveBackend = string.Equals(
     builder.Configuration["AdapterBackend"], "CopilotStudio", StringComparison.OrdinalIgnoreCase);
 var gatewayBaseUrl = builder.Configuration["GatewayBaseUrl"]?.Trim().TrimEnd('/');
@@ -45,6 +91,22 @@ var adapter = builder
         "Adapter__RequestTimeoutSeconds", requestTimeoutSeconds.ToString(CultureInfo.InvariantCulture))
     .WithEnvironment("Adapter__AllowedOrigins__0", frontendOrigin)
     .WithEnvironment("Adapter__AllowedOrigins__1", chatbotOrigin);
+
+if (builder.Configuration.GetValue("KnowledgeA2A:Enabled", false))
+{
+    knowledge
+        .WithEnvironment("A2A__Enabled", "true")
+        .WithEnvironment("A2A__AdapterBaseUrl", adapter.GetEndpoint("http"))
+        .WithEnvironment("A2A__AuthenticationMode", builder.Configuration["KnowledgeA2A:AuthenticationMode"] ?? "OnBehalfOf")
+        .WithEnvironment("A2A__DelegatedScope", builder.Configuration["KnowledgeA2A:DelegatedScope"])
+        .WaitFor(adapter);
+
+    var knowledgeAgentIds = builder.Configuration.GetSection("KnowledgeA2A:AllowedAgentIds").Get<string[]>() ?? [];
+    for (var index = 0; index < knowledgeAgentIds.Length; index++)
+    {
+        knowledge.WithEnvironment($"A2A__AllowedAgentIds__{index}", knowledgeAgentIds[index]);
+    }
+}
 
 if (builder.Configuration.GetValue("ApiManagementDiscovery:Enabled", false))
 {
@@ -213,13 +275,20 @@ var chatbot = builder
     .AddViteApp("chatbot", "../FoundryCopilotA2A.Chatbot")
     .WithEndpoint("http", endpoint => endpoint.Port = chatbotPort)
     .WithEnvironment("VITE_ADAPTER_BASE_URL", adapter.GetEndpoint("http"))
+    .WithEnvironment("VITE_KNOWLEDGE_BASE_URL", knowledge.GetEndpoint("http"))
     .WithEnvironment(
+
         "VITE_ORCHESTRATOR_AGENT_ID",
         builder.Configuration["ChatbotOrchestratorAgentId"] ?? (useLiveBackend ? "orchestrator" : "mock"))
-    .WithEnvironment("VITE_CHATBOT_AUTH_MODE", useLiveBackend ? "entra" : "anonymous")
+    .WithEnvironment("VITE_CHATBOT_AUTH_MODE", useLiveBackend || knowledgeBackend == "Azure" ? "entra" : "anonymous")
     .WithReference(adapter)
     .WaitFor(adapter)
+    .WithReference(knowledge)
     .WithExternalHttpEndpoints();
+
+// An empty value would override the chatbot's .env.local, so only set it when configured.
+if (builder.Configuration["Parameters:knowledge-client-id"] is { Length: > 0 } knowledgeClientId)
+    chatbot.WithEnvironment("VITE_KNOWLEDGE_API_CLIENT_ID", knowledgeClientId);
 
 var chatbotGatewayBaseUrl = builder.Configuration["ChatbotGatewayBaseUrl"] ?? gatewayBaseUrl;
 if (chatbotGatewayBaseUrl is not null)
