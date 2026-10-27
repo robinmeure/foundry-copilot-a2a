@@ -18,6 +18,9 @@ Use `--help` to list commands and `<command> --help` for command-specific argume
 This sample crosses several independent control planes:
 
 - Microsoft Entra app registrations, delegated permissions, consent, and redirect URIs
+- Read-only Azure AI Search request replay with `test-knowledge-search --endpoint <search-root> --index <index> --request-file <json-path>`.
+  It uses Azure CLI authentication, displays upstream errors or a success/result count (not documents or tokens),
+  and never creates or modifies an index. Use non-sensitive queries because errors can echo request values.
 - Copilot Studio direct-connect and delegated OBO authentication
 - Microsoft Foundry agent cards, A2A endpoints, connections, and tools
 - Azure API Management APIs, operations, and policies
@@ -82,6 +85,8 @@ in the explicitly selected tenant. No client secret or new consent grant is crea
 | Command | What it does | Why it is here |
 | --- | --- | --- |
 | `run-mock` | Starts the adapter with the deterministic mock backend and explicit anonymous-development mode. | Exercises the A2A contract and frontend without Azure resources or credentials. |
+| `run-knowledge` | Starts the separate Knowledge WebAPI with `--backend Mock` or `Azure` and an explicit loopback binding. | Exercises app-owned uploads, delegated SharePoint imports, and Responses API chat. See the [Knowledge API guide](../FoundryCopilotA2A.KnowledgeApi/README.md). |
+| `create-knowledge-index` | Previews the RAG index schema; `--apply` creates only an absent index and verifies it. Omit the flag or use `--apply=false` to keep preview mode. | Sets up Search without overwriting an existing index or committing service credentials. |
 | `run-adapter` | Starts the adapter against a live standard-harness Copilot Studio direct-connect URL with authentication and OBO settings. | Provides a concise local live-backend workflow without putting secrets on the command line. |
 | `start-tunnel` | Runs an anonymous Dev Tunnel for the selected local adapter port, optionally reusing a persistent tunnel ID. | Gives APIM and hosted agents a stable reachable HTTPS transport endpoint; the adapter runtime itself remains authenticated. |
 

@@ -69,6 +69,9 @@ internal sealed class CliApplication(CliContext context)
                     context, commandArguments, cancellationToken),
                 "run-mock" => await RuntimeCommands.RunMockAsync(
                     context, commandArguments, cancellationToken),
+                "run-knowledge" => await KnowledgeCommands.RunAsync(context, commandArguments, cancellationToken),
+                "create-knowledge-index" => await KnowledgeCommands.CreateIndexAsync(context, commandArguments, cancellationToken),
+                "test-knowledge-search" => await KnowledgeCommands.TestSearchAsync(context, commandArguments, cancellationToken),
                 "start-tunnel" => await RuntimeCommands.StartTunnelAsync(
                     context, commandArguments, cancellationToken),
                 "test-adapter" => await SmokeTestCommands.TestAdapterAsync(
@@ -172,6 +175,11 @@ internal sealed class CliApplication(CliContext context)
                             Add a generated Foundry OAuth Web callback to the existing backend.
               run-adapter   Start the adapter against a live Copilot Studio connection URL.
               run-mock      Start the adapter with its local mock backend.
+              run-knowledge Start the document RAG WebAPI (Mock or Azure).
+              create-knowledge-index
+                            Preview or create the RAG Search index; never replace an existing index.
+              test-knowledge-search
+                            Replay a read-only Search JSON request and report upstream validation errors.
               test-adapter  Exercise an adapter directly over A2A.
               test-copilot-file-upload
                             Probe file-grounded answers through the Copilot Studio SDK.
@@ -202,6 +210,12 @@ internal sealed class CliApplication(CliContext context)
     {
         var help = command switch
         {
+            "run-knowledge" =>
+                "run-knowledge [--backend Mock|Azure] [--urls http://localhost:5100] [--allowed-origin <origin>]",
+            "create-knowledge-index" =>
+                "create-knowledge-index --endpoint <https-search-root> [--index asrlocalrag] [--dimensions 3072] [--apply]",
+            "test-knowledge-search" =>
+                "test-knowledge-search --endpoint <https-search-root> [--index kamervragen-openai] --request-file <json-path>",
             "test-adaptive-cards" =>
                 """
                 test-adaptive-cards
