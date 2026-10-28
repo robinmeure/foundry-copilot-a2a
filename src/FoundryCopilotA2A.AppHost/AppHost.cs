@@ -211,39 +211,50 @@ if (useLiveBackend)
         .WithEnvironment("CopilotStudio__TenantId", tenantId)
         .WithEnvironment("CopilotStudio__ClientId", clientId)
         .WithEnvironment("CopilotStudio__ClientSecret", clientSecret)
-        .WithEnvironment("CopilotStudio__DefaultAgent", "reverser-classic")
+        .WithEnvironment("CopilotStudio__DefaultAgent", "reverser-classic");
+
+    adapter
         .WithEnvironment("CopilotStudio__Agents__tweede-kamer__DisplayName", "Tweede Kamer")
         .WithEnvironment("CopilotStudio__Agents__tweede-kamer__Harness", "GitHubCopilot")
         .WithEnvironment(
             "CopilotStudio__Agents__tweede-kamer__DirectConnectUrl",
-            tweedeKamerDirectConnectUrl)
+            tweedeKamerDirectConnectUrl);
+
+    adapter
         .WithEnvironment(
             "CopilotStudio__Agents__reverser-classic__DisplayName",
             "Reverser Classic")
         .WithEnvironment(
             "CopilotStudio__Agents__reverser-classic__DirectConnectUrl",
-            reverserClassicDirectConnectUrl)
+            reverserClassicDirectConnectUrl);
+
+    adapter
         .WithEnvironment(
             "CopilotStudio__Agents__reverser-new__DisplayName",
             "Reverser New")
         .WithEnvironment("CopilotStudio__Agents__reverser-new__Harness", "GitHubCopilot")
         .WithEnvironment(
             "CopilotStudio__Agents__reverser-new__DirectConnectUrl",
-            reverserNewDirectConnectUrl)
-        // Standard-harness sibling of tweede-kamer, so it needs no Harness override and is
-        // reachable through the Microsoft 365 Agents SDK client.
+            reverserNewDirectConnectUrl);
+
+    // This sibling uses the standard SDK harness, so it needs no harness override.
+    adapter
         .WithEnvironment(
             "CopilotStudio__Agents__tweede-kamer-classic__DisplayName",
             "Tweede Kamer Classic")
         .WithEnvironment(
             "CopilotStudio__Agents__tweede-kamer-classic__DirectConnectUrl",
-            tweedeKamerClassicDirectConnectUrl)
+            tweedeKamerClassicDirectConnectUrl);
+
+    adapter
         .WithEnvironment(
             "CopilotStudio__Agents__ai-search-vragen__DisplayName",
             "AI Search Vragen")
         .WithEnvironment(
             "CopilotStudio__Agents__ai-search-vragen__DirectConnectUrl",
-            aiSearchVragenDirectConnectUrl)
+            aiSearchVragenDirectConnectUrl);
+
+    adapter
         .WithEnvironment(
             "CopilotStudio__Agents__orchestrator__DisplayName",
             "Orchestrator")
