@@ -76,10 +76,10 @@ export default function KnowledgeChat({ config, auth }: { config: KnowledgeChatC
       </>,
     }}
     settings={{
-      subtitle: 'Sources, files and conversation',
+      subtitle: 'Tools, files and conversation',
       conversationLabel: 'Backend conversation ID',
       conversationNote: 'Saved in this browser. Document retrieval is rebuilt on every question; expired sources must be imported again.',
-      sections: <>
+      sections: <SourceSettings selection={selection} onChange={changeSelection} capabilityState={capabilityState} disabled={isSending}>
         <SettingsSection id="orchestration-settings-title" title="Orchestration">
           <p>The .NET Knowledge API orchestrates documents and selected tools with Microsoft Agent Framework. Live mode still uses an Azure-hosted model, not an offline LLM.</p>
           {config.authMode === 'anonymous' && <p>Local development session. The Knowledge API must run in Mock mode for Azure-free use.</p>}
@@ -87,7 +87,6 @@ export default function KnowledgeChat({ config, auth }: { config: KnowledgeChatC
         <SettingsSection id="file-settings-title" title="Files">
           <p>PDF, DOCX, TXT, Markdown, CSV. Up to 20 MiB / 300 pages. Indexed documents stay with this conversation.</p>
         </SettingsSection>
-        <SourceSettings selection={selection} onChange={changeSelection} capabilityState={capabilityState} disabled={isSending} />
-      </>,
+      </SourceSettings>,
     }} />
 }

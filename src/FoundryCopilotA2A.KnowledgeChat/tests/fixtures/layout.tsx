@@ -59,7 +59,12 @@ const knowledgeStream = (done: { answer: string } & Record<string, unknown>) => 
 window.fetch = async (input, init) => {
   const url = String(input)
   const parsed = new URL(url, location.origin)
-  if (url.endsWith('/capabilities')) return Response.json({ a2a: true, kamervragen: true })
+  if (url.endsWith('/capabilities')) return Response.json({ a2a: true, kamervragen: true, sources: [
+    ...['mail', 'calendar', 'todo', 'planner', 'teams', 'people'].map(id => ({ id, label: id[0].toUpperCase() + id.slice(1), group: 'Microsoft 365' })),
+    { id: 'kamervragen', label: 'Kamervragen', hint: 'Shared parliamentary questions · read-only search', group: 'Reference' },
+    { id: 'documents', label: 'Word & PowerPoint', hint: 'Create .docx and .pptx files', group: 'Create' },
+    { id: 'a2a', label: 'APIM agents', hint: 'Specialist agents through the APIM gateway', group: 'Agents' },
+  ] })
   if (url.endsWith('/api/agents')) return Response.json({ agents: [
     { id: 'contoso-hr-agent', displayName: 'Contoso HR policies' },
     { id: 'contoso-finance-agent', displayName: 'Finance expense rules' },

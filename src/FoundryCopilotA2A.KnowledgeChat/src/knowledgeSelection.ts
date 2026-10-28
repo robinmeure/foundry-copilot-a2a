@@ -19,12 +19,38 @@ function reportedSources(capabilities?: KnowledgeCapabilities): KnowledgeSourceO
   if (!Array.isArray(capabilities?.sources)) return undefined
   const seen = new Set<string>()
   return capabilities.sources.flatMap((source: unknown) => {
-    const { id, label, hint } = source && typeof source === 'object' ? source as Record<string, unknown> : {}
+    const { id, label, hint, group } = source && typeof source === 'object' ? source as Record<string, unknown> : {}
     if (typeof id !== 'string' || !SOURCE_ID.test(id) || seen.has(id)) return []
     seen.add(id)
     return [{ id, label: typeof label === 'string' && label.trim() ? label.trim() : id,
-      hint: typeof hint === 'string' && hint.trim() ? hint.trim() : undefined }]
+      hint: typeof hint === 'string' && hint.trim() ? hint.trim() : undefined,
+      ...(typeof group === 'string' && group.trim() ? { group: group.trim().slice(0, 40) } : {}) }]
   })
+}
+
+/** Groups for built-in sources, used when the API does not describe a source's group. */
+const BUILT_IN_GROUPS: Record<string, string> = {
+  mail: 'Microsoft 365', calendar: 'Microsoft 365', todo: 'Microsoft 365', planner: 'Microsoft 365',
+  teams: 'Microsoft 365', people: 'Microsoft 365', kamervragen: 'Reference', documents: 'Create', a2a: 'Agents',
+}
+const GROUP_ORDER = ['Microsoft 365', 'Reference', 'Search', 'Create']
+
+export interface KnowledgeSourceGroup { id: string; label: string; options: KnowledgeSourceOption[] }
+
+/** Sources grouped for tabbed settings: known groups first, unknown groups alphabetically, Agents last. */
+export function groupKnowledgeSources(options: readonly KnowledgeSourceOption[]): KnowledgeSourceGroup[] {
+  const groups = new Map<string, KnowledgeSourceOption[]>()
+  for (const option of options) {
+    const label = option.group ?? BUILT_IN_GROUPS[option.id] ?? 'Other'
+    groups.set(label, [...groups.get(label) ?? [], option])
+  }
+  const rank = (label: string) => label === 'Agents' ? Number.MAX_SAFE_INTEGER
+    : GROUP_ORDER.includes(label) ? GROUP_ORDER.indexOf(label) : GROUP_ORDER.length
+  return [...groups]
+    .sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b))
+    .map(([label, grouped]) => ({
+      id: label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'other', label, options: grouped,
+    }))
 }
 
 /** Every source to show: configured sources first, then built-in sources the API did not enable. */

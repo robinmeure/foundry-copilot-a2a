@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { availableKnowledgeSources, defaultKnowledgeSelection, KNOWLEDGE_SOURCE_OPTIONS, knowledgeRequestSelection, knowledgeSourceOptions,
+import { availableKnowledgeSources, defaultKnowledgeSelection, groupKnowledgeSources, KNOWLEDGE_SOURCE_OPTIONS, knowledgeRequestSelection, knowledgeSourceOptions,
   selectedKnowledgeAgents, selectedKnowledgeSources, setKnowledgeAgent, setKnowledgeSource,
   toggleAllKnowledgeSources, withOfferedKnowledgeSources } from '../src/knowledgeSelection.ts'
 
@@ -116,6 +116,22 @@ test('skill-described sources replace the built-in list and unconfigured built-i
   ])
   assert.deepEqual(options.slice(3).map(option => option.id), ['calendar', 'todo', 'planner', 'teams', 'people', 'kamervragen'])
   assert.deepEqual(availableKnowledgeSources({ sources: [] }), [], 'an empty report fails closed')
+})
+
+test('sources are grouped for settings tabs by reported group, with built-in fallbacks and Agents last', () => {
+  const options = knowledgeSourceOptions({ a2a: true, sources: [
+    { id: 'a2a', label: 'APIM agents', group: 'Agents' },
+    { id: 'wetten', label: 'Wetten', group: 'Legal research' },
+    { id: 'documents', label: 'Word & PowerPoint', group: 'Create' },
+    { id: 'mail', label: 'Mail' },
+  ] })
+  assert.equal(options.find(option => option.id === 'wetten')?.group, 'Legal research')
+  const groups = groupKnowledgeSources(options)
+  assert.deepEqual(groups.map(group => [group.id, group.label]), [
+    ['microsoft-365', 'Microsoft 365'], ['reference', 'Reference'], ['create', 'Create'],
+    ['legal-research', 'Legal research'], ['agents', 'Agents']])
+  assert.deepEqual(groups[0].options.map(option => option.id), ['mail', 'calendar', 'todo', 'planner', 'teams', 'people'])
+  assert.deepEqual(groups.flatMap(group => group.options).length, options.length, 'every source lands in one tab')
 })
 
 test('newly offered sources start selected once and later choices are kept', () => {

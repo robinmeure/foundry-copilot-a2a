@@ -45,6 +45,12 @@ Select all / Clear all operate on available sources only. These preferences allo
 the orchestrator decides which to invoke. No selection still allows document retrieval
 and general model answers. The chat contract remains
 `{ conversationId, text, sources: string[] }`.
+Settings groups tools into tabs by each source's `group` from `GET /api/capabilities`
+(Microsoft 365, Reference/Search, Create, other groups, then Agents), with orchestration and
+file notes under **General**, so the drawer fits the viewport without scrolling. Sources
+without a group fall back to a built-in group or **Other**. Tabs follow the WAI-ARIA tabs
+pattern (arrow keys, Home/End).
+
 
 ### Confirm-before-write Microsoft 365 actions
 
@@ -66,7 +72,7 @@ politely to screen readers. The layout fixture's last chat shows two mocked prop
 
 The settings drawer uses a native modal dialog for keyboard containment, inert background,
 Escape dismissal and focus restoration. Its entrance respects reduced-motion preferences.
-Orchestration and mock-session explanations live in this drawer. The workspace has no title bar or duplicate settings control.
+Orchestration, file and mock-session explanations live in this drawer's **General** tab. The workspace has no title bar or duplicate settings control.
 The attachment icon opens **Local file / SharePoint**. Local file uses the native file chooser
 with the Knowledge API's file limits. SharePoint opens
 a styled, keyboard-contained modal: search by site name or paste an HTTPS SharePoint site URL,

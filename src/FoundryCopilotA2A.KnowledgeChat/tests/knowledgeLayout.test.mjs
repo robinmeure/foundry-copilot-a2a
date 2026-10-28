@@ -72,6 +72,21 @@ test('verbose orchestration and file explanations are settings sections, rendere
   assert.ok(propElements('settings').some((element) => chat.tag(element) === 'SourceSettings'))
 })
 
+test('tool settings are tabbed per tool group with the general notes in a trailing tab', () => {
+  const [settings] = propElements('settings').filter((element) => chat.tag(element) === 'SourceSettings')
+  const nested = propElements('settings').filter((element) => element.parents.includes(settings.opening))
+  assert.ok(nested.some((element) => chat.tag(element) === 'SettingsSection'), 'general sections render inside the tabs')
+  const tools = jsx('SourceSettings.tsx')
+  const role = (value) => tools.elements.find((element) =>
+    tools.attribute(element.opening, 'role')?.initializer.getText(tools.tree) === `"${value}"`)
+  assert.ok(role('tablist') && role('tab') && role('tabpanel'))
+  const tab = role('tab').opening
+  for (const name of ['aria-selected', 'aria-controls', 'tabIndex', 'onKeyDown']) assert.ok(tools.attribute(tab, name), name)
+  assert.match(tools.source, /groupKnowledgeSources/)
+  assert.match(knowledgeCss, /\.settings-tabs\s*\{[^}]*overflow-x:\s*auto/)
+  assert.match(mobile, /\.settings-tab\s*\{[^}]*min-height:\s*44px/)
+})
+
 test('Graph action cards render inside the assistant reply as plain text with accessible live status', () => {
   const elements = propElements('renderTurnExtras')
   const cards = elements.find(element => chat.tag(element) === 'ActionCards')
