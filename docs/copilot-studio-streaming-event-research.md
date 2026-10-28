@@ -377,8 +377,8 @@ verification, not as output of this external-research task.
 
 ### Source locations cited by parent (repository-relative, not reviewed in this pass)
 
-- [Activity pipeline and progress](../src/FoundryCopilotA2A.Adapter/CopilotStudioInvoker.cs#L675)
-- [Final-text suppression and stream classification](../src/FoundryCopilotA2A.Adapter/CopilotStudioInvoker.cs#L1623)
+- [Activity pipeline and progress](../src/FoundryCopilotA2A.Adapter/CopilotStudio/SdkCopilotStudioInvoker.cs)
+- [Final-text suppression and stream classification](../src/FoundryCopilotA2A.Adapter/CopilotStudio/CopilotStudioAnswerStream.cs)
 - [Provider citation conversion](../src/FoundryCopilotA2A.Adapter/CopilotStudioCitations.cs#L9)
 - [A2A chat update conversion](../src/FoundryCopilotA2A.Adapter/CopilotStudioAdapterChatClient.cs#L56)
 - [Citation extension](../src/FoundryCopilotA2A.Adapter/AgentCitations.cs#L31)

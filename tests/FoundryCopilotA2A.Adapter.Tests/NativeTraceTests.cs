@@ -11,7 +11,7 @@ public sealed class NativeTraceTests
     {
         using var source = new ActivitySource($"native-trace-{Guid.NewGuid():N}");
         using var listener = Listen(source);
-        using var store = new SanitizedTraceStore(Options.Create(new AdapterOptions { MaxCacheEntries = 1 }));
+        using var store = new SanitizedTraceStore(TestConfiguration.From(new AdapterOptions { MaxCacheEntries = 1 }));
         var traceId = ActivityTraceId.CreateRandom();
 
         for (var index = 0; index < 5_000; index++)
@@ -45,7 +45,7 @@ public sealed class NativeTraceTests
     {
         using var source = new ActivitySource($"native-trace-{Guid.NewGuid():N}");
         using var listener = Listen(source);
-        using var store = new SanitizedTraceStore(Options.Create(new AdapterOptions()));
+        using var store = new SanitizedTraceStore(TestConfiguration.From(new AdapterOptions()));
         using var entry = source.StartActivity("entry", ActivityKind.Server)!;
         entry.SetTag("a2a.runtime", true);
         Assert.True(store.Register(entry, "tenant|user", "orchestrator"));
@@ -71,7 +71,7 @@ public sealed class NativeTraceTests
     {
         using var source = new ActivitySource($"native-trace-{Guid.NewGuid():N}");
         using var listener = Listen(source);
-        using var store = new SanitizedTraceStore(Options.Create(new AdapterOptions()));
+        using var store = new SanitizedTraceStore(TestConfiguration.From(new AdapterOptions()));
         using var entry = source.StartActivity("entry", ActivityKind.Server)!;
         entry.SetTag("a2a.runtime", true);
         Assert.True(store.Register(entry, "tenant|user", "orchestrator"));
@@ -100,7 +100,7 @@ public sealed class NativeTraceTests
     {
         using var source = new ActivitySource($"native-trace-{Guid.NewGuid():N}");
         using var listener = Listen(source);
-        using var store = new SanitizedTraceStore(Options.Create(new AdapterOptions()));
+        using var store = new SanitizedTraceStore(TestConfiguration.From(new AdapterOptions()));
         var traceId = ActivityTraceId.CreateRandom();
         var accepted = 0;
 
@@ -130,7 +130,7 @@ public sealed class NativeTraceTests
         using var source = new ActivitySource($"native-trace-{Guid.NewGuid():N}");
         using var listener = Listen(source);
         var clock = new TestClock();
-        using var store = new SanitizedTraceStore(Options.Create(new AdapterOptions()), clock);
+        using var store = new SanitizedTraceStore(TestConfiguration.From(new AdapterOptions()), clock);
         using var entry = source.StartActivity("entry", ActivityKind.Server)!;
         entry.SetTag("a2a.runtime", true);
         Assert.True(store.Register(entry, "tenant|user", "orchestrator"));
@@ -161,7 +161,7 @@ public sealed class NativeTraceTests
         using var source = new ActivitySource($"native-trace-{Guid.NewGuid():N}");
         using var listener = Listen(source);
         var clock = new TestClock();
-        using var store = new SanitizedTraceStore(Options.Create(new AdapterOptions()), clock);
+        using var store = new SanitizedTraceStore(TestConfiguration.From(new AdapterOptions()), clock);
         using var expired = source.StartActivity("expired", ActivityKind.Server)!;
         expired.SetTag("a2a.runtime", true);
         Assert.True(store.Register(expired, "tenant|user", "orchestrator"));
@@ -191,7 +191,7 @@ public sealed class NativeTraceTests
     {
         using var source = new ActivitySource($"native-trace-{Guid.NewGuid():N}");
         using var listener = Listen(source);
-        using var store = new SanitizedTraceStore(Options.Create(new AdapterOptions()));
+        using var store = new SanitizedTraceStore(TestConfiguration.From(new AdapterOptions()));
         using var entry = source.StartActivity("entry", ActivityKind.Server)!;
         entry.SetTag("a2a.runtime", true);
         Assert.True(store.Register(entry, "tenant|user", "orchestrator"));
@@ -225,7 +225,7 @@ public sealed class NativeTraceTests
     {
         using var source = new ActivitySource($"native-trace-{Guid.NewGuid():N}");
         using var listener = Listen(source);
-        using var store = new SanitizedTraceStore(Options.Create(new AdapterOptions()));
+        using var store = new SanitizedTraceStore(TestConfiguration.From(new AdapterOptions()));
         using var entry = source.StartActivity("entry", ActivityKind.Server)!;
         entry.SetTag("a2a.runtime", true);
         Assert.True(store.Register(entry, "tenant|first", "orchestrator"));

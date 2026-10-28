@@ -61,32 +61,40 @@ internal static class AgentCitations
             throw Invalid("Unsupported citation schema version.");
         }
 
-        var sources = RequiredArray(value, "sources", 100).EnumerateArray()
-            .Select(source =>
-            {
-                if (source.ValueKind != JsonValueKind.Object ||
-                    !source.TryGetProperty("originatingAgent", out var agent) ||
-                    agent.ValueKind != JsonValueKind.Object)
-                {
-                    throw Invalid("A citation source must identify its originating agent.");
-                }
+        var sources = new List<CitationSource>();
+        foreach (var source in RequiredArray(value, "sources", 100).EnumerateArray())
+        {
+            sources.Add(ReadSource(source));
+        }
 
-                return new CitationSource(
-                    RequiredString(source, "id", 256),
-                    RequiredString(source, "title"),
-                    new AgentResponder(
-                        RequiredString(agent, "id", 256), RequiredString(agent, "name")),
-                    OptionalString(source, "url"),
-                    OptionalString(source, "originatingMessageId", 256));
-            }).ToArray();
-        var citations = RequiredArray(value, "citations", 200).EnumerateArray()
-            .Select(citation => new CitationReference(
+        var citations = new List<CitationReference>();
+        foreach (var citation in RequiredArray(value, "citations", 200).EnumerateArray())
+        {
+            citations.Add(new CitationReference(
                 RequiredString(citation, "sourceId", 256),
                 OptionalString(citation, "marker"),
                 OptionalString(citation, "locator"),
-                OptionalString(citation, "quote")))
-            .ToArray();
+                OptionalString(citation, "quote")));
+        }
+
         return Merge(null, new CitationBundle(sources, citations));
+    }
+
+    private static CitationSource ReadSource(JsonElement source)
+    {
+        if (source.ValueKind != JsonValueKind.Object ||
+            !source.TryGetProperty("originatingAgent", out var agent) ||
+            agent.ValueKind != JsonValueKind.Object)
+        {
+            throw Invalid("A citation source must identify its originating agent.");
+        }
+
+        return new CitationSource(
+            RequiredString(source, "id", 256),
+            RequiredString(source, "title"),
+            new AgentResponder(RequiredString(agent, "id", 256), RequiredString(agent, "name")),
+            OptionalString(source, "url"),
+            OptionalString(source, "originatingMessageId", 256));
     }
 
     public static CitationBundle? Merge(CitationBundle? current, CitationBundle? incoming)

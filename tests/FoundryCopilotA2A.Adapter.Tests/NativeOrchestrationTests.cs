@@ -242,7 +242,7 @@ public sealed class NativeOrchestrationTests
     }
 
     private static AgentCatalog CreateCatalog(string[] targets) => new(
-        Options.Create(new AdapterOptions { Backend = "CopilotStudio" }),
+        TestConfiguration.From(new AdapterOptions { Backend = "CopilotStudio" }),
         Options.Create(new CopilotStudioOptions
         {
             DefaultAgent = "studio",
@@ -253,7 +253,8 @@ public sealed class NativeOrchestrationTests
                 ["second"] = new() { DisplayName = "Second" },
                 ["unsupported"] = new()
                 {
-                    DisplayName = "Unsupported", Harness = CopilotStudioHarness.GitHubCopilot
+                    DisplayName = "Unsupported",
+                    Harness = CopilotStudioHarness.GitHubCopilot
                 }
             }
         }),
@@ -289,7 +290,7 @@ public sealed class NativeOrchestrationTests
                 new StubCredential(),
                 clientFactory,
                 new DelegatedTokenBroker(),
-                Options.Create(new AuthenticationOptions { Enabled = true })),
+                TestConfiguration.From(new AuthenticationOptions { Enabled = true })),
             new ApiManagementA2AInvoker(apiManagementAgents, clientFactory));
     }
 

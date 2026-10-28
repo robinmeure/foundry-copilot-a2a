@@ -43,7 +43,7 @@ Foundry or Copilot Studio
 The gateway behavior is implemented in the
 [delegated operation policy](../infra/policies/citadel-delegated-operation.xml).
 The shared `OboTokenBroker` in
-[CopilotStudioInvoker.cs](../src/FoundryCopilotA2A.Adapter/CopilotStudioInvoker.cs)
+[OboTokenBroker.cs](../src/FoundryCopilotA2A.Adapter/Authentication/OboTokenBroker.cs)
 uses MSAL for token acquisition.
 
 | Responsibility | Recommended owner |
@@ -116,7 +116,7 @@ one limits how far the exchange can be relocated or how registrations can be reu
 The adapter already inspects the caller's token before exchanging it: it verifies
 that the token was issued for its own audience and detects app-only callers, whose
 handling differs by provider. See
-[CopilotStudioInvoker.cs](../src/FoundryCopilotA2A.Adapter/CopilotStudioInvoker.cs).
+[OboTokenBroker.cs](../src/FoundryCopilotA2A.Adapter/Authentication/OboTokenBroker.cs).
 
 Relaying a middle-tier token onward increases interception risk and prevents token
 binding, claim step-up (such as MFA or sign-in frequency), and device-based
@@ -397,7 +397,7 @@ not each individual agent or running adapter instance.
 The shared tenant, client ID, and credential belong to `CopilotStudioOptions`.
 Individual agents have IDs, endpoints, and routing configuration rather than their
 own OBO credentials. See
-[AdapterOptions.cs](../src/FoundryCopilotA2A.Adapter/AdapterOptions.cs).
+[CopilotStudioOptions.cs](../src/FoundryCopilotA2A.Adapter/Configuration/CopilotStudioOptions.cs).
 
 | Component | Current registration arrangement |
 | --- | --- |

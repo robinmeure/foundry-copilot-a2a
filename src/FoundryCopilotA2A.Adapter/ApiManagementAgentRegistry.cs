@@ -202,70 +202,14 @@ public sealed class ApiManagementAgentRegistry(
         {
             options.Value.Validate();
 
-            AccessToken token;
-            using (var tokenActivity =
-                   AdapterTelemetry.StartActivity("apim.discovery.acquire_arm_token"))
-            {
-                var tokenStarted = Stopwatch.GetTimestamp();
-                var tokenCompleted = false;
-                try
-                {
-                    token = await credential.GetTokenAsync(ArmTokenRequest, cancellationToken);
-                    tokenCompleted = true;
-                    tokenActivity?.SetStatus(ActivityStatusCode.Ok);
-                }
-                catch (Exception exception) when (exception is not OperationCanceledException)
-                {
-                    AdapterTelemetry.RecordFailure(tokenActivity, exception);
-                    throw;
-                }
-                finally
-                {
-                    AdapterTelemetry.RecordApiManagementDiscoveryStage(
-                        tokenActivity,
-                        Stopwatch.GetElapsedTime(tokenStarted),
-                        "credential",
-                        tokenCompleted);
-                }
-            }
+            var token = await AcquireArmTokenAsync(cancellationToken);
 
             var serviceUrl =
                 $"{ArmEndpoint}/subscriptions/{Uri.EscapeDataString(options.Value.SubscriptionId)}" +
                 $"/resourceGroups/{Uri.EscapeDataString(options.Value.ResourceGroup)}" +
                 "/providers/Microsoft.ApiManagement/service/" +
                 Uri.EscapeDataString(options.Value.ServiceName);
-            Uri gatewayUrl;
-            IReadOnlyList<ApimApi> apis;
-            using (var managementActivity =
-                   AdapterTelemetry.StartActivity("apim.discovery.read_management"))
-            {
-                var managementStarted = Stopwatch.GetTimestamp();
-                var managementCompleted = false;
-                try
-                {
-                    gatewayUrl = await GetGatewayUrlAsync(
-                        serviceUrl,
-                        token.Token,
-                        cancellationToken);
-                    apis = await ListApisAsync(serviceUrl, token.Token, cancellationToken);
-                    managementCompleted = true;
-                    managementActivity?.SetTag("apim.discovery.api.count", apis.Count);
-                    managementActivity?.SetStatus(ActivityStatusCode.Ok);
-                }
-                catch (Exception exception) when (exception is not OperationCanceledException)
-                {
-                    AdapterTelemetry.RecordFailure(managementActivity, exception);
-                    throw;
-                }
-                finally
-                {
-                    AdapterTelemetry.RecordApiManagementDiscoveryStage(
-                        managementActivity,
-                        Stopwatch.GetElapsedTime(managementStarted),
-                        "management",
-                        managementCompleted);
-                }
-            }
+            var (gatewayUrl, apis) = await ReadManagementAsync(serviceUrl, token.Token, cancellationToken);
 
             var requestedIds = options.Value.ApiIds
                 .Select(id => id.Trim())
@@ -297,59 +241,9 @@ public sealed class ApiManagementAgentRegistry(
                 }
             }
 
-            var discovered = new List<ResolvedApiManagementAgent>();
-            using (var cardsActivity =
-                   AdapterTelemetry.StartActivity("apim.discovery.read_agent_cards"))
-            {
-                var cardsStarted = Stopwatch.GetTimestamp();
-                var cardsCompleted = false;
-                try
-                {
-                    // Results are stored by candidate index so the snapshot order, and therefore
-                    // duplicate detection, does not depend on which card returns first.
-                    var results = new ResolvedApiManagementAgent?[candidates.Length];
-                    cardsActivity?.SetTag(
-                        "apim.discovery.card.concurrency",
-                        options.Value.MaxConcurrentCardReads);
-                    await Parallel.ForEachAsync(
-                        Enumerable.Range(0, candidates.Length),
-                        new ParallelOptions
-                        {
-                            MaxDegreeOfParallelism = options.Value.MaxConcurrentCardReads,
-                            CancellationToken = cancellationToken
-                        },
-                        async (index, token) =>
-                        {
-                            results[index] = await TryReadAgentAsync(
-                                gatewayUrl,
-                                candidates[index],
-                                explicitlyRequested: requestedIds.Count > 0,
-                                token);
-                        });
-                    discovered.AddRange(results.OfType<ResolvedApiManagementAgent>());
-                    cardsCompleted = true;
-                    cardsActivity?.SetStatus(ActivityStatusCode.Ok);
-                }
-                catch (Exception exception) when (exception is not OperationCanceledException)
-                {
-                    AdapterTelemetry.RecordFailure(cardsActivity, exception);
-                    throw;
-                }
-                finally
-                {
-                    discoveredCount = discovered.Count;
-                    cardsActivity?.SetTag("apim.discovery.candidate.count", candidates.Length);
-                    cardsActivity?.SetTag("apim.discovery.agent.count", discoveredCount);
-                    cardsActivity?.SetTag(
-                        "apim.discovery.skipped.count",
-                        candidates.Length - discoveredCount);
-                    AdapterTelemetry.RecordApiManagementDiscoveryStage(
-                        cardsActivity,
-                        Stopwatch.GetElapsedTime(cardsStarted),
-                        "agent_cards",
-                        cardsCompleted);
-                }
-            }
+            var discovered = await ReadAgentCardsAsync(
+                gatewayUrl, candidates, explicitlyRequested: requestedIds.Count > 0, cancellationToken);
+            discoveredCount = discovered.Count;
 
             var duplicate = discovered
                 .GroupBy(agent => agent.Id, StringComparer.OrdinalIgnoreCase)
@@ -377,6 +271,106 @@ public sealed class ApiManagementAgentRegistry(
                 candidateCount,
                 discoveredCount,
                 refreshCompleted);
+        }
+    }
+
+    private async Task<IReadOnlyList<ResolvedApiManagementAgent>> ReadAgentCardsAsync(
+        Uri gatewayUrl,
+        ApimApi[] candidates,
+        bool explicitlyRequested,
+        CancellationToken cancellationToken)
+    {
+        using var activity = AdapterTelemetry.StartActivity("apim.discovery.read_agent_cards");
+        var started = Stopwatch.GetTimestamp();
+        var completed = false;
+        var discovered = new List<ResolvedApiManagementAgent>();
+        try
+        {
+            // Index results by candidate so snapshot order never depends on response timing.
+            var results = new ResolvedApiManagementAgent?[candidates.Length];
+            activity?.SetTag("apim.discovery.card.concurrency", options.Value.MaxConcurrentCardReads);
+            await Parallel.ForEachAsync(
+                Enumerable.Range(0, candidates.Length),
+                new ParallelOptions
+                {
+                    MaxDegreeOfParallelism = options.Value.MaxConcurrentCardReads,
+                    CancellationToken = cancellationToken
+                },
+                async (index, token) =>
+                {
+                    results[index] = await TryReadAgentAsync(
+                        gatewayUrl, candidates[index], explicitlyRequested, token);
+                });
+            discovered.AddRange(results.OfType<ResolvedApiManagementAgent>());
+            completed = true;
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return discovered;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AdapterTelemetry.RecordFailure(activity, exception);
+            throw;
+        }
+        finally
+        {
+            activity?.SetTag("apim.discovery.candidate.count", candidates.Length);
+            activity?.SetTag("apim.discovery.agent.count", discovered.Count);
+            activity?.SetTag("apim.discovery.skipped.count", candidates.Length - discovered.Count);
+            AdapterTelemetry.RecordApiManagementDiscoveryStage(
+                activity, Stopwatch.GetElapsedTime(started), "agent_cards", completed);
+        }
+    }
+
+    private async Task<AccessToken> AcquireArmTokenAsync(CancellationToken cancellationToken)
+    {
+        using var activity = AdapterTelemetry.StartActivity("apim.discovery.acquire_arm_token");
+        var started = Stopwatch.GetTimestamp();
+        var completed = false;
+        try
+        {
+            var token = await credential.GetTokenAsync(ArmTokenRequest, cancellationToken);
+            completed = true;
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return token;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AdapterTelemetry.RecordFailure(activity, exception);
+            throw;
+        }
+        finally
+        {
+            AdapterTelemetry.RecordApiManagementDiscoveryStage(
+                activity, Stopwatch.GetElapsedTime(started), "credential", completed);
+        }
+    }
+
+    private async Task<(Uri GatewayUrl, IReadOnlyList<ApimApi> Apis)> ReadManagementAsync(
+        string serviceUrl,
+        string token,
+        CancellationToken cancellationToken)
+    {
+        using var activity = AdapterTelemetry.StartActivity("apim.discovery.read_management");
+        var started = Stopwatch.GetTimestamp();
+        var completed = false;
+        try
+        {
+            var gatewayUrl = await GetGatewayUrlAsync(serviceUrl, token, cancellationToken);
+            var apis = await ListApisAsync(serviceUrl, token, cancellationToken);
+            completed = true;
+            activity?.SetTag("apim.discovery.api.count", apis.Count);
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return (gatewayUrl, apis);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AdapterTelemetry.RecordFailure(activity, exception);
+            throw;
+        }
+        finally
+        {
+            AdapterTelemetry.RecordApiManagementDiscoveryStage(
+                activity, Stopwatch.GetElapsedTime(started), "management", completed);
         }
     }
 

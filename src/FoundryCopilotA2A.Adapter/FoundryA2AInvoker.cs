@@ -13,7 +13,7 @@ public sealed class FoundryA2AInvoker(
     TokenCredential credential,
     IHttpClientFactory httpClientFactory,
     IOboTokenBroker tokenBroker,
-    IOptions<AuthenticationOptions> authenticationOptions) : IAgentInvoker
+    IConfiguration configuration) : IAgentInvoker
 {
     private static readonly TokenRequestContext TokenRequest =
         new(["https://ai.azure.com/.default"]);
@@ -133,7 +133,7 @@ public sealed class FoundryA2AInvoker(
         A2ARequestMetadata metadata,
         CancellationToken cancellationToken)
     {
-        if (!authenticationOptions.Value.Enabled)
+        if (!configuration.GetValue<bool>("Authentication:Enabled"))
         {
             return (await credential.GetTokenAsync(TokenRequest, cancellationToken)).Token;
         }

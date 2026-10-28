@@ -142,7 +142,7 @@ public class CopilotStudioOptionsValidationTests
             Harness = CopilotStudioHarness.GitHubCopilot
         };
         var catalog = new AgentCatalog(
-            Options.Create(new AdapterOptions { Backend = "CopilotStudio" }),
+            TestConfiguration.From(new AdapterOptions { Backend = "CopilotStudio" }),
             Options.Create(options),
             Options.Create(new FoundryOptions()));
 
@@ -164,7 +164,7 @@ public class CopilotStudioOptionsValidationTests
             DirectConnectUrl = DirectConnectUrl
         };
         var catalog = new AgentCatalog(
-            Options.Create(new AdapterOptions
+            TestConfiguration.From(new AdapterOptions
             {
                 Backend = "CopilotStudio",
                 EnableFailureMock = true

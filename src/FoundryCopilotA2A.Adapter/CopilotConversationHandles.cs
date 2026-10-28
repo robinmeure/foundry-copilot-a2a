@@ -30,10 +30,10 @@ public sealed class CopilotConversationHandles
 
     public CopilotConversationHandles(
         IDataProtectionProvider dataProtectionProvider,
-        IOptions<AdapterOptions> options)
+        IConfiguration configuration)
     {
         _protector = dataProtectionProvider.CreateProtector(Purpose).ToTimeLimitedDataProtector();
-        _lifetime = TimeSpan.FromMinutes(options.Value.ConversationHandleLifetimeMinutes);
+        _lifetime = TimeSpan.FromMinutes(configuration.GetValue("Adapter:ConversationHandleLifetimeMinutes", 480));
     }
 
     public string? Issue(A2ARequestMetadata metadata, string conversationId) =>

@@ -515,7 +515,7 @@ not protocol-contract questions.
 ## 9. Implementation surfaces and data policy
 
 1. **Capture before text projection:** add a typed plan-event slot to
-   [`CopilotInvocationUpdate`](../src/FoundryCopilotA2A.Adapter/CopilotStudioInvoker.cs).
+   [`CopilotInvocationUpdate`](../src/FoundryCopilotA2A.Adapter/Contracts/CopilotInvocation.cs).
    Capture every supported event independently of thought/summary extraction, text deduplication
    and the "answer started" suppression. Retain `DynamicPlanReceived` after the answer.
 2. **Retain ordered events without answer pollution:** update the streaming content conversion

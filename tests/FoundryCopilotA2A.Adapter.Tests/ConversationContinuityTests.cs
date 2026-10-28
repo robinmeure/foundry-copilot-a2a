@@ -167,7 +167,7 @@ public sealed class ConversationContinuityTests(A2AAdapterFactory factory) : ICl
             ActivityStopped = activity => { lock (spans) spans.Add(activity); }
         };
         ActivitySource.AddActivityListener(listener);
-        using var store = new IdempotencyStore(Options.Create(new AdapterOptions()), new StubLifetime());
+        using var store = new IdempotencyStore(TestConfiguration.From(new AdapterOptions()), new StubLifetime());
 
         using (var parent = AdapterTelemetry.StartActivity("test.request"))
         {
@@ -211,7 +211,7 @@ public sealed class ConversationContinuityTests(A2AAdapterFactory factory) : ICl
             ActivityStopped = activity => { lock (spans) spans.Add(activity); }
         };
         ActivitySource.AddActivityListener(listener);
-        using var store = new IdempotencyStore(Options.Create(new AdapterOptions()), new StubLifetime());
+        using var store = new IdempotencyStore(TestConfiguration.From(new AdapterOptions()), new StubLifetime());
 
         using (var parent = AdapterTelemetry.StartActivity("test.request"))
         {
@@ -334,7 +334,7 @@ public sealed class ConversationContinuityTests(A2AAdapterFactory factory) : ICl
     }
 
     private static CopilotConversationHandles CreateHandles() =>
-        new(new EphemeralDataProtectionProvider(), Options.Create(new AdapterOptions()));
+        new(new EphemeralDataProtectionProvider(), TestConfiguration.From(new AdapterOptions()));
 
     private static A2ARequestMetadata Metadata(string userId, string agentId, string contextId) => new()
     {

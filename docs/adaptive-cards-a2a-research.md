@@ -548,7 +548,7 @@ All line numbers are approximate (`~`) as supplied by the parent agent.
 
 ### 8.1 Adapter-side text/citation-only plumbing
 
-- [`src/FoundryCopilotA2A.Adapter/CopilotStudioInvoker.cs`](../src/FoundryCopilotA2A.Adapter/CopilotStudioInvoker.cs):
+- [Invocation contracts](../src/FoundryCopilotA2A.Adapter/Contracts/CopilotInvocation.cs):
   `CopilotInvocationResult`/`Update` records (~17/29) only carry text,
   citations, identity, and conversation handle fields.
   `ExecuteTurnStreamAsync` (~466-620) ignores startup activities except
@@ -659,7 +659,7 @@ All line numbers are approximate (`~`) as supplied by the parent agent.
   sanitized, fallback-only persistence model initially - explicitly **not**
   persisting action handles, hidden data, or input values; history would
   remain text-based.
-- [`src/FoundryCopilotA2A.Adapter/TraceVisualization.cs`](../src/FoundryCopilotA2A.Adapter/TraceVisualization.cs)
+- [TraceSanitizer.cs](../src/FoundryCopilotA2A.Adapter/Tracing/TraceSanitizer.cs)
   (~594) redacts attachments and credential-like property names today, but
   **not** arbitrary `Activity.Value`/form-data shapes - so a typed card/action
   envelope would need its own explicit redaction rule, and the same applies to

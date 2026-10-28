@@ -23,18 +23,7 @@ public sealed class RoutingAgentInvoker(
         A2ARequestMetadata metadata,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var agent = catalog.TryResolveAgent(metadata.AgentId, out var configuredAgent)
-            ? configuredAgent!
-            : (await apiManagementAgents.TryResolveAsync(metadata.AgentId, cancellationToken) is { } apiAgent
-                ? new AgentDescriptor(
-                    apiAgent.Id,
-                    apiAgent.DisplayName,
-                    AgentProvider.ApiManagement,
-                    true,
-                    null,
-                    [])
-                : throw new AdapterRequestException(
-                    $"Agent '{metadata.AgentId}' is not configured."));
+        var agent = await ResolveAgentAsync(metadata.AgentId, cancellationToken);
         if (metadata.Files.Count > 0 && agent.ProviderKind != AgentProvider.CopilotStudio)
         {
             throw new AdapterRequestException(A2AInputFiles.UnsupportedProviderMessage);
@@ -103,5 +92,30 @@ public sealed class RoutingAgentInvoker(
                 Responder = responder
             };
         }
+
+    }
+
+    private async Task<AgentDescriptor> ResolveAgentAsync(
+        string agentId,
+        CancellationToken cancellationToken)
+    {
+        if (catalog.TryResolveAgent(agentId, out var configuredAgent))
+        {
+            return configuredAgent!;
+        }
+
+        var discoveredAgent = await apiManagementAgents.TryResolveAsync(agentId, cancellationToken);
+        if (discoveredAgent is null)
+        {
+            throw new AdapterRequestException($"Agent '{agentId}' is not configured.");
+        }
+
+        return new AgentDescriptor(
+            discoveredAgent.Id,
+            discoveredAgent.DisplayName,
+            AgentProvider.ApiManagement,
+            Supported: true,
+            StatusMessage: null,
+            ChainTargets: []);
     }
 }

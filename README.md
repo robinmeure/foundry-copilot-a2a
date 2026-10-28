@@ -934,6 +934,25 @@ npm run build --workspaces --if-present
 These checks need no live Azure resources. They do not replace an authenticated end-to-end
 test of a published provider agent or APIM policy.
 
+### Code navigation
+
+The adapter's [Program.cs](src/FoundryCopilotA2A.Adapter/Program.cs) shows middleware order
+and endpoint registration. [Composition](src/FoundryCopilotA2A.Adapter/Composition) contains
+startup registration and validation; [Endpoints](src/FoundryCopilotA2A.Adapter/Endpoints)
+contains runtime, diagnostics and agent-card mapping.
+
+- [CopilotStudio](src/FoundryCopilotA2A.Adapter/CopilotStudio): turn orchestration, SDK activity interpretation and mocks.
+- [Conversations](src/FoundryCopilotA2A.Adapter/Conversations): history, conversation caching and shared idempotent invocations.
+- [Authentication](src/FoundryCopilotA2A.Adapter/Authentication): caller identity and token exchange.
+- [Streaming](src/FoundryCopilotA2A.Adapter/Streaming): SSE parsing and A2A answer accumulation.
+- [Tracing](src/FoundryCopilotA2A.Adapter/Tracing): caller-owned trace storage and redaction.
+- [Contracts](src/FoundryCopilotA2A.Adapter/Contracts): request, response and diagnostic data.
+
+Keep procedures in execution order, use named helpers for meaningful steps, and keep mutable
+state with its owner. Prefer plain branches over dense expressions. Comments should explain
+protocol, concurrency or safety constraints rather than narrate statements. Do not introduce
+an interface or a generic pipeline merely to shorten a file.
+
 ## Run the authenticated web interface
 
 The frontend and adapter use separate app registrations. Create the backend registration first,
@@ -1932,7 +1951,7 @@ absent from a file still have the defaults defined by the option classes:
 
 | Source | Supplies | Notes |
 | --- | --- | --- |
-| [AdapterOptions.cs](src/FoundryCopilotA2A.Adapter/AdapterOptions.cs) | Option defaults, including `CopilotStudio:Cloud=Prod` | Applies when a section or value is absent. |
+| [Configuration](src/FoundryCopilotA2A.Adapter/Configuration) | Startup validation and structured provider settings, including `CopilotStudio:Cloud=Prod` | Defaults preserve behavior when a section or value is absent. |
 | Adapter [appsettings.json](src/FoundryCopilotA2A.Adapter/appsettings.json) | Safe adapter/authentication defaults and log levels | Deliberately fails closed: it cannot start the adapter on its own. |
 | AppHost [appsettings.json](src/FoundryCopilotA2A.AppHost/appsettings.json) and user secrets | Local orchestration inputs | [AppHost.cs](src/FoundryCopilotA2A.AppHost/AppHost.cs) maps selected settings and secret parameters into adapter/frontend environment variables. |
 | CLI `run-mock` / `run-adapter` | Environment for one child process | The client secret is read from `COPILOT_STUDIO_CLIENT_SECRET`. |
@@ -1943,6 +1962,11 @@ variables → command line, with Development user secrets inserted before enviro
 for projects configured to use them. Later providers win, and `__` maps to `:`. There is no
 adapter-specific Development settings file to restore; the AppHost retains its own logging-only
 [Development settings](src/FoundryCopilotA2A.AppHost/appsettings.Development.json).
+
+Services needing simple adapter/authentication values consume `IConfiguration` directly;
+they do not require injected adapter/authentication options wrappers. Startup retains a
+validation snapshot, while structured provider settings still describe agent catalogs and SDK
+connection inputs.
 
 AppHost keys such as `AdapterBackend`, `GatewayBaseUrl`, `AdapterPublicBaseUrl`, and
 `AdapterRequestTimeoutSeconds` are orchestration inputs, not adapter section names. The AppHost

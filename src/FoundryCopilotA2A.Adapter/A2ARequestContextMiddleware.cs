@@ -22,17 +22,15 @@ public sealed class A2ARequestContextMiddleware(
         var isRuntimeRequest =
             HttpMethods.IsPost(context.Request.Method) &&
             TryResolveRuntimeAgent(context.Request.Path, out routeAgentId);
-        if (isRuntimeRequest)
+        if (!isRuntimeRequest)
         {
-            var extensionHeader = context.Request.Headers["A2A-Version"] == "1.0"
-                ? AgentPlanUpdates.Header : AgentPlanUpdates.LegacyHeader;
-            planExtension.Active = context.Request.Headers[extensionHeader].ToString()
-                .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
-                .Contains(AgentPlanUpdates.ExtensionUri, StringComparer.Ordinal);
-            if (planExtension.Active)
-            {
-                context.Response.Headers[extensionHeader] = AgentPlanUpdates.ExtensionUri;
-            }
+            await next(context);
+            return;
+        }
+
+        try
+        {
+            NegotiatePlanExtension(context, planExtension);
             if (routeAgentId is not null)
             {
                 context.Items[AdapterConstants.RouteAgentItem] =
@@ -40,125 +38,28 @@ public sealed class A2ARequestContextMiddleware(
             }
 
             Activity.Current?.SetTag("a2a.runtime", true);
-            context.Request.EnableBuffering();
-
-            string? messageId = null;
-            string? contextId = null;
-            string? payloadHash = null;
-            JsonElement requestId = default;
-
-            try
+            var (valid, requestId) = await ReadRequestBodyAsync(context);
+            if (!valid)
             {
-                using var document = await JsonDocument.ParseAsync(
-                    context.Request.Body,
-                    cancellationToken: context.RequestAborted);
-
-                if (document.RootElement.ValueKind == JsonValueKind.Object &&
-                    document.RootElement.TryGetProperty("method", out var methodElement) &&
-                    methodElement.ValueKind == JsonValueKind.String)
-                {
-                    Activity.Current?.SetTag("rpc.system", "jsonrpc");
-                    Activity.Current?.SetTag("rpc.method", methodElement.GetString());
-                }
-
-                if (document.RootElement.ValueKind == JsonValueKind.Object &&
-                    document.RootElement.TryGetProperty("id", out var idElement))
-                {
-                    requestId = idElement.Clone();
-                }
-
-                if (TryGetObject(document.RootElement, "params", out var parameters) &&
-                    TryGetObject(parameters, "message", out var message))
-                {
-                    if (TryGetString(message, "contextId", out contextId))
-                    {
-                        context.Items[AdapterConstants.ContextIdItem] = contextId;
-                    }
-
-                    if (TryGetString(message, "messageId", out messageId))
-                    {
-                        context.Items[AdapterConstants.MessageIdItem] = messageId;
-                    }
-
-                    var files = A2AInputFiles.Read(message);
-                    context.Items[AdapterConstants.FilesItem] = files;
-                    payloadHash = PayloadHash.Compute(message, files);
-                    context.Items[AdapterConstants.PayloadHashItem] = payloadHash;
-
-                    var history = ReadHistory(message);
-                    if (history.Count > 0)
-                    {
-                        context.Items[AdapterConstants.HistoryItem] = history;
-                    }
-
-                    Activity.Current?.SetTag("a2a.history.turns", history.Count);
-
-                    var conversationHandles = ReadConversationHandles(message);
-                    if (conversationHandles.Count > 0)
-                    {
-                        context.Items[AdapterConstants.ConversationHandlesItem] = conversationHandles;
-                    }
-                }
-
-                Activity.Current?.SetTag("a2a.context.present", contextId is not null);
-                Activity.Current?.SetTag("a2a.message_id.present", messageId is not null);
-            }
-            catch (AdapterRequestException exception)
-            {
-                logger.LogWarning("Refused invalid file input: {Reason}", exception.Message);
-                await WriteJsonRpcErrorAsync(context, requestId, InvalidParamsErrorCode, exception.Message);
                 return;
             }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                // Never let malformed or unexpectedly shaped input escape this middleware:
-                // it would bypass the A2A layer's JSON-RPC error translation and surface as a 500.
-                logger.LogDebug(exception, "A2A metadata extraction skipped for unusable request body.");
-            }
-            finally
-            {
-                TryRewind(context.Request.Body);
-            }
 
             try
             {
-                var requestedAgentId = await ResolveRequestedAgentIdAsync(
-                    context,
-                    agentCatalog,
-                    apiManagementAgents);
-                if (context.Items[AdapterConstants.FilesItem] is IReadOnlyList<A2AInputFile> { Count: > 0 } &&
-                    (!agentCatalog.TryResolveAgent(requestedAgentId, out var fileAgent) ||
-                     fileAgent?.ProviderKind != AgentProvider.CopilotStudio))
-                {
-                    throw new AdapterRequestException(A2AInputFiles.UnsupportedProviderMessage);
-                }
-                context.Items[AdapterConstants.SelectedAgentItem] = requestedAgentId;
-                var requestedChainTarget = context.Request.Headers[
-                    AdapterConstants.ChainTargetHeaderName].ToString();
-                if (!string.IsNullOrWhiteSpace(requestedChainTarget))
-                {
-                    var target = agentCatalog.ResolveChainTarget(
-                        requestedAgentId,
-                        requestedChainTarget);
-                    context.Items[AdapterConstants.ChainTargetItem] = target.Id;
-                    Activity.Current?.SetTag("a2a.chain.target_agent", target.Id);
-                    payloadHash = PayloadHash.ComputeFromPrompt($"{payloadHash}\n{target.Id}");
-                    context.Items[AdapterConstants.PayloadHashItem] = payloadHash;
-                }
+                await SelectAgentAsync(context, agentCatalog, apiManagementAgents);
             }
             catch (AdapterRequestException exception)
             {
                 Activity.Current?.SetTag("a2a.outcome", "invalid_agent");
-                logger.LogWarning(
-                    "Refused an A2A request selecting an unconfigured agent.");
+                logger.LogWarning("Refused an A2A request selecting an unconfigured agent.");
                 await WriteJsonRpcErrorAsync(
-                    context,
-                    requestId,
-                    InvalidParamsErrorCode,
-                    exception.Message);
+                    context, requestId, InvalidParamsErrorCode, exception.Message);
                 return;
             }
 
+            var messageId = context.Items[AdapterConstants.MessageIdItem] as string;
+            var contextId = context.Items[AdapterConstants.ContextIdItem] as string;
+            var payloadHash = context.Items[AdapterConstants.PayloadHashItem] as string;
             if (messageId is not null && payloadHash is not null &&
                 IsConflictingReplay(idempotencyStore, metadataAccessor, contextId, messageId, payloadHash))
             {
@@ -175,32 +76,161 @@ public sealed class A2ARequestContextMiddleware(
                 return;
             }
 
-            try
-            {
-                // The A2A server finishes streaming work on a background execution context.
-                // Capture the tenant-scoped identity directly so session persistence remains
-                // isolated after ASP.NET Core clears its ambient HttpContext.
-                isolationKeyContext.Current = metadataAccessor.ResolveUserId(context);
-            }
-            catch (UnauthorizedAccessException exception)
-            {
-                logger.LogWarning(
-                    exception,
-                    "No caller isolation key is available; the A2A session store will reject the request.");
-            }
-        }
-
-        try
-        {
+            CaptureIsolationKey(context, metadataAccessor, isolationKeyContext);
             await next(context);
         }
         finally
         {
-            if (isRuntimeRequest)
+            isolationKeyContext.Current = null;
+            planExtension.Active = false;
+        }
+    }
+
+    private static void NegotiatePlanExtension(HttpContext context, PlanExtensionContext planExtension)
+    {
+        var extensionHeader = context.Request.Headers["A2A-Version"] == "1.0"
+            ? AgentPlanUpdates.Header : AgentPlanUpdates.LegacyHeader;
+        planExtension.Active = context.Request.Headers[extensionHeader].ToString()
+            .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Contains(AgentPlanUpdates.ExtensionUri, StringComparer.Ordinal);
+        if (planExtension.Active)
+        {
+            context.Response.Headers[extensionHeader] = AgentPlanUpdates.ExtensionUri;
+        }
+    }
+
+    private async Task<(bool Valid, JsonElement RequestId)> ReadRequestBodyAsync(HttpContext context)
+    {
+        context.Request.EnableBuffering();
+
+        string? messageId = null;
+        string? contextId = null;
+        string? payloadHash = null;
+        JsonElement requestId = default;
+
+        try
+        {
+            using var document = await JsonDocument.ParseAsync(
+                context.Request.Body,
+                cancellationToken: context.RequestAborted);
+
+            if (document.RootElement.ValueKind == JsonValueKind.Object &&
+                document.RootElement.TryGetProperty("method", out var methodElement) &&
+                methodElement.ValueKind == JsonValueKind.String)
             {
-                isolationKeyContext.Current = null;
-                planExtension.Active = false;
+                Activity.Current?.SetTag("rpc.system", "jsonrpc");
+                Activity.Current?.SetTag("rpc.method", methodElement.GetString());
             }
+
+            if (document.RootElement.ValueKind == JsonValueKind.Object &&
+                document.RootElement.TryGetProperty("id", out var idElement))
+            {
+                requestId = idElement.Clone();
+            }
+
+            if (TryGetObject(document.RootElement, "params", out var parameters) &&
+                TryGetObject(parameters, "message", out var message))
+            {
+                if (TryGetString(message, "contextId", out contextId))
+                {
+                    context.Items[AdapterConstants.ContextIdItem] = contextId;
+                }
+
+                if (TryGetString(message, "messageId", out messageId))
+                {
+                    context.Items[AdapterConstants.MessageIdItem] = messageId;
+                }
+
+                var files = A2AInputFiles.Read(message);
+                context.Items[AdapterConstants.FilesItem] = files;
+                payloadHash = PayloadHash.Compute(message, files);
+                context.Items[AdapterConstants.PayloadHashItem] = payloadHash;
+
+                var history = ReadHistory(message);
+                if (history.Count > 0)
+                {
+                    context.Items[AdapterConstants.HistoryItem] = history;
+                }
+
+                Activity.Current?.SetTag("a2a.history.turns", history.Count);
+
+                var conversationHandles = ReadConversationHandles(message);
+                if (conversationHandles.Count > 0)
+                {
+                    context.Items[AdapterConstants.ConversationHandlesItem] = conversationHandles;
+                }
+            }
+
+            Activity.Current?.SetTag("a2a.context.present", contextId is not null);
+            Activity.Current?.SetTag("a2a.message_id.present", messageId is not null);
+        }
+        catch (AdapterRequestException exception)
+        {
+            logger.LogWarning("Refused invalid file input: {Reason}", exception.Message);
+            await WriteJsonRpcErrorAsync(context, requestId, InvalidParamsErrorCode, exception.Message);
+            return (false, requestId);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // Never let malformed or unexpectedly shaped input escape this middleware:
+            // it would bypass the A2A layer's JSON-RPC error translation and surface as a 500.
+            logger.LogDebug(exception, "A2A metadata extraction skipped for unusable request body.");
+        }
+        finally
+        {
+            TryRewind(context.Request.Body);
+        }
+        return (true, requestId);
+    }
+
+    private static async Task SelectAgentAsync(
+        HttpContext context,
+        AgentCatalog agentCatalog,
+        ApiManagementAgentRegistry apiManagementAgents)
+    {
+        var requestedAgentId = await ResolveRequestedAgentIdAsync(
+            context,
+            agentCatalog,
+            apiManagementAgents);
+        if (context.Items[AdapterConstants.FilesItem] is IReadOnlyList<A2AInputFile> { Count: > 0 } &&
+            (!agentCatalog.TryResolveAgent(requestedAgentId, out var fileAgent) ||
+             fileAgent?.ProviderKind != AgentProvider.CopilotStudio))
+        {
+            throw new AdapterRequestException(A2AInputFiles.UnsupportedProviderMessage);
+        }
+        context.Items[AdapterConstants.SelectedAgentItem] = requestedAgentId;
+        var requestedChainTarget = context.Request.Headers[
+            AdapterConstants.ChainTargetHeaderName].ToString();
+        if (!string.IsNullOrWhiteSpace(requestedChainTarget))
+        {
+            var target = agentCatalog.ResolveChainTarget(
+                requestedAgentId,
+                requestedChainTarget);
+            context.Items[AdapterConstants.ChainTargetItem] = target.Id;
+            Activity.Current?.SetTag("a2a.chain.target_agent", target.Id);
+            var payloadHash = context.Items[AdapterConstants.PayloadHashItem] as string;
+            context.Items[AdapterConstants.PayloadHashItem] =
+                PayloadHash.ComputeFromPrompt($"{payloadHash}\n{target.Id}");
+        }
+    }
+
+    private void CaptureIsolationKey(
+        HttpContext context,
+        A2ARequestMetadataAccessor metadataAccessor,
+        AgentIsolationKeyContext isolationKeyContext)
+    {
+        try
+        {
+            // The A2A server finishes streaming work on a background execution context.
+            // Capture the tenant-scoped identity directly so session persistence remains
+            // isolated after ASP.NET Core clears its ambient HttpContext.
+            isolationKeyContext.Current = metadataAccessor.ResolveUserId(context);
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            logger.LogWarning(
+                exception,
+                "No caller isolation key is available; the A2A session store will reject the request.");
         }
     }
 
@@ -453,177 +483,5 @@ public sealed class A2ARequestContextMiddleware(
         {
             // The request was aborted; there is nothing left to rewind.
         }
-    }
-}
-
-public sealed record A2ARequestMetadata
-{
-    public required string? ContextId { get; init; }
-
-    public required string? MessageId { get; init; }
-
-    public required string AgentId { get; init; }
-
-    /// <summary>Composite tenant-scoped caller identity. Never a shared fallback in a secured deployment.</summary>
-    public required string UserId { get; init; }
-
-    public required string? PayloadHash { get; init; }
-
-    public required string? BearerToken { get; init; }
-
-    public string? ChainTargetAgentId { get; init; }
-
-    public bool IsAgentRoute { get; init; }
-
-    /// <summary>Prior turns supplied by the caller, oldest first. Empty when the caller sent none.</summary>
-    public IReadOnlyList<A2AConversationTurn> History { get; init; } = [];
-    public IReadOnlyList<A2AInputFile> Files { get; init; } = [];
-
-    /// <summary>Opaque Copilot Studio conversation handles returned by earlier turns, newest first.</summary>
-    public IReadOnlyList<string> ConversationHandles { get; init; } = [];
-
-    /// <summary>
-    /// Overridden so the synthesized record ToString() cannot leak the delegated bearer token
-    /// into logs or telemetry.
-    /// </summary>
-    public override string ToString() =>
-        $"A2ARequestMetadata {{ ContextId = {ContextId}, MessageId = {MessageId}, " +
-        $"AgentId = {AgentId}, UserId = {UserId}, PayloadHash = {PayloadHash}, " +
-        $"ChainTargetAgentId = {ChainTargetAgentId}, HistoryTurns = {History.Count}, " +
-        $"FileCount = {Files.Count}, ConversationHandles = {ConversationHandles.Count}, " +
-        "BearerToken = [redacted] }";
-}
-
-/// <summary>A single prior turn of the caller's conversation.</summary>
-public sealed record A2AConversationTurn(string Role, string Text)
-{
-    public const string UserRole = "user";
-    public const string AssistantRole = "assistant";
-}
-
-/// <summary>
-/// Renders caller-supplied history into a prompt prefix for backends that do not keep the
-/// conversation server-side.
-/// </summary>
-public static class ConversationTranscript
-{
-    public static string Prepend(string prompt, IReadOnlyList<A2AConversationTurn> history) =>
-        Prepend(prompt, history, int.MaxValue, int.MaxValue);
-
-    /// <summary>
-    /// Renders only the most recent turns that fit both budgets. A turn that would exceed the
-    /// character budget ends the window, so the replayed context is always contiguous.
-    /// </summary>
-    public static string Prepend(
-        string prompt,
-        IReadOnlyList<A2AConversationTurn> history,
-        int maxTurns,
-        int maxCharacters)
-    {
-        var start = history.Count;
-        var characters = 0;
-        while (start > 0 && history.Count - start < maxTurns)
-        {
-            var length = history[start - 1].Text.Length;
-            if (characters + length > maxCharacters)
-            {
-                break;
-            }
-
-            characters += length;
-            start--;
-        }
-
-        if (start == history.Count)
-        {
-            return prompt;
-        }
-
-        var builder = new System.Text.StringBuilder(start == 0
-            ? "Conversation so far:"
-            : $"Conversation so far (last {history.Count - start} of {history.Count} turns):");
-        for (var index = start; index < history.Count; index++)
-        {
-            var turn = history[index];
-            builder.Append('\n')
-                .Append(turn.Role == A2AConversationTurn.UserRole ? "User: " : "Assistant: ")
-                .Append(turn.Text);
-        }
-
-        return builder.Append("\n\n---\n").Append(prompt).ToString();
-    }
-}
-
-public sealed class A2ARequestMetadataAccessor(
-    IHttpContextAccessor httpContextAccessor,
-    IOptions<AdapterOptions> adapterOptions,
-    IOptions<AuthenticationOptions> authenticationOptions,
-    AgentCatalog agentCatalog)
-{
-    public A2ARequestMetadata Current
-    {
-        get
-        {
-            var context = httpContextAccessor.HttpContext
-                ?? throw new InvalidOperationException("No active HTTP request is available.");
-
-            return new A2ARequestMetadata
-            {
-                ContextId = context.Items[AdapterConstants.ContextIdItem] as string,
-                MessageId = context.Items[AdapterConstants.MessageIdItem] as string,
-                AgentId = context.Items[AdapterConstants.SelectedAgentItem] as string ??
-                          context.Items[AdapterConstants.RouteAgentItem] as string ??
-                          agentCatalog.ResolveAgentId(
-                              context.Request.Headers[AdapterConstants.AgentHeaderName].ToString()),
-                UserId = ResolveUserId(context),
-                PayloadHash = context.Items[AdapterConstants.PayloadHashItem] as string,
-                BearerToken = ReadBearerToken(context),
-                ChainTargetAgentId =
-                    context.Items[AdapterConstants.ChainTargetItem] as string,
-                IsAgentRoute = context.Items[AdapterConstants.RouteAgentItem] is string,
-                History =
-                    context.Items[AdapterConstants.HistoryItem]
-                        as IReadOnlyList<A2AConversationTurn> ?? [],
-                Files = context.Items[AdapterConstants.FilesItem] as IReadOnlyList<A2AInputFile> ?? [],
-                ConversationHandles =
-                    context.Items[AdapterConstants.ConversationHandlesItem] as IReadOnlyList<string> ?? []
-            };
-        }
-    }
-
-    /// <summary>
-    /// Resolves a tenant-scoped caller identity. Fails closed: an authenticated deployment that
-    /// cannot establish who the caller is must not fall back to a shared partition, because both
-    /// the idempotency cache and the conversation store are keyed on this value.
-    /// </summary>
-    public string ResolveUserId(HttpContext context)
-    {
-        var objectId = context.User.FindFirstValue("oid")
-            ?? context.User.FindFirstValue(ClaimTypes.NameIdentifier)
-            ?? context.User.FindFirstValue("sub");
-
-        if (objectId is not null)
-        {
-            // "oid" is unique only within a tenant, so scope it with "tid".
-            var tenantId = context.User.FindFirstValue("tid") ?? "unknown-tenant";
-            return $"{tenantId}|{objectId}";
-        }
-
-        if (!authenticationOptions.Value.Enabled &&
-            adapterOptions.Value.AllowAnonymousDevelopmentMode)
-        {
-            return AdapterConstants.AnonymousDevelopmentUser;
-        }
-
-        throw new UnauthorizedAccessException(
-            "The delegated caller identity could not be established from the request token.");
-    }
-
-    private static string? ReadBearerToken(HttpContext context)
-    {
-        var authorization = context.Request.Headers.Authorization.ToString();
-        return authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
-            ? authorization["Bearer ".Length..].Trim()
-            : null;
     }
 }

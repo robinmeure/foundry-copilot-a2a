@@ -134,7 +134,7 @@ not a general-purpose content framework.
 
 Relevant changes:
 
-- [CopilotStudioInvoker.cs](../src/FoundryCopilotA2A.Adapter/CopilotStudioInvoker.cs):
+- [CopilotStudio activity handling](../src/FoundryCopilotA2A.Adapter/CopilotStudio):
   recognize normal Adaptive Card attachments, normalize fallback text, preserve
   cards on final activities even when repeated streamed text is suppressed, and
   issue continuity handles for normalized card-only answers. Keep OAuth and
@@ -287,7 +287,7 @@ After that gate:
   persist form inputs or action handles; use safe text labels in the transcript.
 - Add explicit redaction for Activity `Value`, keyed action envelopes, hidden
   data and action handles in
-  [TraceVisualization](../src/FoundryCopilotA2A.Adapter/TraceVisualization.cs),
+  [TraceSanitizer](../src/FoundryCopilotA2A.Adapter/Tracing/TraceSanitizer.cs),
   metadata `ToString`, logs and browser diagnostic views.
 
 **Lifecycle choice:** each presentation and submission is a separate A2A turn/

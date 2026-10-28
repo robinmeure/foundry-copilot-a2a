@@ -8,11 +8,11 @@ public sealed class CopilotStudioResponseMetadataTests
     [Fact]
     public async Task TraceHandlerCapturesConversationIdResponseHeader()
     {
-        using var traceStore = new SanitizedTraceStore(Options.Create(new AdapterOptions()));
+        using var traceStore = new SanitizedTraceStore(TestConfiguration.From(new AdapterOptions()));
         var responseMetadataAccessor = new CopilotStudioResponseMetadataAccessor();
         var httpContext = new DefaultHttpContext();
         httpContext.Items[AdapterConstants.SelectedAgentItem] = AgentCatalog.MockAgentId;
-        var adapterOptions = Options.Create(new AdapterOptions
+        var adapterOptions = TestConfiguration.From(new AdapterOptions
         {
             Backend = "Mock",
             AllowAnonymousDevelopmentMode = true
@@ -20,7 +20,6 @@ public sealed class CopilotStudioResponseMetadataTests
         var metadataAccessor = new A2ARequestMetadataAccessor(
             new HttpContextAccessor { HttpContext = httpContext },
             adapterOptions,
-            Options.Create(new AuthenticationOptions()),
             new AgentCatalog(
                 adapterOptions,
                 Options.Create(new CopilotStudioOptions()),

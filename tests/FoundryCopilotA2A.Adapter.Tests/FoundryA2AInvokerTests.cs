@@ -180,7 +180,7 @@ public sealed class FoundryA2AInvokerTests
     private static FoundryA2AInvoker CreateInvoker(string responseBody)
     {
         var catalog = new AgentCatalog(
-            Options.Create(new AdapterOptions { Backend = "Mock" }),
+            TestConfiguration.From(new AdapterOptions { Backend = "Mock" }),
             Options.Create(new CopilotStudioOptions()),
             Options.Create(new FoundryOptions
             {
@@ -202,7 +202,7 @@ public sealed class FoundryA2AInvokerTests
             new StubCredential(),
             new StubHttpClientFactory(client),
             new UnusedTokenBroker(),
-            Options.Create(new AuthenticationOptions { Enabled = false }));
+            TestConfiguration.From(new AuthenticationOptions { Enabled = false }));
     }
 
     private sealed class UnusedTokenBroker : IOboTokenBroker
