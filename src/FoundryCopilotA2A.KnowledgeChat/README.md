@@ -57,9 +57,10 @@ pattern (arrow keys, Home/End).
 `POST /api/chat` may return up to five proposed changes in `actions`
 (mail drafts and reply drafts, mail read state, calendar events, To Do tasks/status,
 Planner progress and **Save to OneDrive** for generated files).
-**Nothing is written when a proposal is shown.** Each proposal renders as a
-plain-text card under its reply with a summary, details (long bodies scroll), expiry and
-**Confirm** / **Cancel**. Confirm calls `POST /api/actions/{id}/confirm` and Cancel calls
+**Nothing is written when a proposal is shown.** Each proposal renders under its reply as a
+content preview: mail bodies are readable with recipient and subject, while tasks and other
+changes show labelled details. The footer explains the expiry and offers an action-specific
+confirmation button and **Dismiss**. Confirm calls `POST /api/actions/{id}/confirm` and Dismiss calls
 `POST /api/actions/{id}/cancel`, both with `{ conversationId }` and the Knowledge API token.
 The client refuses IDs that are not 32 lowercase hex characters, drops malformed proposals,
 caps details at 12 and only links to `https` results ("Open in Microsoft 365", new tab).

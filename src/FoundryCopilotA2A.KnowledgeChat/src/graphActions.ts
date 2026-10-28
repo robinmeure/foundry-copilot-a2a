@@ -40,17 +40,6 @@ export interface GraphActionResult {
   webLink?: string
 }
 
-const KIND_LABELS: Record<GraphActionKind, string> = {
-  'mail.draft': 'Mail draft',
-  'mail.replyDraft': 'Mail reply draft',
-  'mail.readState': 'Mail read state',
-  'calendar.create': 'Calendar event',
-  'todo.create': 'To Do task',
-  'todo.status': 'To Do status',
-  'planner.progress': 'Planner progress',
-  'files.save': 'Save to OneDrive',
-}
-
 const STATES: readonly GraphActionState[] = ['pending', 'confirming', 'cancelling', 'completed', 'cancelled', 'failed']
 
 export const ACTION_NOT_FOUND_HINT = 'This proposal expired or was already used. Ask again to create a new one.'
@@ -146,10 +135,6 @@ export function parseSavedChatActions(value: unknown): ChatAction[] | undefined 
 export function isActionExpired(action: Pick<GraphActionProposal, 'expiresAt'>, now = Date.now()) {
   const expires = Date.parse(action.expiresAt)
   return !Number.isFinite(expires) || expires <= now
-}
-
-export function graphActionKindLabel(kind: GraphActionKind) {
-  return KIND_LABELS[kind]
 }
 
 export function actionErrorHint(code?: string) {

@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from 'react'
-import { actionErrorHint, actionStatusText, ACTION_EXPIRED_TEXT, graphActionKindLabel, isActionExpired,
+import { actionErrorHint, actionStatusText, ACTION_EXPIRED_TEXT, isActionExpired,
   safeHttpsUrl, type ChatAction } from './graphActions.ts'
 
 type Decide = (actionId: string, decision: 'confirm' | 'cancel') => void
@@ -44,18 +44,27 @@ function ActionCard({ action, now, disabled, onDecide }: {
   const webLink = action.state === 'completed' ? safeHttpsUrl(action.webLink) : undefined
   const status = actionStatusText(action, now)
   const expires = new Date(action.expiresAt)
+  const confirmLabel = actionConfirmLabel(action.kind)
+  const stateLabel = expired ? 'Expired' : {
+    pending: 'Awaiting confirmation',
+    confirming: 'Working…',
+    cancelling: 'Dismissing…',
+    completed: 'Completed',
+    cancelled: 'Dismissed',
+    failed: 'Failed',
+  }[action.state]
   return (
     <article className="graph-action" aria-labelledby={titleId} aria-busy={busy}
-      data-state={expired ? 'expired' : action.state}>
+      data-kind={action.kind} data-state={expired ? 'expired' : action.state}>
       <header className="graph-action-header">
-        <span className="graph-action-kind">{graphActionKindLabel(action.kind)}</span>
         <h3 id={titleId}>{action.title}</h3>
+        <span className="graph-action-state" aria-hidden="true">{stateLabel}</span>
       </header>
       {action.summary && <p className="graph-action-summary">{action.summary}</p>}
       {action.details.length > 0 && (
         <dl className="graph-action-details">
           {action.details.map((detail, index) => (
-            <div key={index}>
+            <div key={index} className={detail.label.toLowerCase() === 'body' ? 'graph-action-detail-body' : undefined}>
               <dt>{detail.label}</dt>
               <dd tabIndex={detail.value.length > 240 || detail.value.includes('\n') ? 0 : undefined}>{detail.value}</dd>
             </div>
@@ -71,20 +80,35 @@ function ActionCard({ action, now, disabled, onDecide }: {
         {webLink && <a href={webLink} target="_blank" rel="noopener noreferrer">Open in Microsoft 365</a>}
       </div>
       {action.state === 'pending' && (
-        <p className="graph-action-caption">
-          Nothing is changed until you confirm.{expired ? '' : ` Expires ${formatExpiry(expires, now)}.`}
-        </p>
+        <footer className="graph-action-footer">
+          <p className="graph-action-caption">
+            Nothing is changed until you confirm.{expired ? '' : ` Expires ${formatExpiry(expires, now)}.`}
+          </p>
+          <div className="graph-action-buttons">
+            <button type="button" className="primary-button" disabled={!open || expired}
+              aria-label={`Confirm: ${action.title}`} title={expired ? ACTION_EXPIRED_TEXT : undefined}
+              onClick={() => onDecide(action.id, 'confirm')}>{confirmLabel}</button>
+            <button type="button" className="secondary-button" disabled={!open || expired}
+              aria-label={`Cancel: ${action.title}`}
+              onClick={() => onDecide(action.id, 'cancel')}>Dismiss</button>
+          </div>
+        </footer>
       )}
-      <div className="graph-action-buttons">
-        <button type="button" className="primary-button" disabled={!open || expired}
-          aria-label={`Confirm: ${action.title}`} title={expired ? ACTION_EXPIRED_TEXT : undefined}
-          onClick={() => onDecide(action.id, 'confirm')}>{action.state === 'confirming' ? 'Confirming…' : 'Confirm'}</button>
-        <button type="button" className="secondary-button" disabled={!open || expired}
-          aria-label={`Cancel: ${action.title}`}
-          onClick={() => onDecide(action.id, 'cancel')}>{action.state === 'cancelling' ? 'Cancelling…' : 'Cancel'}</button>
-      </div>
     </article>
   )
+}
+
+function actionConfirmLabel(kind: ChatAction['kind']) {
+  switch (kind) {
+    case 'mail.draft': return 'Create draft'
+    case 'mail.replyDraft': return 'Create reply draft'
+    case 'mail.readState': return 'Update mail status'
+    case 'calendar.create': return 'Create event'
+    case 'todo.create': return 'Create task'
+    case 'todo.status': return 'Update task'
+    case 'planner.progress': return 'Update plan'
+    case 'files.save': return 'Save to OneDrive'
+  }
 }
 
 function formatExpiry(expires: Date, now: number) {
