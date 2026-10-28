@@ -540,6 +540,67 @@ public sealed class GraphSdkTests
     }
 
     [Fact]
+    public async Task MissingDownloadAnnotationFallsBackToContentRedirectWithoutLeakingBearer()
+    {
+        var calls = new List<string>();
+        using var handler = new Handler((request, ct) =>
+        {
+            calls.Add(request.RequestUri!.Host + request.RequestUri.AbsolutePath);
+            if (request.RequestUri.AbsolutePath == "/v1.0/drives/drive/items/item")
+            {
+                return Task.FromResult(Json("""{"name":"Brief.pdf","size":5,"eTag":"v1","webUrl":"https://tenant.sharepoint.com/Brief.pdf","file":{"mimeType":"application/pdf"}}"""));
+            }
+            if (request.RequestUri.AbsolutePath == "/v1.0/drives/drive/items/item/content")
+            {
+                Assert.Equal("obo-caller", request.Headers.Authorization!.Parameter);
+                var redirect = new HttpResponseMessage(HttpStatusCode.Found);
+                redirect.Headers.Location = new Uri("https://tenant.sharepoint.com/download?token=preauthorized");
+                return Task.FromResult(redirect);
+            }
+            Assert.Equal("tenant.sharepoint.com", request.RequestUri.Host);
+            Assert.Null(request.Headers.Authorization);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("brief") });
+        });
+        var file = await Service(handler).Download(Context(), new ImportRequest("drive", "item"), default);
+        Assert.Equal("brief", Encoding.UTF8.GetString(file.Bytes));
+        Assert.Equal(3, calls.Count);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Forbidden, 403)]
+    [InlineData(HttpStatusCode.NotFound, 404)]
+    [InlineData(HttpStatusCode.OK, 502)]
+    [InlineData(HttpStatusCode.InternalServerError, 502)]
+    public async Task MissingDownloadLocationIsReportedAsClientSafeError(HttpStatusCode status, int expected)
+    {
+        using var handler = new Handler((request, ct) => Task.FromResult(request.RequestUri!.AbsolutePath.EndsWith("/content")
+            ? new HttpResponseMessage(status)
+            : Json("""{"name":"Brief.json","size":5,"eTag":"v1","file":{}}""")));
+        var error = await Assert.ThrowsAsync<ApiException>(() =>
+            Service(handler).Download(Context(), new ImportRequest("drive", "item"), default));
+        Assert.Equal(expected, error.Status);
+        Assert.Equal("download_unavailable", error.Code);
+    }
+
+    [Fact]
+    public async Task ContentRedirectToUnsupportedHostIsRejected()
+    {
+        using var handler = new Handler((request, ct) =>
+        {
+            if (!request.RequestUri!.AbsolutePath.EndsWith("/content"))
+            {
+                return Task.FromResult(Json("""{"name":"Brief.json","size":5,"eTag":"v1","file":{}}"""));
+            }
+            var redirect = new HttpResponseMessage(HttpStatusCode.Found);
+            redirect.Headers.Location = new Uri("https://evil.test/download");
+            return Task.FromResult(redirect);
+        });
+        var error = await Assert.ThrowsAsync<ApiException>(() =>
+            Service(handler).Download(Context(), new ImportRequest("drive", "item"), default));
+        Assert.Equal("unsupported_download_host", error.Code);
+    }
+
+    [Fact]
     public async Task SdkDownloadUsesTypedMetadataAndNeverForwardsBearerToSharePoint()
     {
         var calls = 0;

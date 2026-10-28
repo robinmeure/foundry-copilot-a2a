@@ -196,7 +196,15 @@ public sealed class GraphService : IGraphService
                 "The file exceeds 20 MiB.");
         }
 
-        var downloadUri = new Uri(root.GetProperty("@microsoft.graph.downloadUrl").GetString()!);
+        // Graph does not always return the pre-authenticated URL in the metadata response;
+        // GET .../content then redirects to the same URL.
+        var downloadUrl = root.TryGetProperty("@microsoft.graph.downloadUrl", out var annotation) &&
+            annotation.ValueKind == JsonValueKind.String
+                ? annotation.GetString()
+                : null;
+        var downloadUri = Uri.TryCreate(downloadUrl, UriKind.Absolute, out var annotatedUri)
+            ? annotatedUri
+            : await ResolveContentRedirectAsync(context, input, ct);
         var isSupportedSharePointHost =
             downloadUri.Scheme == Uri.UriSchemeHttps &&
             (downloadUri.Host.EndsWith(".sharepoint.com", StringComparison.OrdinalIgnoreCase) ||
@@ -232,6 +240,45 @@ public sealed class GraphService : IGraphService
             Name: root.GetProperty("name").GetString()!,
             ETag: root.GetProperty("eTag").GetString()!,
             Url: root.GetProperty("webUrl").GetString());
+    }
+
+    private async Task<Uri> ResolveContentRedirectAsync(HttpContext context, ImportRequest input, CancellationToken ct)
+    {
+        var accessToken = await AcquireTokenAsync(context, ct);
+        var contentUri = new Uri(
+            $"{GraphSdkRequests.BaseUrl}drives/{EscapeGraphIdentifier(input.DriveId)}/items/{EscapeGraphIdentifier(input.ItemId)}/content");
+        GraphSdkRequests.ValidateGraphUri(contentUri);
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, contentUri);
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+        using var telemetrySuppression = OpenTelemetry.SuppressInstrumentationScope.Begin();
+        // The "download" client never follows redirects, so the bearer token cannot reach another host.
+        using var response = await factory
+            .CreateClient("download")
+            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+
+        if (response.StatusCode is HttpStatusCode.Redirect or HttpStatusCode.MovedPermanently
+            or HttpStatusCode.RedirectMethod or HttpStatusCode.TemporaryRedirect or HttpStatusCode.PermanentRedirect &&
+            response.Headers.Location is { IsAbsoluteUri: true } location)
+        {
+            return location;
+        }
+
+        var status = (int)response.StatusCode;
+        if (response.StatusCode == HttpStatusCode.Unauthorized && response.Headers.WwwAuthenticate.Any())
+        {
+            ResponseSignals.Set(context, ResponseSignals.Challenge, string.Join(", ", response.Headers.WwwAuthenticate));
+        }
+        if (response.StatusCode == HttpStatusCode.TooManyRequests)
+        {
+            ResponseSignals.Set(context, ResponseSignals.RetryAfter, response.Headers.RetryAfter?.ToString() ?? "5");
+        }
+
+        throw status is >= 400 and < 500
+            ? new ApiException(status, "download_unavailable",
+                "Microsoft Graph did not allow downloading this file. Check access, delegated consent and tenant policy.")
+            : new ApiException(StatusCodes.Status502BadGateway, "download_unavailable",
+                "Microsoft Graph did not provide a download location for this file.");
     }
 
     public async Task Reauthorize(
@@ -354,14 +401,17 @@ public sealed class GraphService : IGraphService
             async client => await GraphSdkRequests.SerializeAsync(await send(client), cancellationToken),
             cancellationToken);
 
+    private Task<string> AcquireTokenAsync(HttpContext context, CancellationToken cancellationToken) =>
+        delegatedToken is null
+            ? tokens!.GetTokenAsync(context, [GraphDefaultScope], cancellationToken)
+            : delegatedToken(context, cancellationToken);
+
     public async Task<T> WithClientAsync<T>(
         HttpContext context,
         Func<GraphServiceClient, Task<T>> send,
         CancellationToken cancellationToken)
     {
-        var accessToken = await (delegatedToken is null
-            ? tokens!.GetTokenAsync(context, [GraphDefaultScope], cancellationToken)
-            : delegatedToken(context, cancellationToken));
+        var accessToken = await AcquireTokenAsync(context, cancellationToken);
         using var upstream = factory.CreateClient("knowledge");
         using var http = new HttpClient(new GraphSdkRequests.Transport(upstream, context))
         {
