@@ -134,11 +134,12 @@ public sealed class A2aKnowledgeService(
         return agents.Where(agent => IsSelected(agent.Id, selectedAgentIds)).ToArray();
     }
 
-    public async Task<Passage> AskAsync(
+    public async Task<A2aKnowledgeAnswer> AskAsync(
         HttpContext context,
         JsonElement arguments,
         CancellationToken cancellationToken,
-        IReadOnlyCollection<string>? selectedAgentIds = null)
+        IReadOnlyCollection<string>? selectedAgentIds = null,
+        Func<string, CancellationToken, ValueTask>? onProgress = null)
     {
         ValidateArguments(arguments, ["agentId", "question"]);
         EnsureEnabled();
@@ -158,9 +159,19 @@ public sealed class A2aKnowledgeService(
             ?? throw new ApiException(403, "a2a_agent_not_allowed", "This agent is not an approved, available APIM knowledge source.");
 
         string answer;
+        IReadOnlyList<A2aCitedSource> cited;
         if (configuration["Knowledge:Backend"] == "Mock")
         {
+            if (onProgress is not null)
+            {
+                await onProgress("Searching through knowledge sources (mock)", cancellationToken);
+            }
             answer = "Synthetic APIM specialist knowledge: the project review is on Friday. No remote agent was called.";
+            cited =
+            [
+                new A2aCitedSource("mock-source-1", "Example source (mock)", "https://example.org/",
+                    descriptor.Id, descriptor.DisplayName, null, ["The project review is on Friday."])
+            ];
         }
         else
         {
@@ -172,20 +183,29 @@ public sealed class A2aKnowledgeService(
                     ? await tokens.GetSameAudienceTokenAsync(context, timeout.Token)
                     : await tokens.GetTokenAsync(context, [configuration["A2A:DelegatedScope"]!], timeout.Token));
             client.DefaultRequestHeaders.Add("X-Copilot-Agent", descriptor.Id);
-            var agent = new A2AClient(Endpoint("a2a/copilot-studio"), client)
-                .AsAIAgent(name: descriptor.DisplayName, description: "Read-only APIM knowledge specialist.");
+            var a2a = new A2AClient(Endpoint("a2a/copilot-studio"), client);
+            var request = new SendMessageRequest
+            {
+                Message = new Message
+                {
+                    Role = Role.User,
+                    MessageId = Guid.NewGuid().ToString("N"),
+                    Parts = [Part.FromText("Answer this knowledge question only. Do not execute actions or modify any data:\n" + question)]
+                }
+            };
+            var stream = new A2aAnswerStream();
             try
             {
-                var response = await agent.RunAsync(
-                    "Answer this knowledge question only. Do not execute actions or modify any data:\n" + question,
-                    cancellationToken: timeout.Token);
-#pragma warning disable MEAI001 // Background A2A tasks are not treated as completed knowledge answers.
-                if (response.ContinuationToken is not null)
-#pragma warning restore MEAI001
+                await foreach (var update in a2a.SendStreamingMessageAsync(request, timeout.Token))
                 {
-                    throw new ApiException(409, "a2a_incomplete", "The specialist has not completed its answer. Try a narrower question.");
+                    foreach (var line in stream.Apply(update))
+                    {
+                        if (onProgress is not null)
+                        {
+                            await onProgress(line, timeout.Token);
+                        }
+                    }
                 }
-                answer = response.Text;
             }
             catch (A2AException exception)
             {
@@ -202,19 +222,48 @@ public sealed class A2aKnowledgeService(
             {
                 throw new ApiException(504, "a2a_timeout", "The APIM specialist exceeded its 90-second time budget.");
             }
+
+            switch (stream.State)
+            {
+                case TaskState.Completed:
+                    break;
+                case TaskState.Failed or TaskState.Canceled or TaskState.Rejected:
+                    logger.LogWarning("APIM knowledge agent ended in state {State}", stream.State);
+                    throw new ApiException(502, "a2a_agent_error", "The APIM specialist failed to return an answer. Check adapter traces and delegated access.");
+                default:
+                    // Input-required, auth-required or a stream that ended while still working.
+                    throw new ApiException(409, "a2a_incomplete", "The specialist has not completed its answer. Try a narrower question.");
+            }
+            answer = stream.Answer;
+            cited = stream.Sources;
         }
         if (string.IsNullOrWhiteSpace(answer))
         {
             throw new ApiException(502, "a2a_empty_answer", "The APIM specialist returned no answer text.");
         }
-        return new Passage(
+        var answerPassage = new Passage(
             $"a2a:{descriptor.Id}:{Guid.NewGuid():N}",
             $"a2a:{descriptor.Id}",
             descriptor.DisplayName,
             answer.Length <= MaxAnswerCharacters ? answer : answer[..MaxAnswerCharacters] + "\n[Answer truncated]",
             "APIM A2A specialist answer",
             OriginatingAgent: new OriginatingAgentInfo(descriptor.Id, descriptor.DisplayName));
+        var sources = cited.Select(source => new Passage(
+                $"a2a:{descriptor.Id}:source:{SourceKey(source.Id)}",
+                $"a2a:{descriptor.Id}",
+                source.Title,
+                source.Quotes.Count > 0 ? string.Join("\n", source.Quotes) : source.Title,
+                source.Locator ?? $"Cited by {descriptor.DisplayName}",
+                source.Url,
+                OriginatingAgent: new OriginatingAgentInfo(
+                    source.AgentId ?? descriptor.Id, source.AgentName ?? descriptor.DisplayName)))
+            .ToArray();
+        return new A2aKnowledgeAnswer(answerPassage, sources);
     }
+
+    // Provider source IDs are arbitrary strings; a short hash keeps passage IDs bounded and safe.
+    private static string SourceKey(string sourceId) =>
+        Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(sourceId)))[..16];
 
     private Uri Endpoint(string path) => new($"{configuration["A2A:AdapterBaseUrl"]?.TrimEnd('/')}/{path}");
 

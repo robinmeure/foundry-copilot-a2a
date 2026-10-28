@@ -56,6 +56,19 @@ internal sealed class AgUiEventStream(
                 return;
             }
 
+            if (status.State == ChatStatus.Progress)
+            {
+                // A balanced step of its own, so the tool's open step stays paired.
+                var progressKey = $"{key} progress";
+                var progressName = OpenStep(progressKey);
+                openSteps[progressKey].Dequeue();
+                await WriteEventAsync(new StepStartedEvent { StepName = progressName }, cancellationToken);
+                activeStepNames.Remove(progressName);
+                await WriteEventAsync(
+                    new StepFinishedEvent { StepName = progressName, Metadata = metadata }, cancellationToken);
+                return;
+            }
+
             if (!openSteps.TryGetValue(key, out var queue) || !queue.TryDequeue(out var stepName))
             {
                 // A completion without a matching start still needs a started step to finish.

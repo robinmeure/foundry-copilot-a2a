@@ -268,16 +268,17 @@ public sealed class DependencyInjectionTests
             return GetAvailableAgentsAsync(cancellationToken);
         }
 
-        public Task<Passage> AskAsync(
+        public Task<A2aKnowledgeAnswer> AskAsync(
             HttpContext context, JsonElement arguments, CancellationToken cancellationToken,
-            IReadOnlyCollection<string>? selectedAgentIds = null)
+            IReadOnlyCollection<string>? selectedAgentIds = null,
+            Func<string, CancellationToken, ValueTask>? onProgress = null)
         {
             AskCalls++;
             Assert.Equal("replacement-agent", arguments.GetProperty("agentId").GetString());
             Assert.Equal(["replacement-agent"], selectedAgentIds);
-            return Task.FromResult(new Passage("agent-1", "replacement-agent", "Replacement specialist",
+            return Task.FromResult(new A2aKnowledgeAnswer(new Passage("agent-1", "replacement-agent", "Replacement specialist",
                 "Evidence from the substituted agent.", "Agent answer",
-                OriginatingAgent: new OriginatingAgentInfo("replacement-agent", "Replacement specialist")));
+                OriginatingAgent: new OriginatingAgentInfo("replacement-agent", "Replacement specialist")), []));
         }
     }
 

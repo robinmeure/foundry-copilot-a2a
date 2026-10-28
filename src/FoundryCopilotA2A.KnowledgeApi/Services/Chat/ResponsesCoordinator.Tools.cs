@@ -215,10 +215,16 @@ public sealed partial class ResponsesCoordinator
 
     private async Task<object> AskA2aAgentToolAsync(TurnState turn, JsonElement arguments, string name, CancellationToken ct)
     {
-        var passage = await a2a.AskAsync(turn.Context, arguments, ct, turn.SelectedAgents);
+        var result = await a2a.AskAsync(turn.Context, arguments, ct, turn.SelectedAgents,
+            (line, token) => turn.ReportAsync(name, line, ChatStatus.Progress, token));
+        var passage = result.Answer;
         await turn.ReportAsync(name, ToolStatus.Answered(passage.OriginatingAgent?.Name ?? "The APIM agent"),
             ChatStatus.Completed, ct);
-        return AppendDocumentPassages([passage], turn.Evidence, capacity: turn.EvidenceCapacity);
+        return AppendDocumentPassages([.. result.Passages], turn.Evidence,
+            coverage: result.Sources.Count > 0
+                ? "The specialist's answer first, then the sources it cited. Source details are reported by the specialist and are not independently verified."
+                : "The specialist's answer. It reported no structured sources.",
+            capacity: turn.EvidenceCapacity);
     }
 
     private async Task<object> ProposeGraphActionToolAsync(TurnState turn, string name, JsonElement arguments, CancellationToken ct)

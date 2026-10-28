@@ -18,10 +18,21 @@ public interface IA2aKnowledgeService
         CancellationToken cancellationToken,
         IReadOnlyCollection<string>? selectedAgentIds = null);
 
-    /// <summary>Invokes an approved agent with delegated authorization and returns untrusted evidence.</summary>
-    Task<Passage> AskAsync(
+    /// <summary>
+    /// Invokes an approved agent with delegated authorization and returns untrusted evidence: the
+    /// specialist's answer plus the sources it cited. <paramref name="onProgress"/> receives the
+    /// specialist's own progress lines (plans, searches) while it works.
+    /// </summary>
+    Task<A2aKnowledgeAnswer> AskAsync(
         HttpContext context,
         JsonElement arguments,
         CancellationToken cancellationToken,
-        IReadOnlyCollection<string>? selectedAgentIds = null);
+        IReadOnlyCollection<string>? selectedAgentIds = null,
+        Func<string, CancellationToken, ValueTask>? onProgress = null);
+}
+
+/// <summary>A specialist answer and the provider-reported sources it cited.</summary>
+public sealed record A2aKnowledgeAnswer(Passage Answer, IReadOnlyList<Passage> Sources)
+{
+    public IEnumerable<Passage> Passages => Sources.Prepend(Answer);
 }

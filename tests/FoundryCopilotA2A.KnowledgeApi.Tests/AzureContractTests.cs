@@ -477,7 +477,8 @@ public sealed class AzureContractTests
             new DefaultHttpContext(), "Ask the specialist when the review is.", [], ["a2a"], [], default);
         Assert.Equal(3, calls);
         Assert.Equal("The review is Friday [1].", result.Answer);
-        Assert.Equal("mock-apim-knowledge", Assert.Single(result.Evidence).OriginatingAgent!.Id);
+        Assert.Equal(["mock-apim-knowledge", "mock-apim-knowledge"], result.Evidence.Select(item => item.OriginatingAgent!.Id));
+        Assert.Equal("https://example.org/", result.Evidence[1].Url);
     }
 
     [Fact]

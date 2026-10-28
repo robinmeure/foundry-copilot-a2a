@@ -48,8 +48,11 @@ public sealed class A2aKnowledgeTests : IDisposable
         response.EnsureSuccessStatusCode();
         var result = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Contains("Friday", result.GetProperty("answer").GetString());
-        var source = Assert.Single(result.GetProperty("citations").GetProperty("sources").EnumerateArray());
-        Assert.Equal("mock-apim-knowledge", source.GetProperty("originatingAgent").GetProperty("id").GetString());
+        var sources = result.GetProperty("citations").GetProperty("sources").EnumerateArray().ToArray();
+        Assert.Equal(2, sources.Length);
+        Assert.All(sources, source =>
+            Assert.Equal("mock-apim-knowledge", source.GetProperty("originatingAgent").GetProperty("id").GetString()));
+        Assert.Equal("https://example.org/", sources[1].GetProperty("url").GetString());
     }
 
     [Theory]
@@ -119,46 +122,47 @@ public sealed class A2aKnowledgeTests : IDisposable
             Assert.Equal("allowed", Assert.Single(request.Headers.GetValues("X-Copilot-Agent")));
             using var json = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct));
             var body = json.RootElement;
-            Assert.Equal("SendMessage", body.GetProperty("method").GetString());
+            Assert.Equal("SendStreamingMessage", body.GetProperty("method").GetString());
             var message = body.GetProperty("params").GetProperty("message");
             Assert.True(messageIds.Add(message.GetProperty("messageId").GetString()!));
             Assert.Contains("When is the review?", message.GetProperty("parts")[0].GetProperty("text").GetString());
             Assert.False(message.TryGetProperty("contextId", out var contextId) && contextId.ValueKind == JsonValueKind.String);
+            var id = body.GetProperty("id").Clone();
             if (taskResponse)
             {
-                return Json(JsonSerializer.Serialize(new
-                {
-                    jsonrpc = "2.0",
-                    id = body.GetProperty("id").Clone(),
-                    result = new
-                    {
-                        task = new
-                        {
-                            id = "task1",
-                            contextId = "remote-context",
-                            status = new { state = "TASK_STATE_COMPLETED" },
-                            artifacts = new[]
+                return Sse(id,
+                    new { statusUpdate = new { taskId = "task1", contextId = "remote-context",
+                        status = new { state = "TASK_STATE_WORKING", message = new { messageId = "plan", role = "ROLE_AGENT",
+                            parts = new[] { new { text = "Planning: search knowledge" } } } } } },
+                    new { artifactUpdate = new { taskId = "task1", contextId = "remote-context", append = false, lastChunk = false,
+                        artifact = new { artifactId = "progress", parts = new object[] {
+                            new { text = "Searching through knowledge sources...", metadata = new { isInformative = true } } } } } },
+                    new { artifactUpdate = new { taskId = "task1", contextId = "remote-context", append = false, lastChunk = false,
+                        artifact = new { artifactId = "answer", parts = new[] { new { text = "The review is \uE200cite\uE202turn0\uE201" } } } } },
+                    new { artifactUpdate = new { taskId = "task1", contextId = "remote-context", append = true, lastChunk = false,
+                        artifact = new { artifactId = "answer", parts = new[] { new { text = " Friday." } } } } },
+                    new { artifactUpdate = new { taskId = "task1", contextId = "remote-context", append = false, lastChunk = true,
+                        artifact = new { artifactId = "answer", parts = new object[] {
+                            new { text = "The review is Friday. [1]", metadata = new { replacesAnswer = true } },
+                            new { data = new Dictionary<string, object> { [A2aAnswerStream.CitationExtensionUri] = new
                             {
-                                new { artifactId = "answer", parts = new[] { new { text = "The review is Friday." } } }
-                            }
-                        }
-                    }
-                }));
+                                schemaVersion = "1",
+                                sources = new[] { new { id = "s1", title = "Review calendar", url = "https://example.org/review",
+                                    originatingAgent = new { id = "allowed", name = "Specialist" } } },
+                                citations = new[] { new { sourceId = "s1", marker = "[1]", quote = "Review on Friday" } }
+                            } } } } } } },
+                    new { statusUpdate = new { taskId = "task1", contextId = "remote-context",
+                        status = new { state = "TASK_STATE_COMPLETED" } } });
             }
-            return Json(JsonSerializer.Serialize(new
+            return Sse(id, new
             {
-                jsonrpc = "2.0",
-                id = body.GetProperty("id").Clone(),
-                result = new
+                message = new
                 {
-                    message = new
-                    {
-                        messageId = "reply",
-                        role = "ROLE_AGENT",
-                        parts = new[] { new { text = "The review is Friday." } }
-                    }
+                    messageId = "reply",
+                    role = "ROLE_AGENT",
+                    parts = new[] { new { text = "The review is Friday." } }
                 }
-            }));
+            });
         });
         var service = new A2aKnowledgeService(new HandlerFactory(handler),
             TestConfiguration.Create("Azure", values: new Dictionary<string, string?>
@@ -179,11 +183,29 @@ public sealed class A2aKnowledgeTests : IDisposable
         context.User = authentication.Principal!;
         for (var index = 0; index < 2; index++)
         {
-            var passage = await service.AskAsync(context,
-                Args(new { agentId = "allowed", question = "When is the review?" }), default);
-            Assert.Equal("The review is Friday.", passage.Content);
+            var progress = new List<string>();
+            var result = await service.AskAsync(context,
+                Args(new { agentId = "allowed", question = "When is the review?" }), default,
+                onProgress: (line, _) => { progress.Add(line); return ValueTask.CompletedTask; });
+            var passage = result.Answer;
+            Assert.Equal(taskResponse ? "The review is Friday. [1]" : "The review is Friday.", passage.Content);
             Assert.Equal("allowed", passage.OriginatingAgent!.Id);
             Assert.Null(passage.Url);
+            if (taskResponse)
+            {
+                Assert.Equal(["Planning: search knowledge", "Searching through knowledge sources..."], progress);
+                var source = Assert.Single(result.Sources);
+                Assert.Equal("Review calendar", source.Title);
+                Assert.Equal("Review on Friday", source.Content);
+                Assert.Equal("https://example.org/review", source.Url);
+                Assert.Equal("Specialist", source.OriginatingAgent!.Name);
+                Assert.StartsWith("a2a:allowed:source:", source.Id);
+            }
+            else
+            {
+                Assert.Empty(progress);
+                Assert.Empty(result.Sources);
+            }
         }
         Assert.Equal(2, runtimeCalls);
         Assert.Equal(sameAudience ? 0 : 1, tokenCalls);
@@ -292,7 +314,7 @@ public sealed class A2aKnowledgeTests : IDisposable
         });
         selected.EnsureSuccessStatusCode();
         var result = await selected.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Single(result.GetProperty("citations").GetProperty("sources").EnumerateArray());
+        Assert.Equal(2, result.GetProperty("citations").GetProperty("sources").GetArrayLength());
 
         foreach (var agents in new[] { new[] { "unapproved" }, Array.Empty<string>() })
         {
@@ -382,6 +404,13 @@ public sealed class A2aKnowledgeTests : IDisposable
     private static HttpResponseMessage Json(string value) => new(HttpStatusCode.OK)
     {
         Content = new StringContent(value, Encoding.UTF8, "application/json")
+    };
+    private static HttpResponseMessage Sse(JsonElement id, params object[] results) => new(HttpStatusCode.OK)
+    {
+        Content = new StringContent(
+            string.Concat(results.Select(result =>
+                $"data: {JsonSerializer.Serialize(new { jsonrpc = "2.0", id, result })}\n\n")),
+            Encoding.UTF8, "text/event-stream")
     };
     private sealed class Factory(HttpClient client) : IHttpClientFactory
     {

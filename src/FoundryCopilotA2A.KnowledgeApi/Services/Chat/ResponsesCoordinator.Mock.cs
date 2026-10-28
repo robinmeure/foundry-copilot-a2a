@@ -115,10 +115,12 @@ public sealed partial class ResponsesCoordinator
                 await progress.ReportAsync(new ChatStatus(
                     ToolStatus.Started(A2aKnowledgeService.AskToolName, arguments, userContext.TimeZone),
                     ChatStatus.Started, A2aKnowledgeService.AskToolName), ct);
-                var passage = await a2a.AskAsync(context, arguments, ct, selectedAgents);
-                evidence.Add(passage);
+                var result = await a2a.AskAsync(context, arguments, ct, selectedAgents,
+                    (line, token) => progress.ReportAsync(
+                        new ChatStatus(line, ChatStatus.Progress, A2aKnowledgeService.AskToolName), token));
+                evidence.AddRange(result.Passages);
                 await progress.ReportAsync(new ChatStatus(
-                    ToolStatus.Answered(passage.OriginatingAgent?.Name ?? "The APIM agent"),
+                    ToolStatus.Answered(result.Answer.OriginatingAgent?.Name ?? "The APIM agent"),
                     ChatStatus.Completed, A2aKnowledgeService.AskToolName), ct);
             }
         }

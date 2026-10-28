@@ -226,6 +226,9 @@ public sealed class ChatStreamingTests : IDisposable
         Assert.Contains(statuses, status =>
             status.TryGetProperty("tool", out var tool) && tool.GetString() == A2aKnowledgeService.AskToolName &&
             status.GetProperty("state").GetString() == ChatStatus.Completed);
+        Assert.Contains(statuses, status =>
+            status.GetProperty("state").GetString() == ChatStatus.Progress &&
+            status.GetProperty("message").GetString() == "Searching through knowledge sources (mock)");
 
         var deltas = events.Where(item => item.Type() == "TEXT_MESSAGE_CONTENT").ToArray();
         Assert.True(deltas.Length > 1, "The mock answer should stream in chunks.");
@@ -235,7 +238,7 @@ public sealed class ChatStreamingTests : IDisposable
         var answer = result.GetProperty("answer").GetString();
         Assert.Contains("Friday", answer);
         Assert.Equal(answer, string.Concat(deltas.Select(item => item.GetProperty("delta").GetString())));
-        Assert.Single(result.GetProperty("citations").GetProperty("sources").EnumerateArray());
+        Assert.Equal(2, result.GetProperty("citations").GetProperty("sources").GetArrayLength());
         Assert.DoesNotContain(events, item => item.Type() == "RUN_ERROR");
         AssertValidAgUiSequence(events);
     }
