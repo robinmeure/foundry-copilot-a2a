@@ -61,47 +61,7 @@ internal static class HubCommands
             throw new CliException("Option '--api-path' cannot be empty.");
         }
 
-        var singleBackend = arguments.Optional("backend-url");
-        var appServiceBackend = arguments.Optional("app-service-backend-url");
-        var devTunnelBackend = arguments.Optional("dev-tunnel-backend-url");
-        var requestedBackendMode = arguments.Optional("backend-mode");
-        var hasSwitchableOption =
-            appServiceBackend is not null ||
-            devTunnelBackend is not null ||
-            requestedBackendMode is not null;
-        if (singleBackend is not null && hasSwitchableOption)
-        {
-            throw new CliException(
-                "Use either '--backend-url' or the switchable backend options, not both.");
-        }
-
-        string backendUrl;
-        string? appServiceBackendUrl = null;
-        string? devTunnelBackendUrl = null;
-        string? backendMode = null;
-        if (hasSwitchableOption)
-        {
-            if (appServiceBackend is null ||
-                devTunnelBackend is null ||
-                requestedBackendMode is null)
-            {
-                throw new CliException(
-                    "Switchable backends require '--app-service-backend-url', " +
-                    "'--dev-tunnel-backend-url', and '--backend-mode'.");
-            }
-
-            appServiceBackendUrl = ParseBackendUrl(
-                appServiceBackend, "app-service-backend-url", requireDevTunnel: false);
-            devTunnelBackendUrl = ParseBackendUrl(
-                devTunnelBackend, "dev-tunnel-backend-url", requireDevTunnel: true);
-            backendMode = ParseBackendMode(requestedBackendMode);
-            backendUrl = appServiceBackendUrl;
-        }
-        else
-        {
-            backendUrl = ParseBackendUrl(
-                arguments.Require("backend-url"), "backend-url", requireDevTunnel: false);
-        }
+        var backend = ReadBackend(arguments);
         var tenantId = arguments.Require("tenant-id");
         var hubClientId = RequireGuid(arguments, "hub-client-id");
         var adapterClientId = RequireGuid(arguments, "adapter-client-id");
@@ -120,16 +80,7 @@ internal static class HubCommands
                 "Omit it to use the gateway's system-assigned identity.");
         }
 
-        var allowedOrigins = (arguments.Optional("allowed-origins") ?? string.Empty)
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(origin =>
-                Uri.TryCreate(origin, UriKind.Absolute, out var parsed) &&
-                (parsed.Scheme == Uri.UriSchemeHttp || parsed.Scheme == Uri.UriSchemeHttps)
-                    ? parsed.AbsoluteUri.TrimEnd('/')
-                    : throw new CliException(
-                        $"Option '--allowed-origins' contains '{origin}', which is not an absolute HTTP or HTTPS origin."))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        var allowedOrigins = ReadAllowedOrigins(arguments);
         var replace = arguments.Flag("replace");
 
         var accessToken = await AcquireArmTokenAsync(context, cancellationToken);
@@ -138,81 +89,33 @@ internal static class HubCommands
             $"{ArmEndpoint}/subscriptions/{subscriptionId}/resourceGroups/{resourceGroup}" +
             $"/providers/Microsoft.ApiManagement/service/{serviceName}";
 
-        using (var service = await GetAsync(
-            client, accessToken, $"{serviceUrl}?api-version={ApiVersion}",
-            allowMissing: true, cancellationToken))
-        {
-            if (service is null)
-            {
-                throw new CliException(
-                    $"API Management service '{serviceName}' was not found in '{resourceGroup}'.");
-            }
-
-            var identity = service.RootElement.GetProperty("identity");
-            var identityType = identity.TryGetProperty("type", out var type)
-                ? type.GetString() ?? ""
-                : "";
-            if (identityType.Length == 0 || identityType == "None")
-            {
-                throw new CliException(
-                    "The API Management service has no managed identity. The hub exchange " +
-                    "authenticates through a federated identity credential and cannot use a secret.");
-            }
-        }
-
+        await EnsureGatewayIdentityAsync(
+            client, accessToken, serviceUrl, serviceName, resourceGroup, cancellationToken);
         var apiUrl = $"{serviceUrl}/apis/{apiId}";
-        using (var existing = await GetAsync(
-            client, accessToken, $"{apiUrl}?api-version={ApiVersion}",
-            allowMissing: true, cancellationToken))
-        {
-            if (existing is not null && !replace)
-            {
-                throw new CliException(
-                    $"API '{apiId}' already exists. Re-run with --replace to update it, or " +
-                    "choose a different --api-id. Nothing was changed.");
-            }
+        await PrepareExistingApiAsync(client, accessToken, apiUrl, apiId, replace, cancellationToken);
 
-            if (existing is not null)
-            {
-                var description = existing.RootElement
-                    .GetProperty("properties")
-                    .GetProperty("description")
-                    .GetString();
-                if (!string.Equals(description, OwnershipMarker, StringComparison.Ordinal))
-                {
-                    throw new CliException(
-                        $"API '{apiId}' is not owned by configure-hub and will not be replaced.");
-                }
-
-                // Close the API before rewriting it so no request is served by a partially
-                // updated policy set.
-                await PutPolicyAsync(
-                    client, accessToken, apiUrl, ClosedPolicy, cancellationToken);
-            }
-        }
-
-        if (backendMode is not null)
+        if (backend.Mode is not null)
         {
             await PutNamedValueAsync(
                 client,
                 accessToken,
                 serviceUrl,
                 NamedValueId(apiId, AppServiceBackendSuffix),
-                appServiceBackendUrl!,
+                backend.AppServiceUrl!,
                 cancellationToken);
             await PutNamedValueAsync(
                 client,
                 accessToken,
                 serviceUrl,
                 NamedValueId(apiId, DevTunnelBackendSuffix),
-                devTunnelBackendUrl!,
+                backend.DevTunnelUrl!,
                 cancellationToken);
             await PutNamedValueAsync(
                 client,
                 accessToken,
                 serviceUrl,
                 NamedValueId(apiId, BackendModeSuffix),
-                backendMode,
+                backend.Mode,
                 cancellationToken);
         }
 
@@ -225,7 +128,7 @@ internal static class HubCommands
                 description = OwnershipMarker,
                 path = apiPath,
                 protocols = new[] { "https" },
-                serviceUrl = backendUrl,
+                serviceUrl = backend.Url,
                 subscriptionRequired = false,
                 type = "http"
             }
@@ -267,8 +170,8 @@ internal static class HubCommands
             client,
             accessToken,
             apiUrl,
-            backendMode is null
-                ? BuildApiPolicy(backendUrl, allowedOrigins)
+            backend.Mode is null
+                ? BuildApiPolicy(backend.Url, allowedOrigins)
                 : BuildSwitchableApiPolicy(apiId, allowedOrigins),
             cancellationToken);
 
@@ -280,15 +183,15 @@ internal static class HubCommands
         context.Out.WriteLine($"Hub base URL:     {gatewayUrl}/{apiPath}");
         context.Out.WriteLine($"Caller scope:     api://{hubClientId}/access_as_user");
         context.Out.WriteLine($"Exchanged for:    api://{adapterClientId}/access_as_user");
-        if (backendMode is null)
+        if (backend.Mode is null)
         {
-            context.Out.WriteLine($"Backend:          {backendUrl}");
+            context.Out.WriteLine($"Backend:          {backend.Url}");
         }
         else
         {
-            context.Out.WriteLine($"Backend mode:     {backendMode}");
-            context.Out.WriteLine($"App Service:      {appServiceBackendUrl}");
-            context.Out.WriteLine($"Dev Tunnel:       {devTunnelBackendUrl}");
+            context.Out.WriteLine($"Backend mode:     {backend.Mode}");
+            context.Out.WriteLine($"App Service:      {backend.AppServiceUrl}");
+            context.Out.WriteLine($"Dev Tunnel:       {backend.DevTunnelUrl}");
         }
         context.Out.WriteLine(
             $"Gateway identity: {(identityClientId is null ? "system-assigned" : identityClientId)}");
@@ -296,6 +199,131 @@ internal static class HubCommands
             "Callers must now request the hub scope. The adapter still performs its own OBO " +
             "exchange for the downstream provider.");
         return 0;
+    }
+
+    private static async Task EnsureGatewayIdentityAsync(
+        HttpClient client,
+        string accessToken,
+        string serviceUrl,
+        string serviceName,
+        string resourceGroup,
+        CancellationToken cancellationToken)
+    {
+        using var service = await GetAsync(
+            client, accessToken, $"{serviceUrl}?api-version={ApiVersion}",
+            allowMissing: true, cancellationToken);
+        if (service is null)
+        {
+            throw new CliException(
+                $"API Management service '{serviceName}' was not found in '{resourceGroup}'.");
+        }
+
+        var identity = service.RootElement.GetProperty("identity");
+        var identityType = identity.TryGetProperty("type", out var type) ? type.GetString() ?? "" : "";
+        if (identityType.Length == 0 || identityType == "None")
+        {
+            throw new CliException(
+                "The API Management service has no managed identity. The hub exchange " +
+                "authenticates through a federated identity credential and cannot use a secret.");
+        }
+    }
+
+    private static async Task PrepareExistingApiAsync(
+        HttpClient client,
+        string accessToken,
+        string apiUrl,
+        string apiId,
+        bool replace,
+        CancellationToken cancellationToken)
+    {
+        using var existing = await GetAsync(
+            client, accessToken, $"{apiUrl}?api-version={ApiVersion}",
+            allowMissing: true, cancellationToken);
+        if (existing is null)
+        {
+            return;
+        }
+
+        if (!replace)
+        {
+            throw new CliException(
+                $"API '{apiId}' already exists. Re-run with --replace to update it, or " +
+                "choose a different --api-id. Nothing was changed.");
+        }
+
+        var description = existing.RootElement.GetProperty("properties").GetProperty("description").GetString();
+        if (!string.Equals(description, OwnershipMarker, StringComparison.Ordinal))
+        {
+            throw new CliException($"API '{apiId}' is not owned by configure-hub and will not be replaced.");
+        }
+
+        // Do not serve requests through a partially updated policy set.
+        await PutPolicyAsync(client, accessToken, apiUrl, ClosedPolicy, cancellationToken);
+    }
+
+    internal sealed record BackendSelection(
+        string Url,
+        string? AppServiceUrl = null,
+        string? DevTunnelUrl = null,
+        string? Mode = null);
+
+    internal static BackendSelection ReadBackend(CommandArguments arguments)
+    {
+        var singleBackend = arguments.Optional("backend-url");
+        var appServiceBackend = arguments.Optional("app-service-backend-url");
+        var devTunnelBackend = arguments.Optional("dev-tunnel-backend-url");
+        var requestedMode = arguments.Optional("backend-mode");
+        var hasSwitchableOption =
+            appServiceBackend is not null || devTunnelBackend is not null || requestedMode is not null;
+        if (singleBackend is not null && hasSwitchableOption)
+        {
+            throw new CliException("Use either '--backend-url' or the switchable backend options, not both.");
+        }
+
+        if (!hasSwitchableOption)
+        {
+            return new BackendSelection(ParseBackendUrl(
+                arguments.Require("backend-url"), "backend-url", requireDevTunnel: false));
+        }
+
+        if (appServiceBackend is null || devTunnelBackend is null || requestedMode is null)
+        {
+            throw new CliException(
+                "Switchable backends require '--app-service-backend-url', " +
+                "'--dev-tunnel-backend-url', and '--backend-mode'.");
+        }
+
+        var appServiceUrl = ParseBackendUrl(
+            appServiceBackend, "app-service-backend-url", requireDevTunnel: false);
+        var devTunnelUrl = ParseBackendUrl(
+            devTunnelBackend, "dev-tunnel-backend-url", requireDevTunnel: true);
+        return new BackendSelection(
+            appServiceUrl, appServiceUrl, devTunnelUrl, ParseBackendMode(requestedMode));
+    }
+
+    internal static string[] ReadAllowedOrigins(CommandArguments arguments)
+    {
+        var origins = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var configured = arguments.Optional("allowed-origins") ?? string.Empty;
+        foreach (var origin in configured.Split(
+            ',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (!Uri.TryCreate(origin, UriKind.Absolute, out var parsed) ||
+                (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps))
+            {
+                throw new CliException(
+                    $"Option '--allowed-origins' contains '{origin}', which is not an absolute HTTP or HTTPS origin.");
+            }
+
+            var normalized = parsed.AbsoluteUri.TrimEnd('/');
+            if (seen.Add(normalized))
+            {
+                origins.Add(normalized);
+            }
+        }
+
+        return origins.ToArray();
     }
 
     public static async Task<int> SetBackendAsync(

@@ -2,14 +2,8 @@ using System.Text.Json;
 
 namespace FoundryCopilotA2A.Cli;
 
-internal static class EntraCommands
+internal static partial class EntraCommands
 {
-    private const string PowerPlatformApiAppId = "8578e004-a5c6-46e7-913e-12f58912df43";
-    private const string CopilotStudioInvokeScopeId = "204440d3-c1d0-4826-b570-99eb6f5e2aeb";
-    private const string AzureCliAppId = "04b07795-8ddb-461a-bbee-02f9e1bf7b46";
-    private const string DefaultScope =
-        "https://api.powerplatform.com/CopilotStudio.Copilots.Invoke offline_access";
-
     public static async Task<int> RegisterAppAsync(
         CliContext context,
         CommandArguments arguments,
@@ -26,16 +20,7 @@ internal static class EntraCommands
         var noClientSecret = arguments.Flag("no-client-secret");
         var ownerObjectId = OptionalGuid(arguments, "owner-object-id");
 
-        var tenantId = (await AzAsync(
-            context,
-            cancellationToken,
-            "account", "show", "--query", "tenantId", "--output", "tsv"))
-            .StandardOutput.Trim();
-        if (string.IsNullOrWhiteSpace(tenantId))
-        {
-            throw new CliException("Run 'az login' before registering the application.");
-        }
-
+        var tenantId = await ResolveTenantIdAsync(context, cancellationToken);
         context.Out.WriteLine($"Tenant: {tenantId}");
         var existing = (await AzAsync(
             context,
@@ -67,59 +52,8 @@ internal static class EntraCommands
             await AddOwnerAsync(context, appId, ownerObjectId, cancellationToken);
             var objectId = await ResolveApplicationObjectIdAsync(
                 context, appId, cancellationToken);
-            var delegatedScopeId = Guid.NewGuid();
-
             context.Out.WriteLine("Configuring API scope and public-client device flow...");
-            var api = new Dictionary<string, object?>
-            {
-                ["requestedAccessTokenVersion"] = 2,
-                ["oauth2PermissionScopes"] = new[]
-                {
-                    new
-                    {
-                        id = delegatedScopeId,
-                        value = "access_as_user",
-                        type = "User",
-                        isEnabled = true,
-                        adminConsentDisplayName =
-                            "Access the A2A adapter as the signed-in user",
-                        adminConsentDescription =
-                            "Allows the caller to invoke the A2A adapter on behalf of the signed-in user.",
-                        userConsentDisplayName =
-                            "Access the A2A adapter on your behalf",
-                        userConsentDescription =
-                            "Allows the caller to invoke the A2A adapter on your behalf."
-                    }
-                }
-            };
-
-            if (preauthorizeAzureCli)
-            {
-                api["preAuthorizedApplications"] = new[]
-                {
-                    new
-                    {
-                        appId = AzureCliAppId,
-                        delegatedPermissionIds = new[] { delegatedScopeId }
-                    }
-                };
-            }
-
-            var patchBody = JsonSerializer.Serialize(new Dictionary<string, object?>
-            {
-                ["identifierUris"] = new[] { $"api://{appId}" },
-                ["isFallbackPublicClient"] = true,
-                ["publicClient"] = new
-                {
-                    redirectUris = new[]
-                    {
-                        "http://localhost",
-                        "https://login.microsoftonline.com/common/oauth2/nativeclient"
-                    }
-                },
-                ["api"] = api
-            });
-
+            var patchBody = BuildAdapterRegistrationPatch(appId, Guid.NewGuid(), preauthorizeAzureCli);
             using var patchFile = await TemporaryTextFile.CreateAsync(
                 patchBody, cancellationToken);
             await AzAsync(
@@ -132,27 +66,7 @@ internal static class EntraCommands
                 "--body", patchFile.AzureCliReference,
                 "--output", "none");
 
-            context.Out.WriteLine("Adding CopilotStudio.Copilots.Invoke...");
-            await RetryAsync(
-                () => AzAsync(
-                    context,
-                    cancellationToken,
-                    "ad", "app", "permission", "add",
-                    "--id", appId,
-                    "--api", PowerPlatformApiAppId,
-                    "--api-permissions", $"{CopilotStudioInvokeScopeId}=Scope",
-                    "--only-show-errors"),
-                cancellationToken);
-
-            context.Out.WriteLine("Creating service principal...");
-            await RetryAsync(
-                () => AzAsync(
-                    context,
-                    cancellationToken,
-                    "ad", "sp", "create",
-                    "--id", appId,
-                    "--only-show-errors"),
-                cancellationToken);
+            await ConfigureCopilotStudioAccessAsync(context, appId, cancellationToken);
 
             if (attemptAdminConsent)
             {
@@ -221,6 +135,82 @@ internal static class EntraCommands
                 $"Registration did not complete. Clean up with: delete-app --client-id {appId}");
             throw;
         }
+    }
+
+    internal static string BuildAdapterRegistrationPatch(
+        string appId,
+        Guid delegatedScopeId,
+        bool preauthorizeAzureCli)
+    {
+        var api = new Dictionary<string, object?>
+        {
+            ["requestedAccessTokenVersion"] = 2,
+            ["oauth2PermissionScopes"] = new[]
+            {
+                new
+                {
+                    id = delegatedScopeId,
+                    value = "access_as_user",
+                    type = "User",
+                    isEnabled = true,
+                    adminConsentDisplayName = "Access the A2A adapter as the signed-in user",
+                    adminConsentDescription =
+                        "Allows the caller to invoke the A2A adapter on behalf of the signed-in user.",
+                    userConsentDisplayName = "Access the A2A adapter on your behalf",
+                    userConsentDescription = "Allows the caller to invoke the A2A adapter on your behalf."
+                }
+            }
+        };
+
+        if (preauthorizeAzureCli)
+        {
+            api["preAuthorizedApplications"] = new[]
+            {
+                new
+                {
+                    appId = AzureCliAppId,
+                    delegatedPermissionIds = new[] { delegatedScopeId }
+                }
+            };
+        }
+
+        return JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["identifierUris"] = new[] { $"api://{appId}" },
+            ["isFallbackPublicClient"] = true,
+            ["publicClient"] = new
+            {
+                redirectUris = new[]
+                {
+                    "http://localhost",
+                    "https://login.microsoftonline.com/common/oauth2/nativeclient"
+                }
+            },
+            ["api"] = api
+        });
+    }
+
+    private static async Task ConfigureCopilotStudioAccessAsync(
+        CliContext context,
+        string appId,
+        CancellationToken cancellationToken)
+    {
+        context.Out.WriteLine("Adding CopilotStudio.Copilots.Invoke...");
+        await RetryAsync(
+            () => AzAsync(
+                context, cancellationToken,
+                "ad", "app", "permission", "add", "--id", appId,
+                "--api", PowerPlatformApiAppId,
+                "--api-permissions", $"{CopilotStudioInvokeScopeId}=Scope",
+                "--only-show-errors"),
+            cancellationToken);
+
+        context.Out.WriteLine("Creating service principal...");
+        await RetryAsync(
+            () => AzAsync(
+                context, cancellationToken,
+                "ad", "sp", "create", "--id", appId, "--only-show-errors"),
+            cancellationToken);
     }
 
     public static async Task<int> RegisterSpaAsync(
@@ -452,215 +442,6 @@ internal static class EntraCommands
                 $"delete-app --client-id {clientId}");
             throw;
         }
-    }
-
-    public static async Task<int> AddFederatedCredentialAsync(
-        CliContext context,
-        CommandArguments arguments,
-        CancellationToken cancellationToken)
-    {
-        arguments.EnsureOnly("client-id", "principal-id", "name", "help");
-
-        var clientId = RequireGuid(arguments, "client-id");
-        var principalId = RequireGuid(arguments, "principal-id");
-        var name = arguments.Optional("name", "managed-identity")!;
-        var tenantId = await ResolveTenantIdAsync(context, cancellationToken);
-        var issuer = $"https://login.microsoftonline.com/{tenantId}/v2.0";
-        const string audience = "api://AzureADTokenExchange";
-
-        var existingJson = (await AzAsync(
-            context,
-            cancellationToken,
-            "ad", "app", "federated-credential", "list",
-            "--id", clientId,
-            "--output", "json"))
-            .StandardOutput;
-        using var existing = JsonDocument.Parse(existingJson);
-        var namedCredentials = existing.RootElement
-            .EnumerateArray()
-            .Where(item => string.Equals(
-                item.GetProperty("name").GetString(),
-                name,
-                StringComparison.Ordinal))
-            .ToArray();
-        if (namedCredentials.Length > 1)
-        {
-            throw new CliException(
-                $"Application {clientId} has multiple federated credentials named '{name}'.");
-        }
-
-        if (namedCredentials.Length == 1)
-        {
-            var credential = namedCredentials[0];
-            var audiences = credential.GetProperty("audiences")
-                .EnumerateArray()
-                .Select(value => value.GetString())
-                .ToArray();
-            if (!string.Equals(
-                    credential.GetProperty("issuer").GetString(),
-                    issuer,
-                    StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(
-                    credential.GetProperty("subject").GetString(),
-                    principalId,
-                    StringComparison.OrdinalIgnoreCase) ||
-                audiences.Length != 1 ||
-                !string.Equals(audiences[0], audience, StringComparison.Ordinal))
-            {
-                throw new CliException(
-                    $"Federated credential '{name}' exists with different trust settings.");
-            }
-
-            context.Out.WriteLine(
-                $"Federated credential '{name}' already matches the managed identity.");
-            return 0;
-        }
-
-        var body = JsonSerializer.Serialize(new
-        {
-            name,
-            issuer,
-            subject = principalId,
-            audiences = new[] { audience },
-            description = "Managed identity federation for foundry-copilot-a2a."
-        });
-        using var bodyFile = await TemporaryTextFile.CreateAsync(body, cancellationToken);
-        await AzAsync(
-            context,
-            cancellationToken,
-            "ad", "app", "federated-credential", "create",
-            "--id", clientId,
-            "--parameters", bodyFile.AzureCliReference,
-            "--only-show-errors");
-
-        context.Out.WriteLine(
-            $"Added federated credential '{name}' to application {clientId}.");
-        return 0;
-    }
-
-    public static async Task<int> RegisterWebRedirectAsync(
-        CliContext context,
-        CommandArguments arguments,
-        CancellationToken cancellationToken)
-    {
-        arguments.EnsureOnly("client-id", "redirect-uri", "help");
-
-        var clientId = RequireGuid(arguments, "client-id");
-        var redirectUri = arguments.AbsoluteHttpUri("redirect-uri");
-        if (redirectUri.Scheme != Uri.UriSchemeHttps ||
-            !string.IsNullOrEmpty(redirectUri.UserInfo) ||
-            !string.IsNullOrEmpty(redirectUri.Query) ||
-            !string.IsNullOrEmpty(redirectUri.Fragment))
-        {
-            throw new CliException(
-                "Option '--redirect-uri' must be an HTTPS URL without credentials, a query, or a fragment.");
-        }
-
-        var objectId = await ResolveApplicationObjectIdAsync(
-            context, clientId, cancellationToken);
-        var redirectsJson = (await AzAsync(
-            context,
-            cancellationToken,
-            "ad", "app", "show",
-            "--id", clientId,
-            "--query", "web.redirectUris",
-            "--output", "json"))
-            .StandardOutput;
-        using var redirectsDocument = JsonDocument.Parse(redirectsJson);
-        var redirects = redirectsDocument.RootElement.ValueKind == JsonValueKind.Array
-            ? redirectsDocument.RootElement
-                .EnumerateArray()
-                .Select(value => value.GetString())
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .Select(value => value!)
-                .ToList()
-            : [];
-        var normalized = redirectUri.AbsoluteUri;
-        if (redirects.Contains(normalized, StringComparer.OrdinalIgnoreCase))
-        {
-            context.Out.WriteLine(
-                $"Web redirect URI '{normalized}' is already registered.");
-            return 0;
-        }
-
-        redirects.Add(normalized);
-        var patchBody = JsonSerializer.Serialize(new
-        {
-            web = new
-            {
-                redirectUris = redirects
-            }
-        });
-        using var patchFile = await TemporaryTextFile.CreateAsync(
-            patchBody, cancellationToken);
-        await AzAsync(
-            context,
-            cancellationToken,
-            "rest",
-            "--method", "PATCH",
-            "--url", $"https://graph.microsoft.com/v1.0/applications/{objectId}",
-            "--headers", "Content-Type=application/json",
-            "--body", patchFile.AzureCliReference,
-            "--output", "none");
-
-        context.Out.WriteLine(
-            $"Registered Web redirect URI '{normalized}' on application {clientId}.");
-        return 0;
-    }
-
-    public static async Task<int> DeleteAppAsync(
-        CliContext context,
-        CommandArguments arguments,
-        CancellationToken cancellationToken)
-    {
-        arguments.EnsureOnly("client-id", "help");
-        var clientId = arguments.Require("client-id");
-
-        await AzAsync(
-            context,
-            cancellationToken,
-            "ad", "app", "delete", "--id", clientId, "--only-show-errors");
-
-        var remaining = (await AzAsync(
-            context,
-            cancellationToken,
-            "ad", "app", "list",
-            "--filter", $"appId eq '{clientId}'",
-            "--query", "[].appId",
-            "--output", "tsv"))
-            .StandardOutput.Trim();
-        if (!string.IsNullOrEmpty(remaining))
-        {
-            throw new CliException($"Application {clientId} is still present after deletion.");
-        }
-
-        context.Out.WriteLine($"Deleted application {clientId} and its service principal.");
-        return 0;
-    }
-
-    public static async Task<int> ConsentAsync(
-        CliContext context,
-        CommandArguments arguments,
-        CancellationToken cancellationToken)
-    {
-        arguments.EnsureOnly("tenant-id", "client-id", "scope", "help");
-        var tenantId = arguments.Require("tenant-id");
-        var clientId = arguments.Require("client-id");
-        var scope = arguments.Optional("scope", DefaultScope)!;
-        var scopes = scope.Split(
-            ' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (scopes.Length == 0)
-        {
-            throw new CliException("At least one delegated scope is required.");
-        }
-
-        var result = await DeviceCodeAuth.AcquireAsync(
-            context, tenantId, clientId, scopes, cancellationToken);
-
-        context.Out.WriteLine(
-            $"Consent granted for {result.Account?.Username ?? "the signed-in user"}; " +
-            $"token expires at {result.ExpiresOn:u}.");
-        return 0;
     }
 
     /// <summary>
@@ -915,360 +696,4 @@ internal static class EntraCommands
             throw;
         }
     }
-
-    /// <summary>
-    /// Grants an existing frontend registration delegated access to the hub's access_as_user
-    /// scope so the browser requests a hub-audience token instead of an adapter-audience one.
-    /// </summary>
-    public static async Task<int> GrantHubAccessAsync(
-        CliContext context,
-        CommandArguments arguments,
-        CancellationToken cancellationToken)
-    {
-        arguments.EnsureOnly("client-id", "hub-client-id", "admin-consent", "help");
-
-        var clientId = RequireGuid(arguments, "client-id");
-        var hubClientId = RequireGuid(arguments, "hub-client-id");
-        if (string.Equals(clientId, hubClientId, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new CliException(
-                "The frontend and hub client IDs must be different applications.");
-        }
-
-        var attemptAdminConsent = arguments.Flag("admin-consent");
-        var tenantId = await ResolveTenantIdAsync(context, cancellationToken);
-        context.Out.WriteLine($"Tenant: {tenantId}");
-
-        var hubScopeId = await ResolveAccessAsUserScopeIdAsync(
-            context, hubClientId, cancellationToken);
-
-        context.Out.WriteLine("Granting the frontend delegated access to the hub...");
-        await RetryAsync(
-            () => AzAsync(
-                context,
-                cancellationToken,
-                "ad", "app", "permission", "add",
-                "--id", clientId,
-                "--api", hubClientId,
-                "--api-permissions", $"{hubScopeId}=Scope",
-                "--only-show-errors"),
-            cancellationToken);
-
-        if (attemptAdminConsent)
-        {
-            context.Out.WriteLine("Attempting tenant-wide admin consent...");
-            await AzAsync(
-                context,
-                cancellationToken,
-                "ad", "app", "permission", "admin-consent",
-                "--id", clientId,
-                "--only-show-errors");
-        }
-
-        context.Out.WriteLine();
-        context.Out.WriteLine("The frontend can now request the hub scope.");
-        context.Out.WriteLine($"Frontend ClientId:  {clientId}");
-        context.Out.WriteLine($"Requested scope:    api://{hubClientId}/access_as_user");
-        context.Out.WriteLine(
-            $"Frontend setting:   VITE_ADAPTER_API_CLIENT_ID={hubClientId}");
-        context.Out.WriteLine(
-            "The existing adapter permission is left in place. Remove it once every caller " +
-            "uses the hub.");
-        return 0;
-    }
-
-    /// <summary>
-    /// Preauthorizes a client application for an API's delegated scope. Preauthorization is the
-    /// documented way to let a middle tier receive a scope in the OBO flow without a separate
-    /// consent prompt, and it does not require a privileged role.
-    /// </summary>
-    public static async Task<int> PreauthorizeClientAsync(
-        CliContext context,
-        CommandArguments arguments,
-        CancellationToken cancellationToken)
-    {
-        arguments.EnsureOnly("api-client-id", "client-id", "scope", "help");
-
-        var apiClientId = RequireGuid(arguments, "api-client-id");
-        var clientId = RequireGuid(arguments, "client-id");
-        if (string.Equals(apiClientId, clientId, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new CliException(
-                "The API and client IDs must be different applications.");
-        }
-
-        var scope = arguments.Optional("scope", "access_as_user")!;
-        var tenantId = await ResolveTenantIdAsync(context, cancellationToken);
-        context.Out.WriteLine($"Tenant: {tenantId}");
-
-        var scopeId = (await AzAsync(
-            context,
-            cancellationToken,
-            "ad", "app", "show",
-            "--id", apiClientId,
-            "--query", $"api.oauth2PermissionScopes[?value=='{scope}' && isEnabled].id | [0]",
-            "--output", "tsv"))
-            .StandardOutput.Trim();
-        if (!Guid.TryParse(scopeId, out _))
-        {
-            throw new CliException(
-                $"Application {apiClientId} does not expose an enabled {scope} scope.");
-        }
-
-        var objectId = await ResolveApplicationObjectIdAsync(
-            context, apiClientId, cancellationToken);
-        var existingJson = (await AzAsync(
-            context,
-            cancellationToken,
-            "ad", "app", "show",
-            "--id", apiClientId,
-            "--query", "api.preAuthorizedApplications",
-            "--output", "json"))
-            .StandardOutput.Trim();
-
-        // Preserve every existing entry: this property is replaced wholesale on PATCH.
-        var entries = new List<PreauthorizedApplication>();
-        if (!string.IsNullOrWhiteSpace(existingJson) && existingJson != "null")
-        {
-            entries.AddRange(
-                JsonSerializer.Deserialize<List<PreauthorizedApplication>>(existingJson) ?? []);
-        }
-
-        var match = entries.FirstOrDefault(entry =>
-            string.Equals(entry.AppId, clientId, StringComparison.OrdinalIgnoreCase));
-        if (match is not null && match.DelegatedPermissionIds.Contains(scopeId, StringComparer.OrdinalIgnoreCase))
-        {
-            context.Out.WriteLine(
-                $"Client {clientId} is already preauthorized for {scope} on {apiClientId}.");
-            return 0;
-        }
-
-        if (match is not null)
-        {
-            entries.Remove(match);
-            entries.Add(new PreauthorizedApplication
-            {
-                AppId = match.AppId,
-                DelegatedPermissionIds = [.. match.DelegatedPermissionIds, scopeId]
-            });
-        }
-        else
-        {
-            entries.Add(new PreauthorizedApplication
-            {
-                AppId = clientId,
-                DelegatedPermissionIds = [scopeId]
-            });
-        }
-
-        context.Out.WriteLine($"Preauthorizing {clientId} for {scope} on {apiClientId}...");
-        var patchBody = JsonSerializer.Serialize(new Dictionary<string, object?>
-        {
-            ["api"] = new Dictionary<string, object?>
-            {
-                ["preAuthorizedApplications"] = entries
-                    .Select(entry => new
-                    {
-                        appId = entry.AppId,
-                        delegatedPermissionIds = entry.DelegatedPermissionIds
-                    })
-                    .ToArray()
-            }
-        });
-
-        using var patchFile = await TemporaryTextFile.CreateAsync(patchBody, cancellationToken);
-        await RetryAsync(
-            () => AzAsync(
-                context,
-                cancellationToken,
-                "rest",
-                "--method", "PATCH",
-                "--url", $"https://graph.microsoft.com/v1.0/applications/{objectId}",
-                "--headers", "Content-Type=application/json",
-                "--body", patchFile.AzureCliReference,
-                "--output", "none"),
-            cancellationToken);
-
-        context.Out.WriteLine();
-        context.Out.WriteLine(
-            $"{clientId} can now receive api://{apiClientId}/{scope} without a consent prompt.");
-        context.Out.WriteLine(
-            "Preauthorization does not grant the API's own downstream permissions.");
-        return 0;
-    }
-
-    private sealed class PreauthorizedApplication
-    {
-        [System.Text.Json.Serialization.JsonPropertyName("appId")]
-        public string AppId { get; set; } = string.Empty;
-
-        [System.Text.Json.Serialization.JsonPropertyName("delegatedPermissionIds")]
-        public string[] DelegatedPermissionIds { get; set; } = [];
-    }
-
-    private static async Task<string> ResolveTenantIdAsync(
-        CliContext context,
-        CancellationToken cancellationToken)
-    {
-        var tenantId = (await AzAsync(
-            context,
-            cancellationToken,
-            "account", "show", "--query", "tenantId", "--output", "tsv"))
-            .StandardOutput.Trim();
-        return !string.IsNullOrWhiteSpace(tenantId)
-            ? tenantId
-            : throw new CliException("Run 'az login' before registering the application.");
-    }
-
-    private static async Task<string> ResolveAccessAsUserScopeIdAsync(
-        CliContext context,
-        string clientId,
-        CancellationToken cancellationToken)
-    {
-        var scopeId = (await AzAsync(
-            context,
-            cancellationToken,
-            "ad", "app", "show",
-            "--id", clientId,
-            "--query", "api.oauth2PermissionScopes[?value=='access_as_user' && isEnabled].id | [0]",
-            "--output", "tsv"))
-            .StandardOutput.Trim();
-        return Guid.TryParse(scopeId, out _)
-            ? scopeId
-            : throw new CliException(
-                $"Application {clientId} does not expose an enabled access_as_user scope.");
-    }
-
-    private static string RequireGuid(CommandArguments arguments, string name)
-    {
-        var value = arguments.Require(name);
-        return Guid.TryParse(value, out _)
-            ? value
-            : throw new CliException($"Option '--{name}' must be an application (client) ID.");
-    }
-
-    private static string? OptionalGuid(CommandArguments arguments, string name)
-    {
-        var value = arguments.Optional(name);
-        if (value is null)
-        {
-            return null;
-        }
-
-        return Guid.TryParse(value, out _)
-            ? value
-            : throw new CliException($"Option '--{name}' must be an object ID.");
-    }
-
-    private static async Task AddOwnerAsync(
-        CliContext context,
-        string clientId,
-        string? ownerObjectId,
-        CancellationToken cancellationToken)
-    {
-        if (ownerObjectId is null)
-        {
-            return;
-        }
-
-        context.Out.WriteLine($"Assigning application owner {ownerObjectId}...");
-        await RetryAsync(
-            () => AzAsync(
-                context,
-                cancellationToken,
-                "ad", "app", "owner", "add",
-                "--id", clientId,
-                "--owner-object-id", ownerObjectId,
-                "--only-show-errors"),
-            cancellationToken);
-    }
-
-    private static IReadOnlyList<string> ParseGuidList(string? value, string name)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return [];
-        }
-
-        var items = value.Split(
-            ',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        foreach (var item in items)
-        {
-            if (!Guid.TryParse(item, out _))
-            {
-                throw new CliException(
-                    $"Option '--{name}' must be a comma-separated list of application (client) IDs.");
-            }
-        }
-
-        return items;
-    }
-
-    private static async Task<string> ResolveApplicationObjectIdAsync(
-        CliContext context,
-        string appId,
-        CancellationToken cancellationToken)
-    {
-        Exception? lastException = null;
-        for (var attempt = 1; attempt <= 6; attempt++)
-        {
-            try
-            {
-                var objectId = (await AzAsync(
-                    context,
-                    cancellationToken,
-                    "ad", "app", "show",
-                    "--id", appId,
-                    "--query", "id",
-                    "--output", "tsv"))
-                    .StandardOutput.Trim();
-                if (!string.IsNullOrWhiteSpace(objectId))
-                {
-                    return objectId;
-                }
-            }
-            catch (ExternalCommandException exception)
-            {
-                lastException = exception;
-            }
-
-            await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
-        }
-
-        throw new CliException(
-            $"The new application was not visible through Microsoft Graph. {lastException?.Message}");
-    }
-
-    private static async Task RetryAsync(
-        Func<Task<CommandResult>> action,
-        CancellationToken cancellationToken)
-    {
-        ExternalCommandException? lastException = null;
-        for (var attempt = 1; attempt <= 6; attempt++)
-        {
-            try
-            {
-                await action();
-                return;
-            }
-            catch (ExternalCommandException exception) when (attempt < 6)
-            {
-                lastException = exception;
-                await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
-            }
-        }
-
-        if (lastException is not null)
-        {
-            throw lastException;
-        }
-
-        throw new InvalidOperationException("Retry operation failed without an exception.");
-    }
-
-    private static Task<CommandResult> AzAsync(
-        CliContext context,
-        CancellationToken cancellationToken,
-        params string[] arguments) =>
-        context.Processes.CaptureAsync("az", arguments, cancellationToken);
 }

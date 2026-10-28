@@ -49,6 +49,19 @@ The CLI is not a general replacement for Azure CLI, Bicep, the Foundry SDK, or t
 portals. It coordinates only the operations needed by this repository's A2A architecture.
 Long-lived infrastructure remains declarative under `infra/`.
 
+## Code organization
+
+[Identity](Identity) groups Entra application registration, permissions and shared command
+helpers. [Foundry](Foundry) separates orchestration commands, connection operations and agent
+definition construction. These are stateless partial command classes, not extra service layers:
+dispatch and help remain explicit in [CliApplication.cs](CliApplication.cs).
+
+Keep side effects in visible order and build payloads separately. Small operation-specific
+records can group related input, but do not add command buses, generic workflows or interfaces
+for individual steps. Tests use local HTTP handlers and pure payload/input builders; no Azure
+resources are needed. Run CLI tests with outputs under the repository because preview tests
+locate repository assets relative to the built executable.
+
 ## What the commands do
 
 ### Identity and consent

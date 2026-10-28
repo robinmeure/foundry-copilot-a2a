@@ -137,11 +137,8 @@ public class CliApplicationTests
         await FoundryCommands.PutRemoteA2AConnectionAsync(
             httpClient,
             "arm-token",
-            "subscription",
-            "resource group",
-            "foundry-account",
-            "foundry-project",
-            "copilot-a2a",
+            new FoundryConnectionAddress(
+                "subscription", "resource group", "foundry-account", "foundry-project", "copilot-a2a"),
             "https://adapter.example/a2a-agents/reverser",
             "api://adapter",
             ChainAuthenticationMode.UserEntraToken,
@@ -171,57 +168,54 @@ public class CliApplicationTests
     [Fact]
     public async Task RemoteA2AOAuthConnectionUsesIdentityPassthroughAndReturnsRedirectUrl()
     {
-       HttpRequestMessage? capturedRequest = null;
-       var handler = new StubHttpMessageHandler(request =>
-       {
-           if (request.Method == HttpMethod.Get)
-           {
-               return new HttpResponseMessage(HttpStatusCode.NotFound);
-           }
-           capturedRequest = Clone(request);
-           return Json(
-               """{"properties":{"provisioningState":"Succeeded","redirectUrl":"https://consent.example/redirect"}}""");
-       });
-       using var httpClient = new HttpClient(handler);
+        HttpRequestMessage? capturedRequest = null;
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            if (request.Method == HttpMethod.Get)
+            {
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            }
+            capturedRequest = Clone(request);
+            return Json(
+                """{"properties":{"provisioningState":"Succeeded","redirectUrl":"https://consent.example/redirect"}}""");
+        });
+        using var httpClient = new HttpClient(handler);
 
-       var redirectUrl = await FoundryCommands.PutRemoteA2AConnectionAsync(
-           httpClient,
-           "arm-token",
-           "subscription",
-           "resource-group",
-           "account",
-           "project",
-           "a2a-reverser",
-           "https://adapter.example/a2a-agents/reverser/a2a",
-           "api://adapter",
-           ChainAuthenticationMode.OAuth,
-           "tenant-id",
-           "oauth-client",
-           "oauth-secret",
-           CancellationToken.None);
+        var redirectUrl = await FoundryCommands.PutRemoteA2AConnectionAsync(
+            httpClient,
+            "arm-token",
+            new FoundryConnectionAddress(
+                "subscription", "resource-group", "account", "project", "a2a-reverser"),
+            "https://adapter.example/a2a-agents/reverser/a2a",
+            "api://adapter",
+            ChainAuthenticationMode.OAuth,
+            "tenant-id",
+            "oauth-client",
+            "oauth-secret",
+            CancellationToken.None);
 
-       Assert.Equal("https://consent.example/redirect", redirectUrl);
-       using var body = JsonDocument.Parse(
-           await capturedRequest!.Content!.ReadAsStringAsync());
-       var properties = body.RootElement.GetProperty("properties");
-       Assert.Equal("OAuth2", properties.GetProperty("authType").GetString());
-       Assert.Equal("RemoteA2A", properties.GetProperty("category").GetString());
-       Assert.Equal("ServicesAndApps", properties.GetProperty("group").GetString());
-       Assert.True(properties.GetProperty("isSharedToAll").GetBoolean());
-       Assert.Empty(properties.GetProperty("sharedUserList").EnumerateArray());
-       Assert.Equal("Azure", properties.GetProperty("metadata").GetProperty("ApiType").GetString());
-       Assert.Equal(
-           "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/authorize",
-           properties.GetProperty("authorizationUrl").GetString());
-       Assert.Equal(
-           ["api://adapter/access_as_user", "offline_access"],
-           properties.GetProperty("scopes").EnumerateArray().Select(value => value.GetString()));
-       Assert.Equal(
-           "oauth-client",
-           properties.GetProperty("credentials").GetProperty("clientId").GetString());
-       Assert.Equal(
-           "oauth-secret",
-           properties.GetProperty("credentials").GetProperty("clientSecret").GetString());
+        Assert.Equal("https://consent.example/redirect", redirectUrl);
+        using var body = JsonDocument.Parse(
+            await capturedRequest!.Content!.ReadAsStringAsync());
+        var properties = body.RootElement.GetProperty("properties");
+        Assert.Equal("OAuth2", properties.GetProperty("authType").GetString());
+        Assert.Equal("RemoteA2A", properties.GetProperty("category").GetString());
+        Assert.Equal("ServicesAndApps", properties.GetProperty("group").GetString());
+        Assert.True(properties.GetProperty("isSharedToAll").GetBoolean());
+        Assert.Empty(properties.GetProperty("sharedUserList").EnumerateArray());
+        Assert.Equal("Azure", properties.GetProperty("metadata").GetProperty("ApiType").GetString());
+        Assert.Equal(
+            "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/authorize",
+            properties.GetProperty("authorizationUrl").GetString());
+        Assert.Equal(
+            ["api://adapter/access_as_user", "offline_access"],
+            properties.GetProperty("scopes").EnumerateArray().Select(value => value.GetString()));
+        Assert.Equal(
+            "oauth-client",
+            properties.GetProperty("credentials").GetProperty("clientId").GetString());
+        Assert.Equal(
+            "oauth-secret",
+            properties.GetProperty("credentials").GetProperty("clientSecret").GetString());
     }
 
     [Fact]
@@ -289,20 +283,20 @@ public class CliApplicationTests
        "a2a-this-is-a-very-long-ta-99983f")]
     public void DefaultConnectionNameIsValidAndDeterministic(string targetId, string expected)
     {
-       var name = FoundryCommands.BuildDefaultConnectionName(targetId);
+        var name = FoundryCommands.BuildDefaultConnectionName(targetId);
 
-       Assert.Equal(expected, name);
-       Assert.InRange(name.Length, 3, 33);
+        Assert.Equal(expected, name);
+        Assert.InRange(name.Length, 3, 33);
     }
 
     [Fact]
     public void UserTokenPreflightProvidesConsentRemediation()
     {
-       var message = FoundryCommands.UserTokenFailureMessage(
-           "AADSTS65001: The user or administrator has not consented.");
+        var message = FoundryCommands.UserTokenFailureMessage(
+            "AADSTS65001: The user or administrator has not consented.");
 
-       Assert.Contains("Preauthorize Azure CLI application", message);
-       Assert.Contains("--auth-mode oauth", message);
+        Assert.Contains("Preauthorize Azure CLI application", message);
+        Assert.Contains("--auth-mode oauth", message);
     }
 
     [Theory]

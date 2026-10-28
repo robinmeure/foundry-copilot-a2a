@@ -59,7 +59,7 @@ public sealed class FoundryConnectionMigrationTests
         using var client = new HttpClient(handler);
 
         await Assert.ThrowsAsync<CliException>(() => FoundryCommands.PutRemoteA2AConnectionAsync(
-            client, "arm-token", "test", "group", "account", "project", "existing",
+            client, "arm-token", new FoundryConnectionAddress("test", "group", "account", "project", "existing"),
             Target, "api://backend", ChainAuthenticationMode.OAuth,
             "tenant", "backend", "secret", CancellationToken.None));
 
