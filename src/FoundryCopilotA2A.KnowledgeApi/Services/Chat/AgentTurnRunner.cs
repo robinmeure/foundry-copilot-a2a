@@ -7,12 +7,7 @@ namespace FoundryCopilotA2A.KnowledgeApi.Services.Chat;
 /// <summary>Collects an agent turn while normalizing citation markers across streaming chunks.</summary>
 internal static class AgentTurnRunner
 {
-    public static async Task<string> RunAsync(
-        AIAgent agent,
-        string prompt,
-        AgentSession session,
-        ChatProgress progress,
-        CancellationToken ct)
+    public static async Task<string> RunAsync(AIAgent agent, string prompt, AgentSession session, ChatProgress progress, CancellationToken ct)
     {
         if (!progress.StreamsText)
         {
