@@ -99,14 +99,14 @@ public sealed class CopilotStudioAdapterChatClient(
             var update = enumerator.Current;
             var responder = RequireResponder(update.Responder);
             var hasText = !string.IsNullOrEmpty(update.Text);
-            var text = hasText && (update.IsInformative || !answerStarted)
+            var text = hasText && (update.IsInformative || !answerStarted || update.ReplacesAnswer)
                 ? WithResponderHeader(update.Text, responder)
                 : update.Text;
             var responseUpdate = new ChatResponseUpdate(
                 ChatRole.Assistant,
                 CreateResponseContents(
                     text, responder, update.Citations, update.IsInformative, update.ConversationHandle,
-                    update.Cards, update.PlanUpdate))
+                    update.Cards, update.PlanUpdate, update.ReplacesAnswer))
             {
                 AuthorName = responder.Name,
                 ConversationId = metadata.ContextId ?? update.ConversationId,
@@ -240,8 +240,12 @@ public sealed class CopilotStudioAdapterChatClient(
     private static string WithResponderHeader(string text, AgentResponder responder) =>
         $"Responding agent: {responder.Name}\n\n{text}";
 
+    /// <summary>Text part metadata marking a part that replaces the whole answer streamed so far.</summary>
+    internal const string ReplacesAnswerKey = "replacesAnswer";
+
     private static TextContent CreateResponseContent(
-        string text, AgentResponder responder, bool isInformative = false, string? conversationHandle = null)
+        string text, AgentResponder responder, bool isInformative = false, string? conversationHandle = null,
+        bool replacesAnswer = false)
     {
         var properties = new AdditionalPropertiesDictionary
         {
@@ -251,6 +255,10 @@ public sealed class CopilotStudioAdapterChatClient(
         if (isInformative)
         {
             properties["isInformative"] = true;
+        }
+        if (replacesAnswer)
+        {
+            properties[ReplacesAnswerKey] = true;
         }
         if (conversationHandle is not null)
         {
@@ -267,7 +275,8 @@ public sealed class CopilotStudioAdapterChatClient(
         bool isInformative = false,
         string? conversationHandle = null,
         AdaptiveCardBundle? cards = null,
-        AgentPlanUpdate? planUpdate = null)
+        AgentPlanUpdate? planUpdate = null,
+        bool replacesAnswer = false)
     {
         List<AIContent> contents = [];
         if (planUpdate is not null)
@@ -277,7 +286,8 @@ public sealed class CopilotStudioAdapterChatClient(
         if (!string.IsNullOrEmpty(text))
         {
             contents.Add(CreateResponseContent(
-                text, responder, isInformative, isInformative ? null : conversationHandle));
+                text, responder, isInformative, isInformative ? null : conversationHandle,
+                replacesAnswer && !isInformative));
         }
         if (!isInformative && citations is { Sources.Count: > 0 })
         {
@@ -612,6 +622,12 @@ public sealed class IdempotencyStore : IDisposable
 
                     if (!update.IsInformative && update.PlanUpdate is null)
                     {
+                        if (update.ReplacesAnswer)
+                        {
+                            text.Clear();
+                            citations = null;
+                            cards = null;
+                        }
                         text.Append(update.Text);
                         responder = update.Responder;
                         citations = AgentCitations.Merge(citations, update.Citations);

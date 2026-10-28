@@ -423,6 +423,46 @@ public sealed class CopilotStudioActivitySummaryTests
         Assert.Equal("Answer.", emitted.Single(chunk => !chunk.IsInformative).Text);
     }
 
+    /// <summary>
+    /// Deltas carry raw <c>\uE200cite…\uE201</c> markers while the final message resolves them
+    /// to <c>[n]</c> links, so the final text is canonical and replaces what was streamed.
+    /// </summary>
+    [Fact]
+    public void FinalMessageThatDiffersFromItsDeltasReplacesTheStreamedAnswer()
+    {
+        const string streamId = "stream-1";
+        var stream = new CopilotStudioAnswerStream();
+        var emitted = new List<CopilotStudioAnswerChunk>();
+        const string final = "Asielopvang [1].\n\n[1]: https://example.test/doc \"Kamervraag\"";
+
+        Add(emitted, stream, FinalMessage("Intro.", "earlier"), "Intro.");
+        Add(emitted, stream, Typing("Asielopvang ", "streaming", streamId));
+        Add(emitted, stream, Typing("\uE200cite\uE202turn0search0\uE201.", "streaming", streamId));
+        Add(emitted, stream, FinalMessage(final, streamId), final);
+
+        var replacement = emitted[^1];
+        Assert.True(replacement.ReplacesAnswer);
+        Assert.False(replacement.IsInformative);
+        Assert.Equal("Intro." + Environment.NewLine + final, replacement.Text);
+        Assert.Equal(1, stream.ReplacedFinalCount);
+        Assert.Equal(0, stream.SuppressedFinalCount);
+        Assert.All(emitted.SkipLast(1), chunk => Assert.False(chunk.ReplacesAnswer));
+    }
+
+    [Fact]
+    public void FinalMessageThatOnlyDiffersInSurroundingWhitespaceIsStillSuppressed()
+    {
+        var stream = new CopilotStudioAnswerStream();
+        var emitted = new List<CopilotStudioAnswerChunk>();
+
+        Add(emitted, stream, Typing("Answer.", "streaming", "stream-1"));
+        Add(emitted, stream, FinalMessage("Answer.\n", "stream-1"), "Answer.\n");
+
+        Assert.Equal("Answer.", Assert.Single(emitted).Text);
+        Assert.Equal(1, stream.SuppressedFinalCount);
+        Assert.Equal(0, stream.ReplacedFinalCount);
+    }
+
     private static void Add(
         List<CopilotStudioAnswerChunk> emitted,
         CopilotStudioAnswerStream stream,

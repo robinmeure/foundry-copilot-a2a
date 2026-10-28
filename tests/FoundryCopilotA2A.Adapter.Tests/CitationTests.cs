@@ -84,6 +84,29 @@ public sealed class CitationTests
     }
 
     [Fact]
+    public void DivergentFinalReplacesTheAnswerAndCarriesItsCitations()
+    {
+        var stream = new CopilotStudioAnswerStream();
+        var delta = new BotActivity
+        {
+            Id = "answer-1",
+            Type = "typing",
+            Text = "The answer \uE200cite\uE202turn0search0\uE201.",
+            ChannelData = new { streamType = "streaming" }
+        };
+        stream.NextUpdate(delta, null, "conversation", Specialist);
+
+        var final = CitedActivity();
+        final.ChannelData = new { streamType = "final", streamId = "answer-1" };
+        var last = stream.NextUpdate(final, final.Text, "conversation", Specialist);
+
+        Assert.True(last!.ReplacesAnswer);
+        Assert.Equal(final.Text, last.Text);
+        Assert.Single(last.Citations!.Sources);
+        Assert.Equal(1, stream.ReplacedFinalCount);
+    }
+
+    [Fact]
     public void InformativeActivitiesCannotSupplyFinalAnswerCitations()
     {
         var activity = CitedActivity();

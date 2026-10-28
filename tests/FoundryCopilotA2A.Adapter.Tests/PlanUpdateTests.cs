@@ -247,6 +247,28 @@ public sealed class PlanUpdateTests
         Assert.False(accumulator.HasAnswer);
     }
 
+    [Fact]
+    public void AccumulatorTurnsADivergentReplacingArtifactIntoAnAnswerReplacement()
+    {
+        var accumulator = new A2AStreamAccumulator();
+        JsonElement Artifact(string text, bool append) => JsonSerializer.SerializeToElement(new
+        {
+            result = new { kind = "artifact-update", append, artifact = new
+            {
+                artifactId = "answer", parts = new[] { new { kind = "text", text } }
+            } }
+        });
+
+        Assert.Equal("Raw \uE200cite\uE201", Assert.Single(accumulator.Consume(Artifact("Raw \uE200cite\uE201", false))).Text);
+        Assert.Equal(".", Assert.Single(accumulator.Consume(Artifact(".", true))).Text);
+        Assert.Empty(accumulator.Consume(Artifact("Raw \uE200cite\uE201.", false)));
+        var replacement = Assert.Single(accumulator.Consume(Artifact("Raw [1].", false)));
+
+        Assert.True(replacement.ReplacesAnswer);
+        Assert.Equal("Raw [1].", replacement.Text);
+        Assert.Equal(1, accumulator.ReplacedCount);
+    }
+
     internal static HttpRequestMessage Request(string id, bool legacy, bool agentRoute, bool active, bool streaming = true)
     {
         var request = CitationTests.Request(id, legacy, streaming, agentRoute);

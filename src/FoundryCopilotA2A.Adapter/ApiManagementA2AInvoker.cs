@@ -212,7 +212,8 @@ public sealed class ApiManagementA2AInvoker(
                     {
                         Citations = delta.Citations,
                         Cards = delta.Cards,
-                        PlanUpdate = delta.PlanUpdate
+                        PlanUpdate = delta.PlanUpdate,
+                        ReplacesAnswer = delta.ReplacesAnswer
                     };
                 }
             }
@@ -222,6 +223,7 @@ public sealed class ApiManagementA2AInvoker(
             activity?.SetTag("apim.a2a.stream.event.count", accumulator.EventCount);
             activity?.SetTag("apim.a2a.stream.delta.count", accumulator.DeltaCount);
             activity?.SetTag("apim.a2a.stream.final.suppressed", accumulator.SuppressedCount);
+            activity?.SetTag("apim.a2a.stream.final.replaced", accumulator.ReplacedCount);
         }
 
         if (!accumulator.HasAnswer)
@@ -293,12 +295,14 @@ internal static class ServerSentEvents
 
 internal sealed record A2AStreamDelta(
     string Text, bool IsInformative, CitationBundle? Citations, AdaptiveCardBundle? Cards = null,
-    AgentPlanUpdate? PlanUpdate = null);
+    AgentPlanUpdate? PlanUpdate = null, bool ReplacesAnswer = false);
 
 /// <summary>
 /// Turns A2A streaming events into text deltas. Answer chunks normally arrive as appended
 /// artifact updates; a replacing update, message, or final task that repeats text already sent
-/// is reduced to its unseen suffix so the caller never receives the answer twice.
+/// is reduced to its unseen suffix so the caller never receives the answer twice. A replacing
+/// update whose text diverges from what was sent is canonical and becomes a replacement of the
+/// whole answer.
 /// </summary>
 internal sealed class A2AStreamAccumulator
 {
@@ -324,8 +328,12 @@ internal sealed class A2AStreamAccumulator
 
     private readonly Dictionary<string, StringBuilder> _sent = new(StringComparer.Ordinal);
     private readonly List<string> _order = [];
+    private CitationBundle? _citations;
+    private AdaptiveCardBundle? _cards;
 
     public int EventCount { get; private set; }
+
+    public int ReplacedCount { get; private set; }
 
     public int DeltaCount { get; private set; }
 
@@ -451,7 +459,18 @@ internal sealed class A2AStreamAccumulator
         }
 
         var text = JoinText(parts.Where(part => !IsInformative(part)));
-        var delta = text.Length == 0 ? string.Empty : Accept(key, text, append);
+        _citations = AgentCitations.Merge(_citations, citations);
+        _cards = A2AResponseText.MergeCards(_cards, cards);
+        var (delta, replaced) = text.Length == 0 ? (string.Empty, false) : Accept(key, text, append);
+        if (replaced)
+        {
+            ReplacedCount++;
+            deltas.Add(new A2AStreamDelta(
+                string.Join(Environment.NewLine, _order.Select(other => _sent[other].ToString())
+                    .Where(value => value.Length > 0)),
+                false, _citations, _cards, ReplacesAnswer: true));
+            return deltas;
+        }
         if (delta.Length > 0)
         {
             DeltaCount++;
@@ -464,7 +483,7 @@ internal sealed class A2AStreamAccumulator
         return deltas;
     }
 
-    private string Accept(string key, string text, bool append)
+    private (string Delta, bool Replaced) Accept(string key, string text, bool append)
     {
         if (!_sent.TryGetValue(key, out var sent))
         {
@@ -480,7 +499,7 @@ internal sealed class A2AStreamAccumulator
         if (append || sent.Length == 0)
         {
             sent.Append(text);
-            return separator + text;
+            return (separator + text, false);
         }
 
         var previous = sent.ToString();
@@ -492,12 +511,17 @@ internal sealed class A2AStreamAccumulator
                 SuppressedCount++;
             }
             sent.Append(suffix);
-            return suffix;
+            return (suffix, false);
         }
 
-        // Text that is already sent cannot be retracted; keep the streamed version.
-        SuppressedCount++;
-        return string.Empty;
+        if (string.Equals(text.Trim(), previous.Trim(), StringComparison.Ordinal))
+        {
+            SuppressedCount++;
+            return (string.Empty, false);
+        }
+
+        sent.Clear().Append(text);
+        return (string.Empty, true);
     }
 
     private static string ArtifactKey(JsonElement artifact) =>

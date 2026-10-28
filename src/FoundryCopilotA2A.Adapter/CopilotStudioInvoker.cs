@@ -39,6 +39,13 @@ public sealed record CopilotInvocationUpdate(
     public AgentPlanUpdate? PlanUpdate { get; init; }
 
     /// <summary>
+    /// The update carries the whole answer so far, with its complete citations and cards, and
+    /// replaces everything previously streamed. Used when the provider's final message differs
+    /// from the deltas it streamed, for example because it resolved inline citation markers.
+    /// </summary>
+    public bool ReplacesAnswer { get; init; }
+
+    /// <summary>
     /// Opaque, protected reference to the Copilot Studio conversation. The client stores it with
     /// its chat and sends it back so a restarted adapter can continue the same conversation.
     /// </summary>
@@ -65,10 +72,15 @@ public sealed class MockCopilotStudioInvoker(CopilotConversationHandles conversa
     public const string CitationPrompt = "show citation example";
     public const string CardPrompt = "show card example";
     public const string PlanPrompt = "show plan example";
+    /// <summary>Prompt that streams raw citation markers, then a canonical final that replaces them.</summary>
+    public const string ReplacementPrompt = "show streamed replacement example";
 
     /// <summary>The answer the mock streams token by token for <see cref="StreamProgressPrompt"/>.</summary>
     public static readonly string[] StreamedAnswerDeltas =
         ["mock-copilot-studio", ": streamed", " answer", "."];
+
+    /// <summary>The canonical answer that replaces the stream for <see cref="ReplacementPrompt"/>.</summary>
+    public const string ReplacementAnswer = "This streamed mock answer cites a source [1].";
 
     private int _invocationCount;
 
@@ -169,6 +181,26 @@ public sealed class MockCopilotStudioInvoker(CopilotConversationHandles conversa
                 { PlanUpdate = plan };
                 await Task.Delay(150, cancellationToken);
             }
+            yield break;
+        }
+        if (string.Equals(prompt, ReplacementPrompt, StringComparison.OrdinalIgnoreCase))
+        {
+            var responder = new AgentResponder("mock", "Mock Copilot Studio");
+            foreach (var delta in new[]
+                     { "This streamed mock answer", " cites a source ", "\uE200cite\uE202turn0search0\uE201", "." })
+            {
+                yield return new CopilotInvocationUpdate(delta, conversationId, "mock-replacement-answer")
+                { ConversationHandle = handle };
+                await Task.Delay(100, cancellationToken);
+            }
+            yield return new CopilotInvocationUpdate(
+                ReplacementAnswer, conversationId, "mock-replacement-final")
+            {
+                ReplacesAnswer = true,
+                Citations = AgentCitations.FromProviderSource(
+                    responder, "mock-replacement-answer", "Example source (mock)",
+                    "https://example.org/", "[1]", "A synthetic excerpt from the cited source.")
+            };
             yield break;
         }
         if (string.Equals(prompt, CitationPrompt, StringComparison.OrdinalIgnoreCase))
@@ -834,6 +866,9 @@ public sealed class SdkCopilotStudioInvoker : ICopilotStudioInvoker
             traceActivity?.SetTag(
                 "copilot_studio.stream.final.suppressed",
                 answerStream.SuppressedFinalCount);
+            traceActivity?.SetTag(
+                "copilot_studio.stream.final.replaced",
+                answerStream.ReplacedFinalCount);
             AdapterTelemetry.RecordCopilotStudioAnswerStream(
                 traceActivity,
                 Stopwatch.GetElapsedTime(streamStarted),
@@ -1649,27 +1684,36 @@ internal static class CopilotStudioAttachmentText
     }
 }
 
-internal readonly record struct CopilotStudioAnswerChunk(string Text, bool IsInformative);
+internal readonly record struct CopilotStudioAnswerChunk(
+    string Text, bool IsInformative, bool ReplacesAnswer = false);
 
 /// <summary>
 /// Assembles one Copilot Studio turn into ordered chunks.
 /// <para>
 /// A streamed answer arrives as informative typing ("Generating plan..."), then typing deltas
-/// that build the answer token by token, then a final message whose text is exactly the
-/// concatenation of those deltas. All three share one stream id. Forwarding both the deltas and
-/// the final message would therefore return the answer twice, so a final message is dropped once
-/// its stream has already been forwarded. Agents that never stream still send only a message,
+/// that build the answer token by token, then a final message for the same stream id. When the
+/// final text equals the concatenated deltas it is dropped, because forwarding it would return
+/// the answer twice. When it differs, for example because the deltas carried raw
+/// <c>\uE200cite…\uE201</c> markers that the final message resolved to <c>[n]</c> links, the
+/// final text is canonical: it is forwarded as a replacement of the whole answer, together with
+/// every citation and card seen so far. Agents that never stream still send only a message,
 /// which is forwarded unchanged.
 /// </para>
 /// </summary>
 internal sealed class CopilotStudioAnswerStream
 {
     private readonly HashSet<string> _streamedIds = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, StreamSpan> _streams = new(StringComparer.Ordinal);
+    private readonly StringBuilder _answer = new();
+    private CitationBundle? _citations;
+    private AdaptiveCardBundle? _cards;
     private bool _needsSeparator;
 
     public int DeltaCount { get; private set; }
 
     public int SuppressedFinalCount { get; private set; }
+
+    public int ReplacedFinalCount { get; private set; }
 
     public CopilotInvocationUpdate? NextUpdate(
         IActivity activity, string? messageText, string conversationId, AgentResponder responder)
@@ -1677,6 +1721,21 @@ internal sealed class CopilotStudioAnswerStream
         var citations = CopilotStudioCitations.Read(activity, responder);
         var cards = CopilotStudioAdaptiveCards.Read(activity, responder);
         var chunk = Next(activity, messageText);
+        if (chunk is not { IsInformative: true })
+        {
+            _citations = AgentCitations.Merge(_citations, citations);
+            _cards = A2AResponseText.MergeCards(_cards, cards);
+        }
+        if (chunk is { ReplacesAnswer: true })
+        {
+            return new CopilotInvocationUpdate(chunk.Value.Text, conversationId, activity.Id)
+            {
+                Citations = _citations,
+                Cards = _cards,
+                ReplacesAnswer = true
+            };
+        }
+
         // The final activity may repeat streamed text but carry the only citation or card data.
         return chunk is null && citations is null && cards is null
             ? null
@@ -1707,10 +1766,27 @@ internal sealed class CopilotStudioAnswerStream
 
         if (stream.Role == CopilotStudioStreamRole.Final &&
             stream.StreamId is not null &&
-            _streamedIds.Contains(stream.StreamId))
+            _streams.TryGetValue(stream.StreamId, out var streamed))
         {
-            SuppressedFinalCount++;
-            return null;
+            var final = messageText ?? activity.Text;
+            var sent = streamed.Text.ToString();
+            if (string.IsNullOrWhiteSpace(final) ||
+                string.Equals(final.Trim(), sent.Trim(), StringComparison.Ordinal))
+            {
+                SuppressedFinalCount++;
+                return null;
+            }
+
+            // Splice the canonical text over the streamed span, keeping any text around it.
+            _answer.Remove(streamed.Start, sent.Length).Insert(streamed.Start, final);
+            foreach (var later in _streams.Values.Where(span => span.Start > streamed.Start))
+            {
+                later.Start += final.Length - sent.Length;
+            }
+            streamed.Text.Clear().Append(final);
+            ReplacedFinalCount++;
+            return new CopilotStudioAnswerChunk(
+                _answer.ToString(), IsInformative: false, ReplacesAnswer: true);
         }
 
         var text = isMessage
@@ -1741,6 +1817,17 @@ internal sealed class CopilotStudioAnswerStream
             : text!;
         _needsSeparator = true;
 
+        if (isDelta && stream.StreamId is not null)
+        {
+            if (!_streams.TryGetValue(stream.StreamId, out var span))
+            {
+                span = new StreamSpan(_answer.Length + separated.Length - text!.Length);
+                _streams[stream.StreamId] = span;
+            }
+            span.Text.Append(text);
+        }
+        _answer.Append(separated);
+
         if (isDelta)
         {
             DeltaCount++;
@@ -1751,6 +1838,12 @@ internal sealed class CopilotStudioAnswerStream
         }
 
         return new CopilotStudioAnswerChunk(separated, IsInformative: false);
+    }
+
+    private sealed class StreamSpan(int start)
+    {
+        public int Start { get; set; } = start;
+        public StringBuilder Text { get; } = new();
     }
 }
 

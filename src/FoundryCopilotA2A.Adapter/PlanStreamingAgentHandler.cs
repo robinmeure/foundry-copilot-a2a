@@ -124,6 +124,9 @@ internal sealed class PlanStreamingAgentHandler(
                 if (parts.Count > 0)
                 {
                     if (pending is not null) await FlushAsync(false, cancellationToken);
+                    // The canonical final answer replaces the streamed artifact rather than
+                    // appending to it, so clients and the task store keep one corrected copy.
+                    if (parts.Any(IsAnswerReplacement)) append = false;
                     pending = parts;
                 }
             }
@@ -152,5 +155,9 @@ internal sealed class PlanStreamingAgentHandler(
             await agent.SaveSessionAsync(context.ContextId, session, CancellationToken.None);
         }
     }
+
+    private static bool IsAnswerReplacement(Part part) =>
+        part.Metadata?.TryGetValue(CopilotStudioAdapterChatClient.ReplacesAnswerKey, out var value) == true &&
+        value.ValueKind == System.Text.Json.JsonValueKind.True;
 }
 #pragma warning restore MEAI001

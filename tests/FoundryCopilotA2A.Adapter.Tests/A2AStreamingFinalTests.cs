@@ -122,6 +122,36 @@ public sealed class A2AStreamingFinalTests(A2AAdapterFactory factory)
     }
 
     [Fact]
+    public async Task DivergentFinalAnswerReplacesTheStreamedArtifact()
+    {
+        var content = await StreamAsync(
+            "message/stream", "0.3", MockCopilotStudioInvoker.ReplacementPrompt);
+
+        var artifacts = DataPayloads(content)
+            .Select(payload => JsonDocument.Parse(payload).RootElement.GetProperty("result"))
+            .Where(result => result.TryGetProperty("kind", out var kind) &&
+                             kind.GetString() == "artifact-update")
+            .ToList();
+        var replacement = artifacts.Last(result => result.GetProperty("artifact")
+            .GetProperty("parts").EnumerateArray()
+            .Any(part => part.TryGetProperty("metadata", out var metadata) &&
+                         metadata.TryGetProperty("replacesAnswer", out var flag) && flag.GetBoolean()));
+
+        Assert.True(artifacts.Count > 1);
+        Assert.False(replacement.TryGetProperty("append", out var append) && append.GetBoolean());
+        Assert.Equal(
+            artifacts[0].GetProperty("artifact").GetProperty("artifactId").GetString(),
+            replacement.GetProperty("artifact").GetProperty("artifactId").GetString());
+        var parts = replacement.GetProperty("artifact").GetProperty("parts").EnumerateArray().ToList();
+        Assert.EndsWith(MockCopilotStudioInvoker.ReplacementAnswer,
+            parts.First(part => part.TryGetProperty("text", out _)).GetProperty("text").GetString());
+        Assert.Contains(parts, part => part.TryGetProperty("data", out var data) &&
+                                       data.TryGetProperty("urn:foundry-copilot-a2a:citations:v1", out _));
+        Assert.DoesNotContain(parts, part => part.TryGetProperty("text", out var text) &&
+                                             text.GetString()!.Contains('\uE200'));
+    }
+
+    [Fact]
     public async Task ProtocolOneZeroStreamIsUnaffected()
     {
         var content = await StreamAsync("SendStreamingMessage", "1.0");
