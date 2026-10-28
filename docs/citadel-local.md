@@ -62,7 +62,8 @@ injecting the actual adapter endpoint for direct ingress in the flow builder. Th
 inherits `GatewayBaseUrl` unless `ChatbotGatewayBaseUrl` is explicitly configured; set
 that setting to an empty value to retain a direct local chatbot route. Omitting the
 gateway preserves direct-adapter operation. `AdapterPort` defaults to 5099,
-`FrontendPort` to 5173, and `ChatbotPort` to 5174.
+`FrontendPort` to 5173, `ChatbotPort` to 5174, `KnowledgeChatPort` to 5175 and
+`KnowledgePort` to 5100. The Knowledge Chat does not use the gateway; it talks only to the Knowledge API.
 
 **Worktrees:** `aspire start --isolated` randomizes resource ports, even explicit ones.
 Discover the running adapter URL with `aspire describe` and use its allocated port for

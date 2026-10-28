@@ -8,126 +8,16 @@ The console and chatbot reuse the transport, endpoint validation, and consent he
 [`FoundryCopilotA2A.BrowserShared`](../FoundryCopilotA2A.BrowserShared). The existing console's
 behavior and default trace collection are preserved.
 
-## Online and local orchestration
+## Scope
 
-The compact **Online / Local** selector in the sidebar chooses between two separate paths:
-
-- **Online orchestrator — Copilot Studio** (default): messages and experimental attachments
-  use the existing A2A adapter and Copilot Studio agent. Local source settings do not apply.
-- **Local orchestrator — Knowledge API / Microsoft Agent Framework**: the separate
-  [Knowledge API](../FoundryCopilotA2A.KnowledgeApi/README.md) orchestrates document retrieval
-  and selected tools. “Local” describes orchestration, not offline inference: live mode
-  still calls an Azure-hosted model. Anonymous mock mode remains Azure-free when both
-  backends are configured as Mock. Local replies stream over the
-  [AG-UI](https://docs.ag-ui.com/) protocol through the official `@ag-ui/client` `HttpAgent`
-  ([details](../FoundryCopilotA2A.KnowledgeApi/README.md#streaming-chat)).
-
-The modes retain separate browser histories. Switching clears the draft and pending file,
-stops dictation, and is unavailable while sending or reading a file. Local mode supports
-PDF, DOCX, TXT, Markdown and CSV indexing, plus delegated SharePoint imports.
-Clearing or deleting browser history does not delete indexed documents or backend dialogue.
-Local orchestration separately retains bounded Agent Framework dialogue, keyed by tenant,
-user and conversation ID: up to 12 successful turns / 24,000 characters, with sliding
-`Knowledge:RetentionDays` expiry (7 days by default). It retains raw user prompts and
-source-free assistant clarifications/general answers. Assistant responses using private
-context are replaced in retained dialogue with a static re-retrieve placeholder, so private
-sources must be retrieved again. New conversation IDs start fresh. Backend dialogue expires
-independently of browser history, as backend documents do.
-
-The single sidebar gear opens **Backend settings**, including conversation details.
-It remains available on mobile and when the Knowledge API is not configured.
-Mail, Calendar, Microsoft To Do, Planner, Teams and
-People are selected by default, alongside **APIM agents** when available. APIM agents
-requires the Knowledge API's authenticated `GET /api/capabilities` response to contain
-`a2a: true`; missing, false, loading and failed capabilities disable that source and omit
-`a2a` from requests. `a2a` is optional for compatibility with older backends.
-If specialists were excluded, a loading or unavailable agent catalog temporarily omits
-APIM from requests rather than allowing excluded agents.
-**Kamervragen** follows the same fail-closed selection behavior using the independent
-`kamervragen: true` capability. It searches a shared, read-only parliamentary reference
-index, not personal documents or an APIM agent. The chat shows search progress and numbered
-citations; clearing the checkbox removes the tool on the next turn. Existing backends
-without this capability continue to work.
-Select all / Clear all operate on available sources only. These preferences allow tools;
-the orchestrator decides which to invoke. No selection still allows document retrieval
-and general model answers. The chat contract remains
-`{ conversationId, text, sources: string[] }`.
-
-### Confirm-before-write Microsoft 365 actions
-
-In local mode, `POST /api/chat` may return up to three proposed changes in `actions`
-(mail drafts and reply drafts, mail read state, calendar events, To Do tasks/status and
-Planner progress). **Nothing is written when a proposal is shown.** Each proposal renders as a
-plain-text card under its reply with a summary, details (long bodies scroll), expiry and
-**Confirm** / **Cancel**. Confirm calls `POST /api/actions/{id}/confirm` and Cancel calls
-`POST /api/actions/{id}/cancel`, both with `{ conversationId }` and the Knowledge API token.
-The client refuses IDs that are not 32 lowercase hex characters, drops malformed proposals,
-caps details at 12 and only links to `https` results ("Open in Microsoft 365", new tab).
-Cards move from pending to confirming/cancelling to completed, cancelled or failed; buttons
-stay disabled after any outcome. Expired proposals cannot be confirmed locally, and
-`action_not_found` explains that the proposal expired or was already used. Card state is
-saved with the browser transcript, so pending cards survive reloads; a confirmation that was
-interrupted by a reload is shown as failed rather than retried. Status changes are announced
-politely to screen readers. The layout fixture's last local chat shows two mocked proposals.
-
-The settings drawer uses a native modal dialog for keyboard containment, inert background,
-Escape dismissal and focus restoration. Its entrance respects reduced-motion preferences.
-Orchestration and mock-session explanations live in this drawer; the online/local choice
-stays in navigation. The workspace has no title bar or duplicate settings control.
-The attachment icon opens **Local file / SharePoint**. Local file uses the native file chooser
-with the current mode's file limits. SharePoint is available only in Local mode and opens
-a styled, keyboard-contained modal: search by site name or paste an HTTPS SharePoint site URL,
-choose a library, browse folders,
-select one file and choose **Add to conversation**. Importing indexes the document immediately;
-it does not send the draft. The modal stays open on errors and prevents dismissal while indexing.
-Cancel/Escape otherwise returns focus to the attachment icon. No Graph token is requested by
-the picker itself; it reuses the authenticated Knowledge API.
-Pasting a site URL resolves that site and automatically opens its library list.
-Use a site root (including `/sites/...` or `/teams/...`), not a document, page or sharing link.
-Resolving the tenant root opens its own libraries, not a list of every site in the tenant.
-Keyword search still lets you choose among matching sites and load additional results.
-Local files appear inside the composer as document chips showing the filename, file type,
-size and **Ready to add** state. Sending replaces this with **Indexing** until ingestion succeeds.
-Indexed local files and SharePoint imports stay visible in **Chat documents** above the composer
-with **Available for answers** and a removal control. This means available for retrieval when
-relevant, not proof the document was cited in a particular answer. The list refreshes immediately
-after ingestion, even while the answer is still streaming or if answering subsequently fails.
-The former inline SharePoint browser is no longer shown. Only pending file activity
-adds a status line below the composer. On mobile, Conversations starts collapsed and opens a separately scrolling
-list (Escape closes it; selecting a chat returns focus to the composer). Desktop history
-starts expanded. The transcript reserves a useful minimum height; unusually short screens,
-expanded document controls and large text can scroll the page rather than flatten messages.
-
-### Layout regression fixture
-
-`tests/fixtures/layout.html` renders the real chatbot with **mocked authentication and APIs**,
-eight saved conversations per mode, and long replies. It never calls live services. From
-this frontend directory, build and serve it separately from the production entry:
-
-```text
-node --input-type=module -e "import {build,preview} from 'vite'; await build({configFile:false,build:{outDir:'dist/layout-fixture',target:'esnext',rolldownOptions:{input:'tests/fixtures/layout.html'}}}); const server=await preview({configFile:false,build:{outDir:'dist/layout-fixture'},preview:{host:'127.0.0.1',port:4179,strictPort:true}}); server.printUrls()"
-```
-
-Open `http://127.0.0.1:4179/tests/fixtures/layout.html`. Check 1440×900, 390×844
-and 390×667: transcript scrolls, both modes remain visible, the composer is reachable,
-and no horizontal page overflow occurs. Opening mobile history must not shrink the
-transcript; selecting a conversation closes history and focuses Message. Test Enter/Space
-on Conversations, Escape from its list, and Tab/Shift+Tab/Escape in Backend settings.
-The dialog must keep focus inside and return it to its gear opener when dismissed.
-Check the attachment menu with mouse, Enter, arrow keys and Escape. In Local mode, test
-SharePoint search, site/library selection, folder navigation, pagination, a failed import,
-successful import and document removal. The fixture accepts site search `empty` for no results
-and `error` for an API error; **Cannot import.txt** exercises an import failure.
-Paste `https://contoso.sharepoint.com/sites/Finance` to check automatic site selection and
-library loading, or a URL ending in `/denied` to check an explicit lookup failure.
-Verify Cancel
-preserves the draft, a successful import doesn't send it, and mobile dialogs don't overflow.
-Stop the preview with Ctrl+C.
-
-Aspire configures the API URL. For standalone use, set `VITE_KNOWLEDGE_BASE_URL`; live
-Entra mode also needs `VITE_KNOWLEDGE_API_CLIENT_ID` for the separate API registration.
-The SPA requests that API's delegated scope, never a Graph token or client secret.
-See the backend guide for consent, resource configuration, ingestion limits and mock mode.
+This app talks only to Copilot Studio, through the adapter or APIM. The
+[Knowledge Chat](../FoundryCopilotA2A.KnowledgeChat/README.md) is the separate frontend for
+the Knowledge API (local orchestrator). Both share conversation persistence, authentication,
+and the chat layout through
+[`@foundry-copilot-a2a/chat-shared`](../FoundryCopilotA2A.ChatShared/README.md); each app
+owns only its transport, configuration and app-specific controls. The settings drawer shows
+conversation details. History saved for local-orchestrator chats by the former combined app
+is no longer listed here.
 
 ## Authentication and OBO
 
@@ -161,8 +51,7 @@ history rather than deleting it. Reload and sign-in redirects preserve saved cha
 Before each protected request, the frontend asks MSAL for an access token for the current
 account and that API's scope. A token with two minutes or less remaining (or no usable expiry)
 triggers one forced silent renewal before any API request is sent. MSAL manages refresh tokens
-internally; the application does not read or store them separately. Adapter and Knowledge API
-tokens remain separate, and Knowledge API claims challenges are preserved. Renewal is on demand,
+internally; the application does not read or store them separately. Renewal is on demand,
 including the first request after an idle or suspended tab, rather than dependent on background timers.
 If silent renewal fails, the error is surfaced and no stale bearer is sent.
 After an interactive token renewal, resend the request explicitly.
@@ -204,11 +93,11 @@ agent-to-agent target.
 
 ## Run
 
-From this folder:
+From the repository root (the chat apps share one npm workspace):
 
 ```text
 npm ci
-npm run dev
+npm run dev -w src/FoundryCopilotA2A.Chatbot
 ```
 
 Open `http://localhost:5174` and sign in. The existing diagnostic console remains at
@@ -397,9 +286,9 @@ finish the delegated work. APIM consent responses offer the existing trusted con
 and require the user to resend the request after authorization.
 
 ```text
-npm test
-npm run lint
-npm run build
+npm test -w src/FoundryCopilotA2A.Chatbot
+npm run lint -w src/FoundryCopilotA2A.Chatbot
+npm run build -w src/FoundryCopilotA2A.Chatbot
 ```
 
 The Vite build outputs an independent `dist` directory. Public `VITE_*` values are baked into

@@ -55,9 +55,9 @@ uses the [AG-UI](https://docs.ag-ui.com/) event protocol ([Streaming chat](#stre
 ## Use it
 
 The existing Aspire AppHost includes the `knowledge` resource and passes its URL to the
-dedicated chatbot. Open the gear panel and select **Local orchestrator** (Knowledge API /
-Microsoft Agent Framework) rather than **Online orchestrator** (Copilot Studio). Online is
-the default. "Local" means application-owned orchestration, not offline inference: Azure
+dedicated [Knowledge Chat](../FoundryCopilotA2A.KnowledgeChat/README.md) at
+`http://localhost:5175`. It talks only to this API; the Orchestrator Chat at 5174 talks only to
+Copilot Studio. "Local" means application-owned orchestration, not offline inference: Azure
 mode still calls the configured Azure OpenAI model. The diagnostic A2A console is unchanged.
 
 - Upload a document with the composer; the backend indexes it before answering.
@@ -70,7 +70,7 @@ mode still calls the configured Azure OpenAI model. The diagnostic A2A console i
   shared parliamentary reference index, not the user's uploaded documents.
 - Remove indexed documents in Documents & SharePoint. Clearing browser chat history does
   **not** delete backend documents or retained server-side dialogue.
-- Online and local modes have separate browser histories. Local questions
+- Each chat app keeps its own browser history. Local questions
   retain bounded dialogue for follow-up questions but rebuild evidence on each turn.
   Previous private-context answers are not replayed as evidence.
 
@@ -80,7 +80,8 @@ For standalone backend development, use the operational CLI:
 dotnet run --project .\src\FoundryCopilotA2A.Cli -- run-knowledge --backend Mock
 ```
 
-Configure `VITE_KNOWLEDGE_BASE_URL` on a standalone chatbot. In Entra mode also configure
+The CLI allows the Knowledge Chat origin `http://localhost:5175` by default.
+Configure `VITE_KNOWLEDGE_BASE_URL` on a standalone Knowledge Chat. In Entra mode also configure
 `VITE_KNOWLEDGE_API_CLIENT_ID` with the API registration's client ID (which may be shared
 with the adapter/API Hub).
 
@@ -238,7 +239,7 @@ app-only Graph fallback.
 
 Required registration configuration before enabling real Graph:
 
-- Expose `access_as_user` and grant/preauthorize the chatbot SPA.
+- Expose `access_as_user` and grant/preauthorize the Knowledge Chat SPA.
 - Add and approve the chosen delegated Graph permissions. SharePoint browsing/import
   requires `Sites.Read.All` and file download access (typically `Files.Read.All`).
 - Mail uses `Mail.ReadWrite` (read plus confirmed drafts and read state), calendar uses
@@ -465,7 +466,7 @@ A chat request may add `agents: ["<id>", ...]` next to `sources`:
   ID with `403 a2a_agent_not_allowed` and an approved but unselected one with
   `403 a2a_agent_not_selected`, before any catalog or remote call.
 
-In local mode the chatbot settings drawer lists these agents under **APIM agents**, all
+The Knowledge Chat settings drawer lists these agents under **APIM agents**, all
 checked by default (including agents that appear later). Unchecking the last agent turns the
 APIM source off; checking one while the source is off turns it on with only that agent. If the
 list cannot be loaded, the request omits `agents` and the server uses every approved agent.
@@ -572,7 +573,7 @@ Partial activity coverage is returned as `warnings` and displayed in the reply's
 ### Streaming chat
 
 `POST /api/chat/stream` speaks the [AG-UI](https://docs.ag-ui.com/) protocol, so any AG-UI
-client can consume it. The chatbot uses the official `@ag-ui/client` `HttpAgent`; the server
+client can consume it. The Knowledge Chat uses the official `@ag-ui/client` `HttpAgent`; the server
 uses the `AGUI.Abstractions` event types. The JSON `/api/chat` endpoint is unchanged.
 
 The request body is an AG-UI `RunAgentInput`:
@@ -602,5 +603,5 @@ The response is `text/event-stream`, one JSON AG-UI event per `data` line:
 Statuses name the step, quoting at most a shortened search query, agent ID or proposal
 title; they never include Graph results or tool output. Because headers cannot change once the stream
 has started, sign-in challenges and `Retry-After` values move into the `RUN_ERROR` metadata.
-Streamed text is not final until `RUN_FINISHED` arrives, so the chatbot discards it on `RUN_ERROR`.
+Streamed text is not final until `RUN_FINISHED` arrives, so the Knowledge Chat discards it on `RUN_ERROR`.
 Mock mode streams the same events without Azure.

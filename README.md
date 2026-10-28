@@ -14,14 +14,17 @@ Operational setup, provider wiring, APIM publication, and end-to-end smoke tests
 in the versioned [Foundry Copilot A2A CLI](src/FoundryCopilotA2A.Cli/README.md). Its README
 explains what every command does and why the project lives beside the application code.
 
-The dedicated chatbot distinguishes **Online orchestrator (Copilot Studio)** from the opt-in
-**[Local orchestrator (Knowledge API)](src/FoundryCopilotA2A.KnowledgeApi/README.md)**.
+Two chat frontends share one [chat core](src/FoundryCopilotA2A.ChatShared/README.md): the
+[Orchestrator Chat](src/FoundryCopilotA2A.Chatbot/README.md) talks only to the
+**online orchestrator (Copilot Studio)** through the adapter or APIM, and the
+[Knowledge Chat](src/FoundryCopilotA2A.KnowledgeChat/README.md) talks only to the
+**[local orchestrator (Knowledge API)](src/FoundryCopilotA2A.KnowledgeApi/README.md)**.
 The local orchestrator uses Microsoft Agent Framework with Azure OpenAI Responses and
 Microsoft Graph SDK tools for mail, calendar, To Do, Planner, Teams and people. It can also
 consult explicitly approved APIM A2A knowledge agents through the existing adapter. The
 model chooses tools by intent or answers general questions directly; device/SharePoint
 document search remains user- and conversation-scoped. "Local" refers to where orchestration
-runs, not offline inference. Online is the default; mock mode needs no Azure resources.
+runs, not offline inference. Mock mode needs no Azure resources for either app.
 Local follow-ups use bounded, persisted Agent Framework dialogue history without replaying
 private tool evidence. Shared-registration API Hub access supports explicit `SameAudience`
 token reuse; separate API audiences continue to use OBO.
@@ -281,6 +284,18 @@ Its attribution badges and link numbering do not alter copied text or follow-up 
 For an Azure-free example, run the existing CLI `run-mock` workflow and send
 `show citation example` to the mock agent. It emits an answer followed by a late source
 payload so the same path can be exercised in both frontends.
+
+When Copilot Studio streams an answer and then sends a final message whose text differs from
+the streamed deltas (for example `[1]` markers and link definitions instead of raw native
+citation markers), the final message is canonical. The adapter re-sends the whole answer on the
+same artifact with `append: false` and the text-part metadata `replacesAnswer: true`, so clients
+replace the preview instead of appending a duplicate. Send `show streamed replacement example`
+to the mock agent to exercise this path.
+
+The Knowledge API calls APIM specialists with `SendStreamingMessage`. It relays the
+specialist's plan and search progress as `progress` statuses in Knowledge Chat, and turns the
+specialist's structured citations into separate, provider-attributed evidence sources next to
+the specialist's answer.
 
 **Native orchestration boundary:** preserving A2A data does not guarantee that a managed
 Copilot Studio or Foundry orchestrator consumes or re-emits custom citation parts. Update
@@ -893,6 +908,7 @@ aspire start --apphost .\src\FoundryCopilotA2A.AppHost\FoundryCopilotA2A.AppHost
 
 With the default mock configuration and no gateway/discovery/tunnel overrides, open the chatbot
 at `http://localhost:5174`. Aspire selects its loopback-only anonymous mode and the `mock` agent.
+The Knowledge Chat starts at `http://localhost:5175`, anonymous against the mock Knowledge API.
 The diagnostic console also starts, but still requires its Entra configuration and sign-in;
 it has no anonymous browser mode. Existing user secrets can select live resources, so check
 those settings when reusing an AppHost.
@@ -904,13 +920,15 @@ The .NET solution tests the adapter and CLI. Browser/shared-client tests run sep
 ```powershell
 dotnet test .\FoundryCopilotA2A.slnx
 npm ci --prefix .\src\FoundryCopilotA2A.Web
-npm ci --prefix .\src\FoundryCopilotA2A.Chatbot
 npm test --prefix .\src\FoundryCopilotA2A.Web
-npm test --prefix .\src\FoundryCopilotA2A.Chatbot
 npm run lint --prefix .\src\FoundryCopilotA2A.Web
-npm run lint --prefix .\src\FoundryCopilotA2A.Chatbot
 npm run build --prefix .\src\FoundryCopilotA2A.Web
-npm run build --prefix .\src\FoundryCopilotA2A.Chatbot
+# The chat apps and their shared core form one npm workspace at the repository root.
+npm ci
+npm test --workspaces
+npm run lint --workspaces
+npm run typecheck --workspaces --if-present
+npm run build --workspaces --if-present
 ```
 
 These checks need no live Azure resources. They do not replace an authenticated end-to-end
@@ -2051,21 +2069,31 @@ The separate [Orchestrator Chat frontend](src/FoundryCopilotA2A.Chatbot/README.m
 only sign-in and chat with one configured Orchestrator. It reuses the console's A2A streaming
 handlers without its flow designer, specialist selectors, or diagnostic panels.
 
-Aspire starts three application resources together; the Dev Tunnel is an optional extra resource:
+Aspire starts these application resources together; the Dev Tunnel is an optional extra resource:
 
 | Resource | Default address | Purpose |
 | --- | --- | --- |
 | `adapter` | `http://localhost:5099` | Protected A2A handlers and server-side OBO |
 | `frontend` | `http://localhost:5173` | Existing diagnostic console |
-| `chatbot` | `http://localhost:5174` | Dedicated chat-only frontend |
+| `chatbot` | `http://localhost:5174` | Dedicated chat-only frontend (adapter/APIM only) |
+| `knowledge` | `http://localhost:5100` | Knowledge API (local orchestrator) |
+| `knowledge-chat` | `http://localhost:5175` | [Knowledge Chat](src/FoundryCopilotA2A.KnowledgeChat/README.md) frontend (Knowledge API only) |
 
-Both browser origins are allowed by the local adapter. Configure the chatbot's **dedicated SPA**
+The chat apps share one npm workspace rooted at the repository; Aspire installs it once through
+the `chat-workspace-install` resource, then starts each app independently of the other's backend. Both the console and chatbot
+origins are allowed by the local adapter; only the Knowledge Chat origin is allowed by the
+Knowledge API. Configure the chatbot's **dedicated SPA**
 registration and the existing backend API identity in its ignored `.env.local`; its SPA redirect
 URI must be `<chatbot-origin>/auth-redirect.html` for its MSAL redirect bridge. Sign-in, token
 renewal, and sign-out use redirects, like the existing console, not popups.
 In live mode, calls use the signed-in user's delegated backend token, and OBO remains on the
 server. The explicit local mock mode does not sign in or perform OBO. Existing console settings
 and its app registration are unchanged.
+
+`KnowledgeChatPort` moves the Knowledge Chat; `KnowledgeChatTenantId`, `KnowledgeChatSpaClientId`
+and `KnowledgeChatSpeechInputEnabled` default to the matching `Chatbot*` settings. When it shares
+the chatbot's SPA registration, register `<knowledge-chat-origin>/auth-redirect.html` as an
+extra redirect with the CLI `register-spa-redirect` command.
 
 AppHost settings `ChatbotPort`, `ChatbotOrchestratorAgentId`, and `ChatbotOrchestratorName`
 override chatbot defaults. The default live agent is `orchestrator`; an explicit mock AppHost
