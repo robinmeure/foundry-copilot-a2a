@@ -48,9 +48,10 @@ and general model answers. The chat contract remains
 
 ### Confirm-before-write Microsoft 365 actions
 
-`POST /api/chat` may return up to three proposed changes in `actions`
-(mail drafts and reply drafts, mail read state, calendar events, To Do tasks/status and
-Planner progress). **Nothing is written when a proposal is shown.** Each proposal renders as a
+`POST /api/chat` may return up to five proposed changes in `actions`
+(mail drafts and reply drafts, mail read state, calendar events, To Do tasks/status,
+Planner progress and **Save to OneDrive** for generated files).
+**Nothing is written when a proposal is shown.** Each proposal renders as a
 plain-text card under its reply with a summary, details (long bodies scroll), expiry and
 **Confirm** / **Cancel**. Confirm calls `POST /api/actions/{id}/confirm` and Cancel calls
 `POST /api/actions/{id}/cancel`, both with `{ conversationId }` and the Knowledge API token.
@@ -74,6 +75,12 @@ select one file and choose **Add to conversation**. Importing indexes the docume
 it does not send the draft. The modal stays open on errors and prevents dismissal while indexing.
 Cancel/Escape otherwise returns focus to the attachment icon. No Graph token is requested by
 the picker itself; it reuses the authenticated Knowledge API.
+Indexed local files show **Upload to OneDrive** on the right of their row under **Chat documents**,
+not as reply cards. Clicking the button is the explicit authorization to upload the original;
+the row shows progress, an **Open in OneDrive** link on success, or an inline error with recovery
+guidance. It works even if the answer fails. Originals are available for 60 minutes and one upload
+attempt; after expiry, removal, restart or failure, attach the file again to upload.
+SharePoint imports have no upload button. Saving still requires delegated `Files.ReadWrite` consent.
 Pasting a site URL resolves that site and automatically opens its library list.
 Use a site root (including `/sites/...` or `/teams/...`), not a document, page or sharing link.
 Resolving the tenant root opens its own libraries, not a list of every site in the tenant.

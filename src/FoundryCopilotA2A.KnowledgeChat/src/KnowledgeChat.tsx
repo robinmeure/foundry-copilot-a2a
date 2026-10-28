@@ -7,6 +7,8 @@ import { useChatSnapshot } from '@foundry-copilot-a2a/chat-shared/hooks.ts'
 import { SettingsSection } from '@foundry-copilot-a2a/chat-shared/SettingsDialog.tsx'
 import ActionCards from './ActionCards.tsx'
 import { historyKey, type KnowledgeChatConfig } from './config.ts'
+import GeneratedFiles from './GeneratedFiles.tsx'
+import { downloadGeneratedFile } from './knowledgeClient.ts'
 import KnowledgeSources from './KnowledgeSources.tsx'
 import { defaultKnowledgeSelection, knowledgeRequestSelection, selectedKnowledgeSources,
   withOfferedKnowledgeSources, type KnowledgeSelectionState } from './knowledgeSelection.ts'
@@ -52,9 +54,13 @@ export default function KnowledgeChat({ config, auth }: { config: KnowledgeChatC
     composerAccessory={<KnowledgeSources key={contextId} baseUrl={config.knowledgeBaseUrl} conversation={contextId}
       token={token} disabled={!ready || isSending} revision={attachment.revision}
       pickerOpen={attachment.pickerOpen} onPickerClose={attachment.closePicker} opener={attachment.opener} />}
-    renderTurnExtras={(turn) => turn.actions?.length ? <ActionCards actions={turn.actions} disabled={!ready}
-      onDecide={(actionId, decision) => void resolveGraphAction(session, endpoint,
-        { contextId, turnId: turn.id, actionId }, decision)} /> : null}
+    renderTurnExtras={(turn) => turn.actions?.length || turn.generatedFiles?.length ? <>
+      {turn.generatedFiles?.length ? <GeneratedFiles files={turn.generatedFiles} disabled={!ready}
+        onDownload={(file) => downloadGeneratedFile(endpoint.baseUrl, contextId, file, endpoint.token)} /> : null}
+      {turn.actions?.length ? <ActionCards actions={turn.actions} disabled={!ready}
+        onDecide={(actionId, decision) => void resolveGraphAction(session, endpoint,
+          { contextId, turnId: turn.id, actionId }, decision)} /> : null}
+    </> : null}
     copy={{
       brand: 'Knowledge Chat',
       assistantName,

@@ -1,12 +1,14 @@
 import { HttpAgent } from '@ag-ui/client'
 import { parseCitationBundle } from '../../FoundryCopilotA2A.BrowserShared/citations.ts'
 import { GRAPH_ACTION_ID, parseGraphActionResult, parseGraphActions, type GraphActionResult } from './graphActions.ts'
+import { GENERATED_FILE_ID, parseGeneratedFiles, type GeneratedFile } from './generatedFiles.ts'
 
 export interface KnowledgeDocument {
   id: string
   name: string
   chunks: number
   expiresAt: string
+  oneDriveUploadExpiresAt?: string | null
 }
 export interface GraphItem { id: string; name: string; folder: boolean }
 export interface GraphPage { items: GraphItem[]; nextPage?: string; resolvedSiteId?: string }
@@ -44,6 +46,11 @@ export async function knowledgeAgents(baseUrl: string, token: KnowledgeToken, si
 export async function knowledgeRequest<T>(
   baseUrl: string, path: string, token: KnowledgeToken, init: RequestInit = {},
 ): Promise<T> {
+  const response = await knowledgeResponse(baseUrl, path, token, init)
+  return response.status === 204 ? undefined as T : response.json() as Promise<T>
+}
+
+async function knowledgeResponse(baseUrl: string, path: string, token: KnowledgeToken, init: RequestInit) {
   let response = await knowledgeFetch(baseUrl, path, token, init)
   const claims = response.status === 401 ? challengeClaims(response.headers.get('WWW-Authenticate')) : undefined
   if (claims) response = await knowledgeFetch(baseUrl, path, token, init, claims)
@@ -51,7 +58,18 @@ export async function knowledgeRequest<T>(
     const problem: unknown = await response.json().catch(() => undefined)
     throw knowledgeError(response.status, problem)
   }
-  return response.status === 204 ? undefined as T : response.json() as Promise<T>
+  return response
+}
+
+/** Fetches a generated file with the caller's token; the server keeps it only until it expires. */
+export async function downloadGeneratedFile(baseUrl: string, conversationId: string, file: Pick<GeneratedFile, 'id' | 'mediaType'>,
+  token: KnowledgeToken, signal?: AbortSignal): Promise<Blob> {
+  if (!GENERATED_FILE_ID.test(file.id)) throw new Error('Invalid file ID.')
+  if (typeof conversationId !== 'string' || !conversationId.trim()) throw new Error('Missing conversation ID.')
+  const response = await knowledgeResponse(baseUrl,
+    `conversations/${encodeURIComponent(conversationId)}/files/${file.id}`, token, { signal })
+  const blob = await response.blob()
+  return blob.type === file.mediaType ? blob : new Blob([blob], { type: file.mediaType })
 }
 
 async function knowledgeFetch(baseUrl: string, path: string, token: KnowledgeToken, init: RequestInit, claims?: string) {
@@ -94,12 +112,22 @@ function knowledgeError(status: number, problem: unknown) {
 }
 
 export async function uploadDocument(baseUrl: string, conversation: string, file: File,
-  token: KnowledgeToken, signal?: AbortSignal) {
+  token: KnowledgeToken, signal?: AbortSignal): Promise<KnowledgeDocument> {
   validateKnowledgeFile(file)
   const body = new FormData()
   body.append('file', file)
   return knowledgeRequest<KnowledgeDocument>(baseUrl, `conversations/${conversation}/documents`, token,
     { method: 'POST', body, signal })
+}
+
+/** Uploads the indexed original only when the user explicitly clicks Upload to OneDrive. */
+export async function uploadDocumentToOneDrive(baseUrl: string, conversation: string, id: string,
+  token: KnowledgeToken, signal?: AbortSignal): Promise<GraphActionResult> {
+  if (!GRAPH_ACTION_ID.test(id)) throw new Error('Invalid document ID.')
+  if (!conversation.trim()) throw new Error('A conversation is required.')
+  const response = await knowledgeRequest<unknown>(baseUrl,
+    `conversations/${encodeURIComponent(conversation)}/documents/${id}/onedrive`, token, { method: 'POST', signal })
+  return parseGraphActionResult(response, id, 'completed')
 }
 
 export function validateKnowledgeFile(file: Pick<File, 'name' | 'size'>) {
@@ -124,6 +152,7 @@ export interface KnowledgeChatResult {
   warnings: string[]
   citations: ReturnType<typeof parseCitationBundle>
   actions: ReturnType<typeof parseGraphActions>
+  generatedFiles: GeneratedFile[]
 }
 
 export async function knowledgeChat(baseUrl: string, conversationId: string, text: string,
@@ -265,7 +294,8 @@ function parseChatResponse(value: unknown): KnowledgeChatResult {
   if (typeof answer !== 'string' || !Array.isArray(warnings) ||
       warnings.some(warning => typeof warning !== 'string')) throw new Error('Invalid backend chat response.')
   return { answer, warnings: warnings as string[],
-    citations: parseCitationBundle(response.citations), actions: parseGraphActions(response.actions) }
+    citations: parseCitationBundle(response.citations), actions: parseGraphActions(response.actions),
+    generatedFiles: parseGeneratedFiles(response.files) }
 }
 async function resolveAction(decision: 'confirm' | 'cancel', baseUrl: string, id: string, conversationId: string,
   token: KnowledgeToken, signal?: AbortSignal): Promise<GraphActionResult> {

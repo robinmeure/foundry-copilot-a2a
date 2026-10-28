@@ -2,12 +2,15 @@ import { appendActivityUpdate } from '../../FoundryCopilotA2A.BrowserShared/acti
 import type { ChatSession, ChatTransport, ChatTurn } from '@foundry-copilot-a2a/chat-shared/chatSession.ts'
 import type { TurnCodec } from '@foundry-copilot-a2a/chat-shared/conversationStore.ts'
 import { isActionExpired, parseSavedChatActions, type ChatAction } from './graphActions.ts'
+import { parseGeneratedFiles, type GeneratedFile } from './generatedFiles.ts'
 import { cancelAction, confirmAction, KnowledgeApiError, knowledgeChatStream, uploadDocument,
   validateKnowledgeFile, type KnowledgeSourceSelection, type KnowledgeToken } from './knowledgeClient.ts'
 
 export interface KnowledgeTurn extends ChatTurn {
   /** Proposed Microsoft Graph changes; persisted with the turn so pending cards survive reloads. */
   actions?: ChatAction[]
+  /** Word and PowerPoint files the backend generated; downloadable until they expire. */
+  generatedFiles?: GeneratedFile[]
 }
 
 export interface KnowledgeInput {
@@ -58,7 +61,8 @@ export function createKnowledgeTransport({ baseUrl, token }: KnowledgeEndpoint):
         update((turn) => ({ activityUpdates: response.warnings.reduce(appendActivityUpdate, turn.activityUpdates ?? []) }))
       }
       return { turn: { answer: response.answer, citations: response.citations, responder,
-        ...(response.actions.length ? { actions: response.actions.map((action) => ({ ...action, state: 'pending' as const })) } : {}) } }
+        ...(response.actions.length ? { actions: response.actions.map((action) => ({ ...action, state: 'pending' as const })) } : {}),
+        ...(response.generatedFiles.length ? { generatedFiles: response.generatedFiles } : {}) } }
     },
   }
 }
@@ -71,11 +75,13 @@ export const knowledgeTurnCodec: TurnCodec<KnowledgeTurn> = {
   // Malformed saved action cards are dropped rather than rejecting the whole history.
   readExtras: (saved, status) => {
     const actions = status === 'succeeded' ? parseSavedChatActions(saved.actions) : undefined
-    return actions ? { actions } : {}
+    const generatedFiles = status === 'succeeded' ? parseGeneratedFiles(saved.generatedFiles) : []
+    return { ...(actions ? { actions } : {}), ...(generatedFiles.length ? { generatedFiles } : {}) }
   },
   writeExtras: (turn) => ({
     actions: turn.actions?.map(({ id, kind, title, summary, details, expiresAt, state, message, webLink, error, errorCode }) =>
       ({ id, kind, title, summary, details, expiresAt, state, message, webLink, error, errorCode })),
+    generatedFiles: turn.generatedFiles?.map(({ id, name, mediaType, size, expiresAt }) => ({ id, name, mediaType, size, expiresAt })),
   }),
 }
 

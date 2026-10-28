@@ -1,11 +1,13 @@
 /** Confirm-before-write Microsoft Graph proposals returned by the local orchestrator. Nothing is written until confirmed. */
 export const GRAPH_ACTION_KINDS = [
   'mail.draft', 'mail.replyDraft', 'mail.readState', 'calendar.create', 'todo.create', 'todo.status', 'planner.progress',
+  'files.save',
 ] as const
 export type GraphActionKind = typeof GRAPH_ACTION_KINDS[number]
 
 export const GRAPH_ACTION_ID = /^[0-9a-f]{32}$/
-export const MAX_ACTIONS_PER_MESSAGE = 3
+// Up to three Graph proposals plus a OneDrive save for each of up to two generated files.
+export const MAX_ACTIONS_PER_MESSAGE = 5
 export const MAX_ACTION_DETAILS = 12
 
 export interface GraphActionDetail { label: string; value: string }
@@ -46,6 +48,7 @@ const KIND_LABELS: Record<GraphActionKind, string> = {
   'todo.create': 'To Do task',
   'todo.status': 'To Do status',
   'planner.progress': 'Planner progress',
+  'files.save': 'Save to OneDrive',
 }
 
 const STATES: readonly GraphActionState[] = ['pending', 'confirming', 'cancelling', 'completed', 'cancelled', 'failed']

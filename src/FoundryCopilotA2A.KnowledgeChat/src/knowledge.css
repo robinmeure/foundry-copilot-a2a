@@ -17,6 +17,13 @@
 .document-chip-state { display: inline-flex; align-items: center; gap: 4px; color: #745200; font-weight: 500; }
 .document-chip-state > .chat-icon { width: 13px; height: 13px; }
 .document-chip[data-state="indexing"] .document-chip-state > .chat-icon { animation: wait-pulse 1.4s ease-in-out infinite; }
+.document-chip-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.document-onedrive-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; text-decoration: none; }
+.document-onedrive-button > .chat-icon, .document-onedrive-complete > .chat-icon { width: 15px; height: 15px; }
+.document-onedrive-complete { display: inline-flex; align-items: center; gap: 6px; color: #24603c; font-size: 11px; }
+.document-onedrive-status { margin-top: 6px; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; color: var(--muted); }
+.document-onedrive-status[data-state="completed"] { color: #24603c; }
+.document-onedrive-status[data-state="failed"] { color: #963737; }
 .attachment-menu { display: flex; margin-right: auto; }
 .attachment-menu:has(+ .mic-button) { margin-right: 0; }
 .attachment-options { position: fixed; inset: auto; margin: 0; padding: 6px; width: 280px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); overflow-y: auto; border: 1px solid #dedee4; border-radius: 12px; background: #fff; color: #2b2b2e; box-shadow: 0 8px 28px #2727331a; }
@@ -197,6 +204,12 @@
   overflow-wrap: anywhere;
 }
 .graph-actions { display: grid; gap: 12px; margin-top: 16px; }
+.generated-files { display: grid; gap: 8px; margin-top: 16px; }
+.generated-file .secondary-button { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.generated-file .secondary-button > .chat-icon { width: 15px; height: 15px; }
+.generated-file[data-state="ready"] .document-chip-type { color: #24603c; background: #e3f1e8; }
+.generated-file[data-state="expired"] { background: #fafafb; }
+.generated-file[data-state="failed"] .document-chip-detail [role="status"] { color: #963737; }
 .graph-action { min-width: 0; padding: 14px 16px; border: 1px solid #e4d7b6; border-left: 3px solid var(--accent); border-radius: 4px; background: #fff; font-size: 13px; line-height: 1.55; }
 .graph-action[aria-busy="true"] { background: #fffaf0; }
 .graph-action[data-state="completed"] { border-color: #cfe3d6; border-left-color: #2f7d4f; }
@@ -227,6 +240,10 @@
   .settings-sources-grid { grid-template-columns: 1fr; }
   .document-chip { gap: 8px; padding: 10px; }
   .document-chip .icon-button { width: 44px; height: 44px; }
+  .document-chip:has(.document-onedrive-button, .document-onedrive-complete) { flex-wrap: wrap; }
+  .document-chip:has(.document-onedrive-button, .document-onedrive-complete) .document-chip-copy { flex-basis: calc(100% - 54px); }
+  .document-chip-actions { margin-left: auto; max-width: 100%; }
+  .document-onedrive-button { min-height: 44px; }
   .sharepoint-picker { max-height: calc(100dvh - 32px); border-radius: 16px; }
   .picker-header, .picker-body { padding: 16px; }
   .picker-location { grid-template-columns: 1fr; gap: 12px; }

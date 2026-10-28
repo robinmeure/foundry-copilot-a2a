@@ -146,10 +146,13 @@ test('valid proposals are parsed, coerced and capped; malformed proposals are dr
       details: [{ label: 'Body', value: 'Line 1\nLine 2' }, { label: '', value: 'no label' }, { label: 'Flag', value: true }] }),
     proposal({ id: '5'.repeat(32), kind: 'calendar.create' }),
     proposal({ id: '6'.repeat(32), kind: 'planner.progress' }),
+    proposal({ id: '7'.repeat(32), kind: 'files.save' }),
+    proposal({ id: '8'.repeat(32), kind: 'todo.status' }),
   ] }))
   const result = await knowledgeChat('http://localhost:5100', 'c', 'q', [], async () => '', signal())
   assert.equal(result.answer, 'Proposed.')
-  assert.deepEqual(result.actions.map(action => action.id), [actionId, '4'.repeat(32), '5'.repeat(32)])
+  assert.deepEqual(result.actions.map(action => action.id),
+    [actionId, '4'.repeat(32), '5'.repeat(32), '6'.repeat(32), '7'.repeat(32)])
   assert.equal(result.actions[0].details.length, 12)
   assert.deepEqual(result.actions[0].details[3], { label: 'Field 3', value: '3' })
   assert.equal(result.actions[0].expiresAt, '2099-01-01T00:00:00.000Z')
