@@ -91,7 +91,8 @@ public sealed class ChatController(
                 Sources: sources,
                 Citations: citations))
         {
-            Actions = result.Actions
+            Actions = result.Actions,
+            Files = result.Files
         };
     }
 }

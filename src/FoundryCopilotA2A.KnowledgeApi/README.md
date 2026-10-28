@@ -349,6 +349,35 @@ after 15 minutes (at most 10 per conversation, at most three proposals per turn)
 held in memory and lost when the service restarts. Deletes and mail sending are not
 supported. Confirmation outcomes are shown on the card but are not written into the
 conversation history.
+
+### Generated Word and PowerPoint files
+
+The `documents` source enables the [office-documents](../../skills/office-documents/SKILL.md) skill.
+Its [OfficeDocumentsConnector.cs](Services/Skills/OfficeDocumentsConnector.cs) exposes
+`create_word_document` and `create_presentation`. The model supplies only a JSON outline;
+[OfficeDocumentOutline.cs](Services/OfficeDocuments/OfficeDocumentOutline.cs) validates it (sizes,
+counts, plain text) and [OfficeDocumentRenderer.cs](Services/OfficeDocuments/OfficeDocumentRenderer.cs)
+renders it with the OpenXML SDK. At most two files are created per turn. The chat response
+returns them in `files` (`{id,name,mediaType,size,expiresAt}`); download them with
+`GET /api/conversations/{conversation}/files/{id}`.
+
+Each file also gets a `files.save` proposal. On **Confirm** the API uploads it to
+`/me/drive/root:/<Documents:OneDriveFolder>/<name>` (default folder `Knowledge Chat`, existing
+names are renamed) and returns the OneDrive link. Saving needs the delegated **Files.ReadWrite**
+scope; without consent the confirm fails with `403 graph_error`. In mock mode no Graph call is
+made. Generated files are held in memory for 60 minutes, bound to the user and conversation,
+and lost on restart; like pending actions they require a single API instance.
+
+Local originals are also kept in that store for 60 minutes. Upload and document-list responses
+include `oneDriveUploadExpiresAt` while the original is available, so the chat shows an
+**Upload to OneDrive** button on the right of that document under **Chat documents**.
+Clicking it explicitly authorizes `POST /api/conversations/{uuid}/documents/{id}/onedrive`;
+indexing alone never writes to OneDrive and no extra confirmation card appears in the reply.
+The endpoint consumes the original once (including on Graph failure) to prevent duplicate
+uploads; attach the file again to retry. Deleting the indexed document also removes its
+original. The OneDrive name is sanitized and the existing folder/rename rules apply.
+SharePoint imports are not offered, because they already live in Microsoft 365.
+
 Teams and people are model-selected tools, not eager prefetch sources. SharePoint
 browsing/import remains separate from activity tools.
 
@@ -570,13 +599,15 @@ All routes except health/capabilities require delegated API auth in Azure mode.
 | --- | --- | --- |
 | GET | `/api/capabilities` | Mode, formats, limits, extraction model, Graph and A2A availability, and the configured skill `sources` (`id`, `label`, `hint`, `group`) |
 | GET | `/api/agents` | `{agents:[{id,displayName}]}`: approved APIM agents currently in the adapter catalog; empty when A2A is disabled |
-| GET/POST | `/api/conversations/{uuid}/documents` | List/import one multipart `file` |
+| GET/POST | `/api/conversations/{uuid}/documents` | List/import one multipart `file`; includes `oneDriveUploadExpiresAt` when the local original is available |
+| POST | `/api/conversations/{uuid}/documents/{id}/onedrive` | Explicitly upload a local original once; returns `{id,status,message,webLink?}`; requires `Files.ReadWrite` |
 | DELETE | `/api/conversations/{uuid}/documents/{id}` | Tombstone first, delete all chunk keys, remove metadata |
 | POST | `/api/conversations/{uuid}/sharepoint` | Import authorized `{driveId,itemId}` |
 | GET | `/api/graph/sites?query=...` | Search accessible sites by keywords or resolve an HTTPS SharePoint site URL |
 | GET | `/api/graph/drives?parent=<site>` | List libraries |
 | GET | `/api/graph/items?drive=<drive>&parent=<folder>` | Browse root/folder |
-| POST | `/api/chat` | `{conversationId,text,sources?:["mail","calendar","todo","planner","teams","people","a2a"],agents?:["<approved id>"],timeZone?:"Europe/Amsterdam"}`; returns proposed `actions` |
+| POST | `/api/chat` | `{conversationId,text,sources?:["mail","calendar","todo","planner","teams","people","documents","a2a"],agents?:["<approved id>"],timeZone?:"Europe/Amsterdam"}`; returns proposed `actions` and generated `files` |
+| GET | `/api/conversations/{uuid}/files/{id}` | Downloads a generated `.docx`/`.pptx`; `404 file_not_found` if expired or another scope |
 | POST | `/api/chat/stream` | AG-UI `RunAgentInput`; streams progress and answer text as AG-UI server-sent events (below) |
 | POST | `/api/actions/{id}/confirm` | `{conversationId}`; executes a pending action once, `404 action_not_found` if missing, expired or another scope |
 | POST | `/api/actions/{id}/cancel` | `{conversationId}`; discards a pending action |

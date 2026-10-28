@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using FoundryCopilotA2A.KnowledgeApi.Contracts.Chat;
 using FoundryCopilotA2A.KnowledgeApi.Contracts.Documents;
+using FoundryCopilotA2A.KnowledgeApi.Contracts.Files;
 using FoundryCopilotA2A.KnowledgeApi.Contracts.Graph;
 using FoundryCopilotA2A.KnowledgeApi.Contracts.Requests;
 using FoundryCopilotA2A.KnowledgeApi.Middleware;
@@ -38,6 +39,7 @@ public sealed partial class ResponsesCoordinator
         public required List<string> Warnings { get; init; }
         public HashSet<string> DocumentEvidenceIds { get; } = new(StringComparer.Ordinal);
         public List<GraphActionProposal> Proposals { get; } = [];
+        public List<GeneratedDocument> Files { get; } = [];
         public HashSet<string> LoadedSkills { get; } = new(StringComparer.Ordinal);
         public HashSet<string> SentGuardrails { get; } = new(StringComparer.Ordinal);
         public int DocumentResultBytes { get; set; }
@@ -186,7 +188,7 @@ public sealed partial class ResponsesCoordinator
         var skillTool = turn.SkillTool(name);
         try
         {
-            ValidateToolCall(turn, name, arguments);
+            ValidateToolCall(turn, name, arguments, skillTool?.Tool);
             await turn.ReportAsync(name, StartedStatus(turn, name, arguments, skillTool?.Tool), ChatStatus.Started, ct);
             return await DispatchToolAsync(turn, name, arguments, skillTool, ct);
         }
@@ -238,7 +240,7 @@ public sealed partial class ResponsesCoordinator
 
     private static string FailedStatus(string name) => IsSkillMetaTool(name) ? "A skill could not be loaded" : ToolStatus.Failed(name);
 
-    private static void ValidateToolCall(TurnState turn, string name, JsonElement arguments)
+    private static void ValidateToolCall(TurnState turn, string name, JsonElement arguments, KnowledgeSkillTool? tool)
     {
         if (FunctionInvokingChatClient.CurrentContext?.CallContent.Exception is not null)
         {
@@ -246,14 +248,16 @@ public sealed partial class ResponsesCoordinator
         }
 
         var isDocumentRetrieval = name == DocumentRetrieval.ToolName;
-        var argumentLimit = isDocumentRetrieval ? MaxDocumentRetrievalArgumentPayloadLength : MaxToolArgumentPayloadLength;
+        var argumentLimit = isDocumentRetrieval
+            ? MaxDocumentRetrievalArgumentPayloadLength
+            : tool?.MaxArgumentLength ?? MaxToolArgumentPayloadLength;
         if (arguments.GetRawText().Length > argumentLimit)
         {
             throw new ApiException(400, "invalid_tool_arguments", "Tool arguments exceed the allowed size.");
         }
 
         var generalEvidenceCount = turn.Evidence.Count - turn.DocumentEvidenceIds.Count;
-        if (!isDocumentRetrieval && !IsSkillMetaTool(name) && generalEvidenceCount >= MaxEvidence)
+        if (!isDocumentRetrieval && !IsSkillMetaTool(name) && tool?.CreatesFile != true && generalEvidenceCount >= MaxEvidence)
         {
             throw new ApiException(429, "evidence_budget", "The turn's evidence budget is full.");
         }
@@ -363,6 +367,11 @@ public sealed partial class ResponsesCoordinator
             throw new ApiException(429, "action_budget",
                 $"At most {GraphActions.MaxProposalsPerTurn} changes can be proposed per turn.");
         }
+        if (tool.CreatesFile && turn.Files.Count >= OfficeDocumentsConnector.MaxFilesPerTurn)
+        {
+            throw new ApiException(429, "file_budget",
+                $"At most {OfficeDocumentsConnector.MaxFilesPerTurn} files can be created per turn.");
+        }
 
         var call = new SkillToolCall(turn.Context, turn.Scope, turn.User, arguments,
             (line, token) => turn.ReportAsync(tool.Name, line, ChatStatus.Progress, token));
@@ -370,6 +379,10 @@ public sealed partial class ResponsesCoordinator
         if (result is ProposalToolResult proposal)
         {
             turn.Proposals.Add(proposal.Proposal);
+        }
+        if (result is FileToolResult file)
+        {
+            turn.Files.Add(file.Document);
         }
         await turn.ReportAsync(tool.Name, result.Status, ChatStatus.Completed, ct);
         return result switch
@@ -385,6 +398,12 @@ public sealed partial class ResponsesCoordinator
                 note = "Nothing has changed yet. The user sees a confirmation card and must confirm this exact change."
             },
             DataToolResult data => data.Data,
+            FileToolResult created => new
+            {
+                status = "created",
+                fileName = created.Document.Name,
+                note = "The user sees a download link and a Save to OneDrive button. Nothing has been saved or shared."
+            },
             _ => throw new InvalidOperationException($"Unsupported skill tool result {result.GetType().Name}.")
         };
     }

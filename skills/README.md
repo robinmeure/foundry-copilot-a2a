@@ -10,6 +10,7 @@ skills/
   apim-agent-<name>/          one per APIM agent; the administrator writes the description
   kamervragen/                Azure AI Search index: SKILL.md + connector.json + references/
   m365-<source>/              Microsoft Graph sources (mail, calendar, todo, planner, teams, people)
+  office-documents/           Word and PowerPoint generation (source: documents)
 ```
 
 ## How the model uses skills (progressive disclosure)
@@ -51,7 +52,7 @@ name: apim-agent-hr            # must equal the folder name; lowercase, digits, 
 description: >-
   HR policy specialist. Use for leave, benefits and expense policy questions.
 metadata:
-  connector: apim-a2a          # apim-a2a | azure-ai-search | graph
+  connector: apim-a2a          # apim-a2a | azure-ai-search | graph | office-documents
   agent-id: hr-policies        # apim-a2a only
   source: wetten               # selection id; fixed to a2a for APIM, a Graph source for graph
   label: HR policies           # UI label, at most 60 characters
@@ -68,6 +69,7 @@ metadata:
 | `apim-a2a` | always `a2a` | `list_a2a_agents`, `ask_a2a_agent` | `A2A:*`; the agent id must be in `A2A:AllowedAgentIds` |
 | `azure-ai-search` | defaults to the skill name | defined in `connector.json` | `<configurationSection>:Enabled`, `:Endpoint`, `:Index` |
 | `graph` | `mail`, `calendar`, `todo`, `planner`, `teams` or `people` | code-defined `graph_*` tools | Graph delegated scopes |
+| `office-documents` | always `documents` | `create_word_document`, `create_presentation` | `Documents:OneDriveFolder`; saving needs `Files.ReadWrite` |
 
 APIM agents: the `apim-agents` skill (without `agent-id`) carries the shared A2A guidance. Every
 `apim-agent-*` skill describes exactly one agent; its description is also shown in the source picker
@@ -75,6 +77,13 @@ and returned by `list_a2a_agents`. The per-chat agent selection still decides wh
 
 Graph: each source can be claimed by one skill only. A new M365 workload needs code in `GraphSkill`
 first; a skill folder can then describe it.
+
+Office documents: one skill only, without `connector.json`. The model writes a JSON outline
+(sections, bullets, tables or slides) as tool arguments; the API validates it and renders the
+`.docx` or `.pptx` with the OpenXML SDK, so no macros, templates or model-written code run.
+The file is offered as a download in the chat plus a **Save to OneDrive** proposal that writes
+only after the user confirms. The repository ships `office-documents/`; if it was removed,
+`new-skill --connector office-documents` scaffolds it again.
 
 ## connector.json (azure-ai-search)
 

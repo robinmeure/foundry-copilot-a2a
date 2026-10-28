@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FoundryCopilotA2A.KnowledgeApi.Contracts.Chat;
 using FoundryCopilotA2A.KnowledgeApi.Contracts.Documents;
+using FoundryCopilotA2A.KnowledgeApi.Contracts.Files;
 using FoundryCopilotA2A.KnowledgeApi.Contracts.Graph;
 using FoundryCopilotA2A.KnowledgeApi.Middleware;
 using FoundryCopilotA2A.Skills;
@@ -54,6 +55,12 @@ public sealed record KnowledgeSkillTool(
     /// <summary>True for <c>graph_propose_*</c> tools, which count against the per-turn proposal budget.</summary>
     public bool StagesChange { get; init; }
 
+    /// <summary>Overrides the default argument size limit for tools that take long-form content.</summary>
+    public int? MaxArgumentLength { get; init; }
+
+    /// <summary>True for tools that render a file, which count against the per-turn file budget.</summary>
+    public bool CreatesFile { get; init; }
+
     public static KnowledgeSkillTool FromDefinition(object definition, Func<SkillToolCall, CancellationToken, Task<SkillToolResult>> invoke)
     {
         var json = JsonSerializer.SerializeToElement(definition);
@@ -75,3 +82,6 @@ public sealed record GraphItemsToolResult(GraphToolResult Result, string Status)
 public sealed record ProposalToolResult(GraphActionProposal Proposal, string Status) : SkillToolResult(Status);
 
 public sealed record DataToolResult(object Data, string Status) : SkillToolResult(Status);
+
+/// <summary>A rendered file; the coordinator keeps the bytes server-side and tells the model only the name.</summary>
+public sealed record FileToolResult(GeneratedDocument Document, string Status) : SkillToolResult(Status);

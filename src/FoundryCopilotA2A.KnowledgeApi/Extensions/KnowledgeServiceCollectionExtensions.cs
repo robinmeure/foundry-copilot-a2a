@@ -45,9 +45,11 @@ public static class KnowledgeServiceCollectionExtensions
         services.AddSingleton<IKnowledgeSkillConnector, ApimA2aSkillConnector>();
         services.AddSingleton<AzureAiSearchConnector>();
         services.AddSingleton<IKnowledgeSkillConnector>(provider => provider.GetRequiredService<AzureAiSearchConnector>());
+        services.AddSingleton<IKnowledgeSkillConnector, OfficeDocumentsConnector>();
         services.AddSingleton<KnowledgeSkillRegistry>();
         services.AddSingleton<GraphActions>();
         services.AddSingleton<GraphActionStore>();
+        services.AddSingleton<GeneratedFileStore>();
         services.AddSingleton<UserContextService>();
         services.AddSingleton<ResponsesCoordinator>();
         services.AddSingleton<IResponsesCoordinator>(provider => provider.GetRequiredService<ResponsesCoordinator>());

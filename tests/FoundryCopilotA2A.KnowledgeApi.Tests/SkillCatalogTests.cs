@@ -91,7 +91,7 @@ public sealed class SkillCatalogTests : IDisposable
         var capabilities = await client.GetFromJsonAsync<JsonElement>("/api/capabilities");
         var sources = capabilities.GetProperty("sources").EnumerateArray()
             .ToDictionary(source => source.GetProperty("id").GetString()!);
-        Assert.Equal(new[] { "a2a", "calendar", "kamervragen", "mail", "people", "planner", "teams", "todo" },
+        Assert.Equal(new[] { "a2a", "calendar", "documents", "kamervragen", "mail", "people", "planner", "teams", "todo" },
             sources.Keys.Order(StringComparer.Ordinal));
         Assert.Equal("Kamervragen", sources["kamervragen"].GetProperty("label").GetString());
         Assert.False(string.IsNullOrWhiteSpace(sources["a2a"].GetProperty("label").GetString()));

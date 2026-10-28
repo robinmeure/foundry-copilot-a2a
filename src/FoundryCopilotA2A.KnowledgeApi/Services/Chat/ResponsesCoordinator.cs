@@ -14,6 +14,7 @@ using FoundryCopilotA2A.KnowledgeApi.Services.Retrieval;
 using FoundryCopilotA2A.KnowledgeApi.Services.Skills;
 using FoundryCopilotA2A.KnowledgeApi.Stores;
 using FoundryCopilotA2A.KnowledgeApi.Streaming;
+using FoundryCopilotA2A.Skills;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OpenAI.Responses;
@@ -40,7 +41,7 @@ public sealed partial class ResponsesCoordinator(
     private const int MaxEvidence = 80;
     private const int MaxToolArgumentPayloadLength = 4096;
     private const int DefaultMaxOutputTokens = 3000;
-    private const int DocumentRetrievalMaxOutputTokens = 12000;
+    private const int LongMaxOutputTokens = 12000;
     private const string SearchDocumentsToolName = "search_documents";
     private static readonly Regex CitationMarker = new(@"\[\[cite:([^\]\r\n]*)\]\]",
         RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
@@ -123,8 +124,11 @@ public sealed partial class ResponsesCoordinator(
             AdditionalTools = skillTools
         };
         var allowsDocumentRetrieval = retrieveDocumentsAsync is not null && hasDocumentSearchTool;
+        // Document outlines are written as tool arguments, which count against the output budget.
+        var allowsLongOutput = allowsDocumentRetrieval ||
+            turn.Skills.Any(skill => skill.Skill.Connector == SkillConventions.OfficeDocumentsConnector);
         var agent = CreateAgent(functions, history, BuildInstructions(userContext, turn.Skills, UnselectedSources(sources)),
-            tools, allowsDocumentRetrieval);
+            tools, allowsLongOutput);
 
         var session = await history.LoadAsync(agent, sessionState, ct);
         await progress.ReportAsync(new ChatStatus("Working out what you need"), ct);
@@ -142,7 +146,8 @@ public sealed partial class ResponsesCoordinator(
         return new GroundedAnswer(answer, turn.Evidence.ToArray(), turn.Warnings.ToArray())
         {
             SessionState = await history.CompleteAsync(agent, question, answer, turn.HadPrivateContext, ct),
-            Actions = turn.Proposals.ToArray()
+            Actions = turn.Proposals.ToArray(),
+            Files = turn.Files.ToArray()
         };
     }
 
@@ -177,7 +182,7 @@ public sealed partial class ResponsesCoordinator(
         ConversationHistory history,
         string instructions,
         List<AITool> tools,
-        bool allowsDocumentRetrieval)
+        bool allowsLongOutput)
     {
         var agent = new ChatClientAgent(functions, new ChatClientAgentOptions
         {
@@ -189,7 +194,7 @@ public sealed partial class ResponsesCoordinator(
                 Instructions = instructions,
                 Tools = tools,
                 AllowMultipleToolCalls = false,
-                MaxOutputTokens = allowsDocumentRetrieval ? DocumentRetrievalMaxOutputTokens : DefaultMaxOutputTokens,
+                MaxOutputTokens = allowsLongOutput ? LongMaxOutputTokens : DefaultMaxOutputTokens,
                 RawRepresentationFactory = _ => new CreateResponseOptions
                 {
                     StoredOutputEnabled = false,
@@ -207,6 +212,7 @@ public sealed partial class ResponsesCoordinator(
     {
         var onlyToolFailures = turn.Evidence.Count == 0 &&
             turn.Proposals.Count == 0 &&
+            turn.Files.Count == 0 &&
             turn.Warnings.Count > initialWarningCount;
         var answer = onlyToolFailures
             ? "Knowledge retrieval returned no authorized evidence. Some tools failed; review the source warnings."

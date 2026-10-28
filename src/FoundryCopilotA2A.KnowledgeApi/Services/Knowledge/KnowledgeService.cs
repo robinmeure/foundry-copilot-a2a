@@ -27,6 +27,7 @@ public sealed class KnowledgeService(
     IResponsesCoordinator responses,
     IConversationHistoryStore history,
     GraphActionStore pendingActions,
+    GeneratedFileStore generatedFiles,
     UserContextService userContexts,
     IA2aKnowledgeService a2a,
     KnowledgeSkillRegistry skills,
@@ -151,8 +152,11 @@ public sealed class KnowledgeService(
             (session, token) => RunChatTurnAsync(
                 context, caller, input, scope, requestedSources, selectedAgents, user, session, progress, token),
             cancellationToken);
-        var actions = pendingActions.Add(scope, answer.Actions);
-        return new KnowledgeChatResult(answer.Answer, answer.Evidence, answer.Warnings, actions);
+        var files = generatedFiles.Add(scope, answer.Files);
+        var folder = OfficeDocumentsConnector.Folder(configuration);
+        var actions = pendingActions.Add(scope,
+            [.. answer.Actions, .. files.Select(file => OfficeDocumentsConnector.SaveProposal(file, folder))]);
+        return new KnowledgeChatResult(answer.Answer, answer.Evidence, answer.Warnings, actions) { Files = files };
     }
 
     private async Task<GroundedAnswer> RunChatTurnAsync(

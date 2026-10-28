@@ -3,10 +3,12 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using FoundryCopilotA2A.KnowledgeApi.Contracts.Chat;
 using FoundryCopilotA2A.KnowledgeApi.Contracts.Documents;
+using FoundryCopilotA2A.KnowledgeApi.Contracts.Files;
 using FoundryCopilotA2A.KnowledgeApi.Contracts.Graph;
 using FoundryCopilotA2A.KnowledgeApi.Infrastructure;
 using FoundryCopilotA2A.KnowledgeApi.Services.A2A;
 using FoundryCopilotA2A.KnowledgeApi.Services.Graph;
+using FoundryCopilotA2A.KnowledgeApi.Services.OfficeDocuments;
 using FoundryCopilotA2A.KnowledgeApi.Services.Skills;
 using FoundryCopilotA2A.KnowledgeApi.Stores;
 using FoundryCopilotA2A.KnowledgeApi.Streaming;
@@ -21,6 +23,11 @@ public sealed partial class ResponsesCoordinator
     private static readonly Regex MockTaskRequest = new(@"\b(create|add)\b.*\btask\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
     private static readonly Regex MockTimeQuestion = new(@"\b(time|date|today|day)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+    private static readonly Regex MockDocumentRequest = new(
+        @"\b(create|make|draft|write|build|generate|prepare)\b.*\b(document|doc|docx|word|report|memo|brief|presentation|slides?|deck|pptx|powerpoint)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+    private static readonly Regex MockSlidesRequest = new(@"\b(presentation|slides?|deck|pptx|powerpoint)\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     /// <summary>Exercises tools, history and streaming deterministically without model or Azure calls.</summary>
@@ -143,7 +150,27 @@ public sealed partial class ResponsesCoordinator
                 ToolStatus.Proposed(proposals[^1].Title), ChatStatus.Completed, "graph_propose_todo_task"), ct);
         }
 
-        var answer = proposals.Count > 0
+        var files = new List<GeneratedDocument>();
+        if (MockDocumentRequest.IsMatch(question) &&
+            skills.Available(scope).FirstOrDefault(skill => skill.Skill.Connector == SkillConventions.OfficeDocumentsConnector) is { } documents)
+        {
+            var slides = MockSlidesRequest.IsMatch(question);
+            var tool = documents.Tools.Single(candidate => candidate.Name ==
+                (slides ? OfficeDocumentOutline.PresentationToolName : OfficeDocumentOutline.WordToolName));
+            var arguments = MockOutline(question, evidence, slides);
+            await progress.ReportAsync(new ChatStatus(
+                tool.Started?.Invoke(arguments, userContext.TimeZone) ?? ToolStatus.Started(tool.Name, arguments, userContext.TimeZone),
+                ChatStatus.Started, tool.Name), ct);
+            var result = (FileToolResult)await tool.InvokeAsync(
+                new SkillToolCall(context, scope, userContext, arguments, (_, _) => ValueTask.CompletedTask), ct);
+            files.Add(result.Document);
+            await progress.ReportAsync(new ChatStatus(result.Status, ChatStatus.Completed, tool.Name), ct);
+        }
+
+        var answer = files.Count > 0
+            ? $"Mock document (no model call): created {files[0].Name} from your request{(evidence.Count > 0 ? " and the retrieved evidence [1]" : "")}. " +
+                "Download it below, or confirm the card to save it to OneDrive."
+            : proposals.Count > 0
             ? "Mock proposal (no model call): review the staged To Do task below and confirm it to apply the change."
             : evidence.Count == 0 && MockTimeQuestion.IsMatch(question)
                 ? string.Create(CultureInfo.InvariantCulture,
@@ -164,8 +191,51 @@ public sealed partial class ResponsesCoordinator
         return new GroundedAnswer(resultText, evidence.ToArray(), initialWarnings)
         {
             SessionState = await history.CompleteAsync(agent, question, resultText, evidence.Count > 0, ct),
-            Actions = proposals.ToArray()
+            Actions = proposals.ToArray(),
+            Files = files.ToArray()
         };
+    }
+
+    /// <summary>A small deterministic outline built from the question and the first evidence passages.</summary>
+    private static JsonElement MockOutline(string question, List<Passage> evidence, bool slides)
+    {
+        static string Bound(string text, int length) => text.Length > length ? text[..length] : text;
+
+        var title = Bound(question, 120);
+        var points = evidence.Take(5).Select(passage => Bound($"**{Bound(passage.Title, 80)}**: {passage.Content}", 280)).ToArray();
+        if (points.Length == 0)
+        {
+            points = ["No evidence was retrieved in mock mode; enable a source to include it."];
+        }
+        object outline = slides
+            ? new
+            {
+                fileName = "Mock presentation",
+                title,
+                subtitle = "Generated locally without a model",
+                slides = new object[]
+                {
+                    new { title = "Request", bullets = new[] { Bound(question, 280) }, notes = "Mock speaker notes." },
+                    new { title = "Evidence", bullets = points, notes = "" }
+                }
+            }
+            : new
+            {
+                fileName = "Mock document",
+                title,
+                subtitle = "Generated locally without a model",
+                sections = new object[]
+                {
+                    new { heading = "Request", paragraphs = new[] { question }, bullets = Array.Empty<string>(),
+                        table = new { columns = Array.Empty<string>(), rows = Array.Empty<string[]>() } },
+                    new { heading = "Evidence", paragraphs = Array.Empty<string>(), bullets = points,
+                        table = evidence.Count == 0
+                            ? new { columns = Array.Empty<string>(), rows = Array.Empty<string[]>() }
+                            : new { columns = new[] { "Source", "Locator" },
+                                rows = evidence.Take(5).Select(passage => new[] { Bound(passage.Title, 200), Bound(passage.Locator, 200) }).ToArray() } }
+                }
+            };
+        return JsonSerializer.SerializeToElement(outline);
     }
 
 }

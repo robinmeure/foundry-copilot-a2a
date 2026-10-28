@@ -1,4 +1,5 @@
 using FoundryCopilotA2A.KnowledgeApi.Contracts.Documents;
+using FoundryCopilotA2A.KnowledgeApi.Contracts.Files;
 using FoundryCopilotA2A.KnowledgeApi.Contracts.Graph;
 
 namespace FoundryCopilotA2A.KnowledgeApi.Contracts.Chat;
@@ -8,4 +9,7 @@ public sealed record KnowledgeChatResult(
     string Answer,
     Passage[] Evidence,
     string[] Warnings,
-    GraphActionView[] Actions);
+    GraphActionView[] Actions)
+{
+    public GeneratedFileView[] Files { get; init; } = [];
+}

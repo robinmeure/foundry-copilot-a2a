@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net.Mail;
 using System.Text.Json;
+using FoundryCopilotA2A.KnowledgeApi.Contracts.Files;
 using FoundryCopilotA2A.KnowledgeApi.Contracts.Graph;
 using FoundryCopilotA2A.KnowledgeApi.Interfaces;
 using FoundryCopilotA2A.KnowledgeApi.Middleware;
@@ -153,6 +154,44 @@ public sealed class GraphActions(IGraphService graph, IConfiguration configurati
             ? webLink
             : null;
         return new GraphActionResult(id, "completed", message, safeLink);
+    }
+
+    /// <summary>Uploads a generated file to the signed-in user's OneDrive; an existing name is kept and the upload renamed.</summary>
+    public async Task<GraphActionResult> SaveFileAsync(
+        HttpContext context,
+        string id,
+        GeneratedDocument document,
+        string folder,
+        CancellationToken ct)
+    {
+        if (configuration["Knowledge:Backend"] == "Mock")
+        {
+            return new GraphActionResult(id, "completed",
+                $"Mock: would save \"{document.Name}\" to OneDrive folder \"{folder}\". No Microsoft Graph call was made.");
+        }
+
+        var item = await graph.WithClientAsync(context, client => UploadFileAsync(client, document, folder, ct), ct);
+        var webLink = item?.WebUrl is { } url && GraphSkill.IsSafeLink(JsonSerializer.SerializeToElement(url)) ? url : null;
+        return new GraphActionResult(id, "completed", $"Saved \"{item?.Name ?? document.Name}\" to OneDrive folder \"{folder}\".", webLink);
+    }
+
+    internal static async Task<DriveItem?> UploadFileAsync(GraphServiceClient client, GeneratedDocument document, string folder, CancellationToken ct)
+    {
+        var drive = await client.Me.Drive.GetAsync(request => request.QueryParameters.Select = ["id"], ct)
+            ?? throw new ApiException(StatusCodes.Status502BadGateway, "graph_error", "OneDrive is not available for this account.");
+        using var content = new MemoryStream(document.Content, writable: false);
+        var request = client.Drives[drive.Id].Root.ItemWithPath($"{folder}/{document.Name}").Content.ToPutRequestInformation(content);
+        var uri = request.URI.ToString();
+        request.UrlTemplate = null;
+        request.URI = new Uri(uri + (uri.Contains('?') ? "&" : "?") + "@microsoft.graph.conflictBehavior=rename");
+        return await client.RequestAdapter.SendAsync(
+            request,
+            DriveItem.CreateFromDiscriminatorValue,
+            new Dictionary<string, Microsoft.Kiota.Abstractions.Serialization.ParsableFactory<Microsoft.Kiota.Abstractions.Serialization.IParsable>>
+            {
+                ["XXX"] = Microsoft.Graph.Models.ODataErrors.ODataError.CreateFromDiscriminatorValue
+            },
+            ct);
     }
 
     private static GraphActionProposal ProposeMailDraft(JsonElement arguments)
