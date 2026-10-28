@@ -17,7 +17,7 @@ enables unused-import cleanup through `dotnet format`.
 | [Contracts](Contracts) | Requests, responses, documents, citations, chat and Graph data |
 | [Controllers](Controllers) | HTTP input/output, caller resolution and streaming endpoints |
 | [Interfaces](Interfaces) | Replaceable knowledge, model, Graph, retrieval and persistence modules |
-| [Services](Services) | Knowledge coordination, chat, retrieval, Graph, A2A, user context and document processing |
+| [Services](Services) | Knowledge coordination, chat, retrieval, skills, Graph, A2A, user context and document processing |
 | [Stores](Stores) | Document metadata, indexed passages, conversation state and pending actions |
 | [Authentication](Authentication) | Caller scopes, delegated tokens, access checks and continuation tokens |
 | [BackgroundServices](BackgroundServices) | Credential warm-up and retention cleanup |
@@ -185,10 +185,11 @@ its required consent. These instructions do not provision or grant tenant permis
 
 ### Shared Kamervragen search
 
-[KamervragenSkill.cs](Services/Retrieval/KamervragenSkill.cs) adds the Agent Framework function
-`search_kamervragen`, exposed only when the `kamervragen` source is selected and the
-backend reports `kamervragen: true`. It is a runtime skill, not a VS Code customization.
-It supports a natural-language query and optional exact filters for `thema`, `ministerie`,
+The [kamervragen skill](../../skills/kamervragen) declares the Agent Framework function
+`search_kamervragen` in its `connector.json`; the generic
+[AzureAiSearchConnector.cs](Services/Skills/AzureAiSearchConnector.cs) executes it. The tool is
+offered only when the `kamervragen` source is selected, the backend reports `kamervragen: true`
+and the model has loaded the skill ([Knowledge skills](#knowledge-skills)). It supports a natural-language query and optional exact filters for `thema`, `ministerie`,
 `partij` (a member of `partijen`), `documentNummer`, and inclusive UTC publication dates
 `fromDate`/`toDate` (`yyyy-MM-dd`). Filter values are validated and escaped, not accepted as
 raw OData. Results are a top-eight sample, never exhaustive.
@@ -264,6 +265,34 @@ user assertion and resource permissions. The identity needs Azure OpenAI inferen
 Data Contributor, and Cognitive Services User for Document Intelligence. No service keys are
 used. The host operator needs Search Service Contributor to create the index.
 
+## Knowledge skills
+
+Graph sources, APIM agents and Azure AI Search indexes are described by
+[Agent Skills](https://agentskills.io/specification) in the repository's [skills](../../skills)
+folder, which is copied next to the API binaries. See the [authoring guide](../../skills/README.md)
+for the format and the `new-skill` / `validate-skills` CLI commands.
+
+- [KnowledgeSkillCatalog](Services/Skills/KnowledgeSkillCatalog.cs) loads the folders in
+  `Skills:Paths` (default `skills`) with the Agent Framework skill parser at startup.
+  [SkillValidationHostedService](Services/Skills/SkillValidationHostedService.cs) stops the API
+  when a skill is invalid or its connector is missing.
+- [KnowledgeSkillRegistry](Services/Skills/KnowledgeSkillRegistry.cs) maps each skill to a typed
+  connector: [GraphSkillConnector](Services/Skills/GraphSkillConnector.cs),
+  [ApimA2aSkillConnector](Services/Skills/ApimA2aSkillConnector.cs) or
+  [AzureAiSearchConnector](Services/Skills/AzureAiSearchConnector.cs). It owns source
+  validation and reports configured sources to `/api/capabilities`.
+- Skills load on demand. The instructions list only `name: description` for the selected
+  sources and advertise `load_skill` (plus `read_skill_resource` when references exist). After
+  `load_skill` the skill's instructions are returned and its tools are added to the next round.
+  `load_skill` refuses skills outside the selected sources; calling a tool of a selected but
+  unloaded skill loads that skill automatically.
+- Each APIM agent may have an administrator-written `apim-agent-*` skill. Its description is
+  returned by `list_a2a_agents` and `GET /api/agents`, and the per-agent selection still applies.
+
+Skills contain instructions and declarative configuration only; endpoints, keys and identities
+stay in configuration. Adding a search index needs a folder plus `<section>:Enabled`,
+`:Endpoint` and `:Index` settings; adding an APIM agent needs a folder plus the allowlist entry.
+
 ## Agent Framework orchestration and Graph tools
 
 [GraphSkill.cs](Services/Graph/GraphSkill.cs) supplies instructions and strict function schemas to the
@@ -331,7 +360,7 @@ Only the bounded dialogue projection described below persists across requests; n
 response ID or service-side conversation ID is reused.
 [BoundedChatClient.cs](Infrastructure/BoundedChatClient.cs) validates tool names, call IDs and budgets before
 execution. Each turn has a four-minute deadline,
-at most six Responses rounds, eight tool calls, and 80 ordinary evidence passages.
+at most seven Responses rounds, nine tool calls (including `load_skill`), and 80 ordinary evidence passages.
 Document retrieval has the separate bounded read/analysis path described above; its internal
 batch model calls do not consume the main agent's six-round budget. Graph tool results
 contain at most ten records from the first page; they are not exhaustive. Text is capped
@@ -453,7 +482,8 @@ surface are preview APIs; package versions are pinned in the project file.
 
 The allowlist is the administrator's ceiling; the user can narrow it per turn.
 `GET /api/agents` (authenticated) returns the allowlisted agents that the adapter catalog
-currently reports as supported `apiManagement` entries, as `{agents:[{id,displayName}]}`.
+currently reports as supported `apiManagement` entries, as `{agents:[{id,displayName,description?}]}`;
+`description` comes from the agent's skill when one exists.
 The adapter already caches APIM discovery, so this API adds no cache of its own.
 
 A chat request may add `agents: ["<id>", ...]` next to `sources`:
@@ -538,7 +568,7 @@ All routes except health/capabilities require delegated API auth in Azure mode.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| GET | `/api/capabilities` | Mode, formats, limits, extraction model, Graph and A2A availability |
+| GET | `/api/capabilities` | Mode, formats, limits, extraction model, Graph and A2A availability, and the configured skill `sources` (`id`, `label`, `hint`, `group`) |
 | GET | `/api/agents` | `{agents:[{id,displayName}]}`: approved APIM agents currently in the adapter catalog; empty when A2A is disabled |
 | GET/POST | `/api/conversations/{uuid}/documents` | List/import one multipart `file` |
 | DELETE | `/api/conversations/{uuid}/documents/{id}` | Tombstone first, delete all chunk keys, remove metadata |

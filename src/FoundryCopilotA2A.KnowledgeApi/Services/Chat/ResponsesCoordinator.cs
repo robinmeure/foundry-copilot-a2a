@@ -11,6 +11,7 @@ using FoundryCopilotA2A.KnowledgeApi.Services.A2A;
 using FoundryCopilotA2A.KnowledgeApi.Services.Chat.Tools;
 using FoundryCopilotA2A.KnowledgeApi.Services.Graph;
 using FoundryCopilotA2A.KnowledgeApi.Services.Retrieval;
+using FoundryCopilotA2A.KnowledgeApi.Services.Skills;
 using FoundryCopilotA2A.KnowledgeApi.Stores;
 using FoundryCopilotA2A.KnowledgeApi.Streaming;
 using Microsoft.Agents.AI;
@@ -31,10 +32,11 @@ public sealed partial class ResponsesCoordinator(
     ILogger<ResponsesCoordinator> logger,
     IA2aKnowledgeService a2a,
     GraphActions graphActions,
-    KamervragenSkill kamervragen) : IResponsesCoordinator
+    KnowledgeSkillRegistry skills) : IResponsesCoordinator
 {
-    public const int MaxToolCalls = 8;
-    public const int MaxRounds = 6;
+    // One extra round and call cover load_skill before a skill's own tools.
+    public const int MaxToolCalls = 9;
+    public const int MaxRounds = 7;
     private const int MaxEvidence = 80;
     private const int MaxToolArgumentPayloadLength = 4096;
     private const int DefaultMaxOutputTokens = 3000;
@@ -85,7 +87,7 @@ public sealed partial class ResponsesCoordinator(
         IReadOnlyCollection<string>? selectedAgents = null,
         Func<DocumentRetrievalRequest, CancellationToken, Task<DocumentRetrievalResult>>? retrieveDocumentsAsync = null)
     {
-        EnsureSourcesConfigured(sources);
+        skills.EnsureConfigured(sources);
         progress ??= ChatProgress.None;
         var userContext = user ?? UserContext.Utc(DateTimeOffset.UtcNow);
 
@@ -100,24 +102,29 @@ public sealed partial class ResponsesCoordinator(
             SelectedAgents = selectedAgents,
             SearchDocuments = searchDocumentsAsync,
             RetrieveDocuments = retrieveDocumentsAsync,
+            Skills = skills.Available(new SkillScope(sources, selectedAgents)),
             Evidence = initial.ToList(),
             Warnings = initialWarnings.ToList(),
             HadPrivateContext = initial.Length > 0 || initialWarnings.Length > 0 || availableDocumentNames is { Count: > 0 }
         };
 
-        var tools = CreateTools(turn, hasDocumentSearchTool);
+        var (tools, skillTools) = CreateTools(turn, hasDocumentSearchTool);
         var history = new ConversationHistory();
         using var bounded = new BoundedChatClient(model.Create(),
-            tools.Select(tool => tool.Name).ToHashSet(StringComparer.Ordinal),
-            turn.ThrowIfFatal);
+            tools.Concat(skillTools).Select(tool => tool.Name).ToHashSet(StringComparer.Ordinal),
+            turn.ThrowIfFatal,
+            () => LoadedSkillTools(turn, skillTools));
         using var functions = new FunctionInvokingChatClient(bounded)
         {
             AllowConcurrentInvocation = false,
             MaximumIterationsPerRequest = MaxRounds,
-            IncludeDetailedErrors = false
+            IncludeDetailedErrors = false,
+            // Invocable before they are advertised, so loading a skill never needs a new agent.
+            AdditionalTools = skillTools
         };
         var allowsDocumentRetrieval = retrieveDocumentsAsync is not null && hasDocumentSearchTool;
-        var agent = CreateAgent(functions, history, BuildInstructions(userContext, sources), tools, allowsDocumentRetrieval);
+        var agent = CreateAgent(functions, history, BuildInstructions(userContext, turn.Skills, UnselectedSources(sources)),
+            tools, allowsDocumentRetrieval);
 
         var session = await history.LoadAsync(agent, sessionState, ct);
         await progress.ReportAsync(new ChatStatus("Working out what you need"), ct);
@@ -159,17 +166,11 @@ public sealed partial class ResponsesCoordinator(
         }
     }
 
-    private void EnsureSourcesConfigured(string[] sources)
-    {
-        if (sources.Contains("a2a") && !a2a.Enabled)
-        {
-            throw new ApiException(400, "a2a_disabled", "APIM knowledge agents are not configured.");
-        }
-        if (sources.Contains(KamervragenSkill.Source) && !kamervragen.Enabled)
-        {
-            throw new ApiException(400, "kamervragen_disabled", "Kamervragen search is not configured.");
-        }
-    }
+    /// <summary>Labels of configured sources the user did not enable, so the model can suggest one.</summary>
+    private string[] UnselectedSources(string[] sources) => skills.Sources()
+        .Where(source => !sources.Contains(source.Id))
+        .Select(source => source.Label)
+        .ToArray();
 
     private static AIAgent CreateAgent(
         FunctionInvokingChatClient functions,

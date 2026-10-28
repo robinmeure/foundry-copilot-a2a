@@ -1,7 +1,7 @@
 using FoundryCopilotA2A.KnowledgeApi.Contracts.Responses;
 using FoundryCopilotA2A.KnowledgeApi.Interfaces;
 using FoundryCopilotA2A.KnowledgeApi.Services.Documents;
-using FoundryCopilotA2A.KnowledgeApi.Services.Retrieval;
+using FoundryCopilotA2A.KnowledgeApi.Services.Skills;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -13,7 +13,7 @@ namespace FoundryCopilotA2A.KnowledgeApi.Controllers;
 public sealed class CapabilitiesController(
     IConfiguration configuration,
     IA2aKnowledgeService a2a,
-    KamervragenSkill kamervragen) : ControllerBase
+    KnowledgeSkillRegistry skills) : ControllerBase
 {
     [HttpGet]
     public ActionResult<CapabilitiesResponse> GetCapabilities()
@@ -25,6 +25,7 @@ public sealed class CapabilitiesController(
             DocumentModel: configuration["DocumentIntelligence:ModelId"],
             Graph: true,
             A2a: a2a.Enabled,
-            Kamervragen: kamervragen.Enabled));
+            Kamervragen: skills.IsKnown("kamervragen") && skills.IsConfigured("kamervragen"),
+            Sources: skills.Sources()));
     }
 }

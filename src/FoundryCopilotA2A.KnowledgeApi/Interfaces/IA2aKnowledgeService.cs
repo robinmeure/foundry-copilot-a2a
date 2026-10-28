@@ -11,6 +11,10 @@ public interface IA2aKnowledgeService
     string[]? ResolveSelection(IReadOnlyCollection<string> sources, string[]? agentIds);
     Task<KnowledgeAgentDescriptor[]> GetAvailableAgentsAsync(CancellationToken cancellationToken);
 
+    /// <summary>Whether an agent is approved and permitted by the turn's selection (<c>null</c> permits every approved agent).</summary>
+    bool IsAgentAvailable(string agentId, IReadOnlyCollection<string>? selectedAgentIds) =>
+        Enabled && (selectedAgentIds is null || selectedAgentIds.Contains(agentId, StringComparer.OrdinalIgnoreCase));
+
     /// <summary>Lists only available agents permitted by the current turn's selection.</summary>
     Task<KnowledgeAgentDescriptor[]> ListAsync(
         HttpContext context,

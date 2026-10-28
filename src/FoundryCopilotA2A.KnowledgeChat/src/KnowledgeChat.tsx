@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type SetStateAction } from 'react'
 import type { ChatAuthentication } from '@foundry-copilot-a2a/chat-shared/authentication.ts'
 import ChatShell from '@foundry-copilot-a2a/chat-shared/ChatShell.tsx'
 import { ChatSession } from '@foundry-copilot-a2a/chat-shared/chatSession.ts'
@@ -8,7 +8,8 @@ import { SettingsSection } from '@foundry-copilot-a2a/chat-shared/SettingsDialog
 import ActionCards from './ActionCards.tsx'
 import { historyKey, type KnowledgeChatConfig } from './config.ts'
 import KnowledgeSources from './KnowledgeSources.tsx'
-import { defaultKnowledgeSelection, knowledgeRequestSelection, selectedKnowledgeSources } from './knowledgeSelection.ts'
+import { defaultKnowledgeSelection, knowledgeRequestSelection, selectedKnowledgeSources,
+  withOfferedKnowledgeSources, type KnowledgeSelectionState } from './knowledgeSelection.ts'
 import { createKnowledgeTransport, knowledgeTurnCodec, resolveGraphAction, type KnowledgeInput, type KnowledgeTurn } from './knowledgeTransport.ts'
 import SourceSettings from './SourceSettings.tsx'
 import { useKnowledgeCapabilities } from './useKnowledgeCapabilities.ts'
@@ -25,7 +26,14 @@ export default function KnowledgeChat({ config, auth }: { config: KnowledgeChatC
   const { isSending, contextId } = useChatSnapshot(session)
   const ready = auth.signedIn && !auth.busy
   const capabilityState = useKnowledgeCapabilities(config.knowledgeBaseUrl, token, ready)
-  const [selection, setSelection] = useState(defaultKnowledgeSelection)
+  const [storedSelection, setSelection] = useState(defaultKnowledgeSelection)
+  const { capabilities } = capabilityState
+  // Sources the API offers for the first time start selected; changes apply on top of that view.
+  const selection = withOfferedKnowledgeSources(storedSelection, capabilities)
+  const changeSelection = (action: SetStateAction<KnowledgeSelectionState>) => setSelection(previous => {
+    const current = withOfferedKnowledgeSources(previous, capabilities)
+    return typeof action === 'function' ? action(current) : action
+  })
   const attachment = useKnowledgeDocumentAttachment(!ready || isSending, contextId)
 
   function send(text: string) {
@@ -73,7 +81,7 @@ export default function KnowledgeChat({ config, auth }: { config: KnowledgeChatC
         <SettingsSection id="file-settings-title" title="Files">
           <p>PDF, DOCX, TXT, Markdown, CSV. Up to 20 MiB / 300 pages. Indexed documents stay with this conversation.</p>
         </SettingsSection>
-        <SourceSettings selection={selection} onChange={setSelection} capabilityState={capabilityState} disabled={isSending} />
+        <SourceSettings selection={selection} onChange={changeSelection} capabilityState={capabilityState} disabled={isSending} />
       </>,
     }} />
 }

@@ -25,7 +25,6 @@ internal static class ToolStatus
         "graph_search_people" => WithQuery("Looking up people", arguments),
         "search_documents" => WithQuery("Searching your documents", arguments),
         DocumentRetrieval.ToolName => "Reading selected documents",
-        KamervragenSkill.ToolName => WithQuery("Searching Kamervragen", arguments),
         A2aKnowledgeService.ListToolName => "Finding APIM knowledge agents",
         A2aKnowledgeService.AskToolName => ReadString(arguments, "agentId") is { } agent
             ? $"Asking APIM agent {Quote(agent)}"
@@ -51,7 +50,6 @@ internal static class ToolStatus
         "graph_search_teams" => $"Found {Count(count, "Teams message")}",
         "graph_search_people" => count == 1 ? "Found 1 person" : $"Found {count} people",
         "search_documents" => $"Found {Count(count, "document passage")}",
-        KamervragenSkill.ToolName => $"Found {Count(count, "Kamervragen passage")}",
         A2aKnowledgeService.ListToolName => $"Found {Count(count, "APIM knowledge agent")}",
         _ => $"Received {Count(count, "result")}"
     };
@@ -70,7 +68,6 @@ internal static class ToolStatus
         "graph_search_people" => "People could not be searched",
         "search_documents" => "Documents could not be searched",
         DocumentRetrieval.ToolName => "Document reading or analysis could not be completed",
-        KamervragenSkill.ToolName => "Kamervragen could not be searched",
         A2aKnowledgeService.ListToolName or A2aKnowledgeService.AskToolName => "The APIM agent could not answer",
         _ when tool.StartsWith("graph_propose_", StringComparison.Ordinal) => "The change could not be prepared",
         _ => "A knowledge source could not be read"
@@ -100,10 +97,10 @@ internal static class ToolStatus
                DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out value);
     }
 
-    private static string WithQuery(string action, JsonElement arguments) =>
+    internal static string WithQuery(string action, JsonElement arguments) =>
         ReadString(arguments, "query") is { } query ? $"{action} for {Quote(query)}" : action;
 
-    private static string Count(int count, string noun) => count == 1 ? $"1 {noun}" : $"{count} {noun}s";
+    internal static string Count(int count, string noun) => count == 1 ? $"1 {noun}" : $"{count} {noun}s";
 
     private static string Quote(string text)
     {

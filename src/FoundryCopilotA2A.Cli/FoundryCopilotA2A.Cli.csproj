@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -10,6 +10,10 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Agents.CopilotStudio.Client" Version="1.8.77" />
     <PackageReference Include="Microsoft.Identity.Client" Version="4.88.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FoundryCopilotA2A.Skills\FoundryCopilotA2A.Skills.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,7 +1,8 @@
 using FoundryCopilotA2A.KnowledgeApi.Infrastructure.Azure;
 using FoundryCopilotA2A.KnowledgeApi.Middleware;
-using FoundryCopilotA2A.KnowledgeApi.Services.Retrieval;
+using FoundryCopilotA2A.KnowledgeApi.Services.Skills;
 using FoundryCopilotA2A.KnowledgeApi.Streaming;
+using FoundryCopilotA2A.Skills;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text;
@@ -70,7 +71,7 @@ public sealed class KamervragenTests : IDisposable
             return Json(SearchResult);
         }));
         var skill = CreateSkill(http);
-        var passage = Assert.Single(await skill.SearchAsync(Args(new
+        var passage = Assert.Single(await skill.SearchAsync(Kamervragen, Args(new
         {
             query = "AI overheid",
             thema = "L'economie",
@@ -101,7 +102,7 @@ public sealed class KamervragenTests : IDisposable
             Assert.False(json.RootElement.TryGetProperty("filter", out _));
             return Json("""{"value":[]}""");
         }));
-        Assert.Empty(await CreateSkill(http).SearchAsync(Args(new { query = "no matches" }), ["kamervragen"], default));
+        Assert.Empty(await CreateSkill(http).SearchAsync(Kamervragen, Args(new { query = "no matches" }), ["kamervragen"], default));
     }
 
     [Fact]
@@ -119,10 +120,10 @@ public sealed class KamervragenTests : IDisposable
             ["Kamervragen:Endpoint"] = "http://search.internal/custom",
             ["Kamervragen:Index"] = "shared.reference"
         });
-        var skill = new KamervragenSkill(
+        var skill = new AzureAiSearchConnector(
             new AzureServices(new Factory(http), new SearchCredential(), configuration), configuration);
 
-        Assert.Empty(await skill.SearchAsync(Args(new { query = "AI" }), ["kamervragen"], default));
+        Assert.Empty(await skill.SearchAsync(Kamervragen, Args(new { query = "AI" }), ["kamervragen"], default));
     }
 
     [Theory]
@@ -140,7 +141,7 @@ public sealed class KamervragenTests : IDisposable
     {
         using var http = NoNetwork();
         var error = await Assert.ThrowsAsync<ApiException>(() => CreateSkill(http)
-            .SearchAsync(JsonDocument.Parse(arguments).RootElement, ["kamervragen"], default));
+            .SearchAsync(Kamervragen, JsonDocument.Parse(arguments).RootElement, ["kamervragen"], default));
         Assert.Equal("invalid_tool_arguments", error.Code);
     }
 
@@ -150,11 +151,11 @@ public sealed class KamervragenTests : IDisposable
         using var http = NoNetwork();
         var args = Args(new { query = "AI" });
         Assert.Equal("kamervragen_not_selected", (await Assert.ThrowsAsync<ApiException>(() =>
-            CreateSkill(http).SearchAsync(args, [], default))).Code);
+            CreateSkill(http).SearchAsync(Kamervragen, args, [], default))).Code);
         Assert.Equal("kamervragen_disabled", (await Assert.ThrowsAsync<ApiException>(() =>
-            CreateSkill(http, enabled: false).SearchAsync(args, ["kamervragen"], default))).Code);
+            CreateSkill(http, enabled: false).SearchAsync(Kamervragen, args, ["kamervragen"], default))).Code);
         Assert.Equal("invalid_tool_arguments", (await Assert.ThrowsAsync<ApiException>(() =>
-            CreateSkill(http).SearchAsync(Args(new { query = new string('x', 2001) }), ["kamervragen"], default))).Code);
+            CreateSkill(http).SearchAsync(Kamervragen, Args(new { query = new string('x', 2001) }), ["kamervragen"], default))).Code);
     }
 
     [Theory]
@@ -168,7 +169,7 @@ public sealed class KamervragenTests : IDisposable
     {
         using var http = new HttpClient(new Handler(_ => Task.FromResult(Json(response))));
         var error = await Assert.ThrowsAsync<ApiException>(() => CreateSkill(http)
-            .SearchAsync(Args(new { query = "AI" }), ["kamervragen"], default));
+            .SearchAsync(Kamervragen, Args(new { query = "AI" }), ["kamervragen"], default));
         Assert.Equal("invalid_kamervragen_response", error.Code);
     }
 
@@ -179,7 +180,7 @@ public sealed class KamervragenTests : IDisposable
     {
         using var http = new HttpClient(new Handler(_ => Task.FromResult(new HttpResponseMessage(upstream))));
         var error = await Assert.ThrowsAsync<ApiException>(() => CreateSkill(http)
-            .SearchAsync(Args(new { query = "AI" }), ["kamervragen"], default));
+            .SearchAsync(Kamervragen, Args(new { query = "AI" }), ["kamervragen"], default));
         Assert.Equal(expected, error.Status);
         Assert.Equal("azure_service_error", error.Code);
     }
@@ -191,7 +192,7 @@ public sealed class KamervragenTests : IDisposable
         {
             value = new[] { new { id = "1", content = new string('x', 9000), onderwerp = new string('t', 500) } }
         })))));
-        var passage = Assert.Single(await CreateSkill(longHttp).SearchAsync(Args(new { query = "AI" }), ["kamervragen"], default));
+        var passage = Assert.Single(await CreateSkill(longHttp).SearchAsync(Kamervragen, Args(new { query = "AI" }), ["kamervragen"], default));
         Assert.InRange(passage.Content.Length, 1, 3003);
         Assert.InRange(passage.Title.Length, 1, 243);
         using var tooManyHttp = new HttpClient(new Handler(_ => Task.FromResult(Json(JsonSerializer.Serialize(new
@@ -199,7 +200,7 @@ public sealed class KamervragenTests : IDisposable
             value = Enumerable.Range(0, 9).Select(id => new { id = id.ToString(), content = "text" })
         })))));
         Assert.Equal("invalid_kamervragen_response", (await Assert.ThrowsAsync<ApiException>(() =>
-            CreateSkill(tooManyHttp).SearchAsync(Args(new { query = "AI" }), ["kamervragen"], default))).Code);
+            CreateSkill(tooManyHttp).SearchAsync(Kamervragen, Args(new { query = "AI" }), ["kamervragen"], default))).Code);
     }
 
     [Fact]
@@ -213,16 +214,16 @@ public sealed class KamervragenTests : IDisposable
         var error = await Assert.ThrowsAsync<ApiException>(() => AzureContractTests.Coordinator(http, CreateSkill(http))
             .Run(new DefaultHttpContext(), "AI", [], ["kamervragen"], [], default, progress: progress));
         Assert.Equal("azure_service_error", error.Code);
-        Assert.Contains(progress.Statuses, status => status.Tool == KamervragenSkill.ToolName && status.State == ChatStatus.Failed);
+        Assert.Contains(progress.Statuses, status => status.Tool == ToolName && status.State == ChatStatus.Failed);
     }
 
     [Fact]
     public void StrictToolSchemaMatchesTheIndexContract()
     {
-        var definition = Args(KamervragenSkill.ToolDefinition);
-        Assert.Equal("search_kamervragen", definition.GetProperty("name").GetString());
-        Assert.True(definition.GetProperty("strict").GetBoolean());
-        var parameters = definition.GetProperty("parameters");
+        using var http = NoNetwork();
+        var tool = Assert.Single(CreateSkill(http).GetTools(Kamervragen, new SkillScope(["kamervragen"], null)));
+        Assert.Equal("search_kamervragen", tool.Name);
+        var parameters = tool.Parameters;
         Assert.False(parameters.GetProperty("additionalProperties").GetBoolean());
         Assert.Equal(parameters.GetProperty("properties").EnumerateObject().Select(property => property.Name),
             parameters.GetProperty("required").EnumerateArray().Select(value => value.GetString()));
@@ -241,13 +242,20 @@ public sealed class KamervragenTests : IDisposable
                 return Json(SearchResult);
             }
             using var json = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
-            var tool = Assert.Single(json.RootElement.GetProperty("tools").EnumerateArray());
-            Assert.Equal(KamervragenSkill.ToolName, tool.GetProperty("name").GetString());
+            Assert.Equal(new[] { "load_skill", "read_skill_resource" }.Concat(modelCalls == 0 ? [] : [ToolName]),
+                json.RootElement.GetProperty("tools").EnumerateArray().Select(tool => tool.GetProperty("name").GetString()));
             if (++modelCalls == 1)
             {
-                return Json("""{"status":"completed","output":[{"type":"function_call","call_id":"c1","name":"search_kamervragen","arguments":"{\"query\":\"AI overheid\"}"}]}""");
+                return Json("""{"status":"completed","output":[{"type":"function_call","call_id":"c0","name":"load_skill","arguments":"{\"names\":[\"kamervragen\"]}"}]}""");
             }
             var input = json.RootElement.GetProperty("input").EnumerateArray();
+            if (modelCalls == 2)
+            {
+                var loaded = input.Last(item => item.TryGetProperty("type", out var type) && type.GetString() == "function_call_output");
+                using var skill = JsonDocument.Parse(loaded.GetProperty("output").GetString()!);
+                Assert.Equal(["references/fields.md"], skill.RootElement.GetProperty("skills")[0].GetProperty("resources").EnumerateArray().Select(value => value.GetString()));
+                return Json("""{"status":"completed","output":[{"type":"function_call","call_id":"c1","name":"search_kamervragen","arguments":"{\"query\":\"AI overheid\"}"}]}""");
+            }
             var output = input.Last(item => item.TryGetProperty("type", out var type) && type.GetString() == "function_call_output");
             using var evidence = JsonDocument.Parse(output.GetProperty("output").GetString()!);
             Assert.Equal("[[cite:1]]", evidence.RootElement.GetProperty("items")[0].GetProperty("citation").GetString());
@@ -257,11 +265,11 @@ public sealed class KamervragenTests : IDisposable
         var progress = new RecordingProgress();
         var answer = await AzureContractTests.Coordinator(http, CreateSkill(http)).Run(new DefaultHttpContext(),
             "Find parliamentary questions about AI", [], ["kamervragen"], [], default, progress: progress);
-        Assert.Equal(2, modelCalls);
+        Assert.Equal(3, modelCalls);
         Assert.Equal(1, searchCalls);
         Assert.Equal("Responsible AI [1].", answer.Answer);
         Assert.Single(answer.Evidence);
-        Assert.Contains(progress.Statuses, status => status.Tool == KamervragenSkill.ToolName && status.State == ChatStatus.Started);
+        Assert.Contains(progress.Statuses, status => status.Tool == ToolName && status.State == ChatStatus.Started);
         Assert.Contains(progress.Statuses, status => status.Message == "Found 1 Kamervragen passage" && status.State == ChatStatus.Completed);
     }
 
@@ -274,7 +282,7 @@ public sealed class KamervragenTests : IDisposable
             using var json = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
             if (json.RootElement.TryGetProperty("tools", out var tools))
             {
-                Assert.DoesNotContain(tools.EnumerateArray(), tool => tool.GetProperty("name").GetString() == KamervragenSkill.ToolName);
+                Assert.DoesNotContain(tools.EnumerateArray(), tool => tool.GetProperty("name").GetString() == ToolName);
             }
             return Json("""{"status":"completed","output":[{"type":"function_call","call_id":"c1","name":"search_kamervragen","arguments":"{\"query\":\"AI\"}"}]}""");
         }));
@@ -312,7 +320,10 @@ public sealed class KamervragenTests : IDisposable
         Assert.DoesNotContain("\"type\":\"RUN_ERROR\"", stream);
     }
 
-    private static KamervragenSkill CreateSkill(HttpClient http, bool enabled = true) => new(
+    private const string ToolName = "search_kamervragen";
+    private static SkillDefinition Kamervragen => TestSkills.Get("kamervragen");
+
+    private static AzureAiSearchConnector CreateSkill(HttpClient http, bool enabled = true) => new(
         new AzureServices(new Factory(http), new SearchCredential(), new ConfigurationBuilder().Build()),
         TestConfiguration.Create("Azure", values: new Dictionary<string, string?>
         {

@@ -7,9 +7,10 @@ using FoundryCopilotA2A.KnowledgeApi.Contracts.Graph;
 using FoundryCopilotA2A.KnowledgeApi.Infrastructure;
 using FoundryCopilotA2A.KnowledgeApi.Services.A2A;
 using FoundryCopilotA2A.KnowledgeApi.Services.Graph;
-using FoundryCopilotA2A.KnowledgeApi.Services.Retrieval;
+using FoundryCopilotA2A.KnowledgeApi.Services.Skills;
 using FoundryCopilotA2A.KnowledgeApi.Stores;
 using FoundryCopilotA2A.KnowledgeApi.Streaming;
+using FoundryCopilotA2A.Skills;
 using Microsoft.Agents.AI;
 
 namespace FoundryCopilotA2A.KnowledgeApi.Services.Chat;
@@ -87,18 +88,19 @@ public sealed partial class ResponsesCoordinator
             }
         }
 
-        if (sources.Contains(KamervragenSkill.Source))
+        var scope = new SkillScope(sources, selectedAgents);
+        foreach (var search in skills.Available(scope).Where(skill => skill.Skill.Connector == SkillConventions.AzureAiSearchConnector))
         {
+            var tool = search.Tools[0];
             var arguments = JsonSerializer.SerializeToElement(new { query = question[..Math.Min(question.Length, 2000)] });
             await progress.ReportAsync(new ChatStatus(
-                ToolStatus.Started(KamervragenSkill.ToolName, arguments, userContext.TimeZone),
-                ChatStatus.Started, KamervragenSkill.ToolName), ct);
-            var passages = await kamervragen.SearchAsync(arguments, sources, ct);
-            evidence.AddRange(passages);
-            await progress.ReportAsync(new ChatStatus(
-                ToolStatus.Completed(KamervragenSkill.ToolName, passages.Length), ChatStatus.Completed, KamervragenSkill.ToolName), ct);
+                tool.Started?.Invoke(arguments, userContext.TimeZone) ?? ToolStatus.Started(tool.Name, arguments, userContext.TimeZone),
+                ChatStatus.Started, tool.Name), ct);
+            var result = (PassageToolResult)await tool.InvokeAsync(
+                new SkillToolCall(context, scope, userContext, arguments, (_, _) => ValueTask.CompletedTask), ct);
+            evidence.AddRange(result.Passages);
+            await progress.ReportAsync(new ChatStatus(result.Status, ChatStatus.Completed, tool.Name), ct);
         }
-
         if (sources.Contains("a2a"))
         {
             var listArguments = JsonSerializer.SerializeToElement(new { });

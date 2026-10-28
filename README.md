@@ -1,10 +1,14 @@
 # Foundry to Copilot Studio A2A Repro
 
-This sample exposes supported Copilot Studio agents through an A2A protocol boundary:
+This repository combines an A2A adapter for supported Copilot Studio and Foundry agents with
+a separate, application-owned Knowledge API for document retrieval and Microsoft 365 tools.
+It includes three browser applications, shared chat/client packages, local Aspire orchestration,
+and an operational CLI.
 
-The application also supports browser entry points, a standard-harness Copilot Studio
-orchestrator, configured Foundry agents, and optional APIM discovery and ingress. Native
-orchestration stays with the selected provider; the adapter is not a local multi-agent pipeline.
+The adapter supports a standard-harness Copilot Studio orchestrator, configured Foundry
+agents, and optional APIM discovery and ingress. Native orchestration stays with the selected
+provider; the adapter is not a local multi-agent pipeline. The Knowledge API is the separate
+local orchestration path.
 
 The default backend is a deterministic mock, so the A2A contract can be tested locally
 without provisioning Azure resources. The real backend uses the official
@@ -36,7 +40,7 @@ Read-only Adaptive Cards (plan Phases 0-2) are implemented behind
 `Adapter:AdaptiveCardsEnabled` (default `false`). When enabled, the adapter extracts cards from
 Copilot Studio attachments, validates them (64 KiB per card, 5 cards, 256 KiB per turn), carries
 them in an A2A data part keyed `urn:foundry-copilot-a2a:adaptive-cards:v1`, and advertises that
-extension on the agent cards. Both browser clients render a static, display-only subset
+extension on the agent cards. The diagnostic console and Orchestrator Chat render a static, display-only subset
 (TextBlock, RichTextBlock, FactSet, Container, ColumnSet) with an in-house renderer, and show the
 card's fallback text for anything with actions, inputs, images or unknown elements. Try it on the
 mock backend with the prompt `show card example`. The CLI's
@@ -46,13 +50,47 @@ delivery is still unverified; `Action.Submit` and native orchestrator pass-throu
 separately gated. See the [research](docs/adaptive-cards-a2a-research.md) and
 [plan](docs/adaptive-cards-a2a-implementation-plan.md).
 
+## Start here
+
+- [Run locally without Azure](#run-the-local-repro)
+- [Choose an app and understand the projects](#repository-map)
+- [Knowledge Chat: documents, Graph, Kamervragen and APIM sources](#knowledge-chat-and-local-orchestration)
+- [A2A streaming versus AG-UI streaming](#chat-protocols)
+- [Configure the Orchestrator Chat and Aspire resources](#chatbot-frontend)
+- [Run tests](#local-validation) and [navigate the refactored code](#code-navigation)
+- [Operational commands](src/FoundryCopilotA2A.Cli/README.md) and [Azure infrastructure](#azure-infrastructure)
+
+## Repository map
+
+| Project | Role |
+| --- | --- |
+| [Web](src/FoundryCopilotA2A.Web/README.md) | Diagnostic console: flow design, agent selection, A2A requests and traces; Entra sign-in required |
+| [Chatbot](src/FoundryCopilotA2A.Chatbot/README.md) | Orchestrator Chat: one configured online orchestrator through the adapter/APIM, without diagnostic controls |
+| [KnowledgeChat](src/FoundryCopilotA2A.KnowledgeChat/README.md) | Knowledge Chat: document and Microsoft 365 questions through the Knowledge API only |
+| [ChatShared](src/FoundryCopilotA2A.ChatShared/README.md) | Shared React shell, turn lifecycle, per-app browser history, authentication, replies, sources and input controls |
+| [BrowserShared](src/FoundryCopilotA2A.BrowserShared/README.md) | Shared A2A transport, task/plan handling, consent and endpoint helpers used by the console and Orchestrator Chat |
+| [Adapter](src/FoundryCopilotA2A.Adapter) | A2A routing, Copilot Studio SDK integration, OBO, idempotency, APIM discovery and sanitized traces |
+| [KnowledgeApi](src/FoundryCopilotA2A.KnowledgeApi/README.md) | Agent Framework orchestration, scoped RAG, delegated Graph tools, proposed actions and AG-UI streaming |
+| [Cli](src/FoundryCopilotA2A.Cli/README.md) | Registration, consent, gateway/connection setup, process startup, probes and cleanup |
+| [AppHost](src/FoundryCopilotA2A.AppHost/AppHost.cs) / [ServiceDefaults](src/FoundryCopilotA2A.ServiceDefaults/Extensions.cs) | Local resource graph, service discovery, health checks and OpenTelemetry |
+
+The two chat apps and ChatShared use the root [npm workspace](package.json). The diagnostic
+console remains a separate npm project. Each chat app owns its transport, configuration and
+history key; neither imports the other or silently switches backends. Aspire installs the chat
+workspace once and launches the apps as separate resources.
+
 ## Management summary
 
 ### What this is
 
-A governed bridge that exposes supported Copilot Studio agents over A2A. A Microsoft Foundry
-agent or a standard-harness Copilot Studio agent can be the native orchestrator. The adapter
-uses delegated OBO; it does not implement an in-process Agent A-then-Agent B pipeline.
+Two complementary paths share the same repository:
+
+- **Native agent orchestration:** a Microsoft Foundry or standard-harness Copilot Studio agent
+  chooses its own tools. The adapter exposes supported specialists over A2A and handles
+  delegated OBO; it does not implement an in-process Agent A-then-Agent B pipeline.
+- **Application-owned knowledge orchestration:** the Knowledge API runs Agent Framework
+  against Azure OpenAI Responses, selecting document, Graph and approved specialist tools.
+  It has its own Knowledge Chat frontend, authorization and data-retention boundaries.
 
 ### End-to-end flow
 
@@ -171,7 +209,7 @@ the browser exposes `SpeechRecognition` or `webkitSpeechRecognition`.
   synthesized speech output, real-time audio conversation, or provider-side voice session.
 
 **Verification status:** the
-[speech-input unit tests](src/FoundryCopilotA2A.Chatbot/tests/speechInput.test.mjs) cover
+[speech-input unit tests](src/FoundryCopilotA2A.ChatShared/tests/speechInput.test.mjs) cover
 language restoration and locale selection, merging dictation with typed text, and error
 messages. The [configuration tests](src/FoundryCopilotA2A.Chatbot/tests/config.test.mjs)
 cover the opt-in flag. These tests do not exercise a real microphone, browser permissions,
@@ -293,7 +331,7 @@ replace the preview instead of appending a duplicate. Send `show streamed replac
 to the mock agent to exercise this path.
 
 The Knowledge API calls APIM specialists with `SendStreamingMessage`. It relays the
-specialist's plan and search progress as `progress` statuses in Knowledge Chat, and turns the
+specialist's plan and search progress through AG-UI step metadata in Knowledge Chat, and turns the
 specialist's structured citations into separate, provider-attributed evidence sources next to
 the specialist's answer.
 
@@ -711,6 +749,9 @@ health. Use `test-adapter`, `test-foundry`, and `test-citadel` against your sele
 | Duplicate-message protection and replay refusal | Local integration tests plus historical live probes | Automated tests and recorded live behavior |
 | Cross-caller and cross-tenant isolation | Local tests with authentication enabled | Automated tests; historical mutation checks recorded below |
 | Browser task lifecycle, sources, authentication configuration, and flow validation | Console and chatbot Node test suites | Automated browser/shared-client tests; not included in `dotnet test` |
+| Knowledge API retrieval, Graph tool boundaries, action confirmation and AG-UI events | [Knowledge API tests](tests/FoundryCopilotA2A.KnowledgeApi.Tests) | Local tests and synthetic providers; not proof of live Graph permissions or model quality |
+| Shared chat lifecycle, separate histories, source selection and Knowledge transport | ChatShared, Chatbot and KnowledgeChat npm workspaces | Automated tests plus mocked layout fixtures in both chat apps |
+| Registration payloads, connection migration and gateway input validation | [CLI tests](tests/FoundryCopilotA2A.Cli.Tests) | Pure input/payload tests and local HTTP handlers; no cloud mutation |
 | Foundry native A2A tool | Historical Foundry project run through a Dev Tunnel | Observed before Citadel migration; not proof of the current native gateway path |
 | Foundry Agent A calling Copilot Studio Agent B through the adapter | Historical direct-tunnel and migrated Reverser Citadel runs | Specialist callback and delegated OBO observed; does not authorize another connection or user |
 | One Foundry agent offering several Copilot Studio specialists | Historical two-connection agent version | Does not establish which tools remain attached to the current published version |
@@ -858,9 +899,9 @@ reopen the disclosure: the transport-edge check and the atomic check in
 
 Prerequisites:
 
-- .NET 10 SDK for the adapter, operational CLI, and .NET tests.
-- Node.js 24 LTS (recommended) and npm for the two Vite frontends and their TypeScript-based tests.
-- Aspire CLI for starting the AppHost (the project uses Aspire 13.5.3).
+- .NET 10 SDK for the backends, operational CLI, and .NET tests.
+- Node.js 24 LTS (recommended) and npm for the three Vite frontends and their TypeScript-based tests.
+- Aspire CLI compatible with the version pinned in the [AppHost project](src/FoundryCopilotA2A.AppHost/FoundryCopilotA2A.AppHost.csproj).
 - Only for cloud workflows: Azure CLI, Azure Developer CLI with the Foundry extension, and
   access to the selected tenant/resources. Dev Tunnel workflows also use the `devtunnel` CLI.
 
@@ -896,14 +937,17 @@ The card, health, and catalog are public; runtime, connectivity configuration, a
 authentication when it is enabled. The default APIM publication does not expose `/health` or
 `/api/connectivity`; see [connectivity diagnostics](#connectivity-diagnostics).
 
-Both browser apps use `SendStreamingMessage` and render real upstream chunks. The CLI
+The diagnostic console and Orchestrator Chat use `SendStreamingMessage` and render real upstream chunks. The CLI
 `test-adapter` uses non-streaming `SendMessage`. Duplicate requests with the same caller, agent,
-context, and message ID share an available in-flight or cached invocation.
+context, and message ID share an available in-flight or cached invocation. Knowledge Chat
+instead uses AG-UI against the separate Knowledge API.
 
 For an Azure-free **browser** session, start the AppHost instead of a second standalone adapter:
 
 ```powershell
-aspire start --apphost .\src\FoundryCopilotA2A.AppHost\FoundryCopilotA2A.AppHost.csproj
+aspire start --apphost .\src\FoundryCopilotA2A.AppHost\FoundryCopilotA2A.AppHost.csproj --non-interactive
+aspire wait chatbot --non-interactive
+aspire wait knowledge-chat --non-interactive
 ```
 
 With the default mock configuration and no gateway/discovery/tunnel overrides, open the chatbot
@@ -915,7 +959,8 @@ those settings when reusing an AppHost.
 
 ### Local validation
 
-The .NET solution tests the adapter and CLI. Browser/shared-client tests run separately:
+The .NET solution includes Adapter, CLI and Knowledge API tests. Browser/shared-client tests
+run separately:
 
 ```powershell
 dotnet test .\FoundryCopilotA2A.slnx
@@ -934,6 +979,20 @@ npm run build --workspaces --if-present
 These checks need no live Azure resources. They do not replace an authenticated end-to-end
 test of a published provider agent or APIM policy.
 
+For a smaller .NET change, run the affected test project rather than the whole solution:
+
+```powershell
+dotnet test .\tests\FoundryCopilotA2A.Adapter.Tests
+dotnet test .\tests\FoundryCopilotA2A.Cli.Tests
+dotnet test .\tests\FoundryCopilotA2A.KnowledgeApi.Tests
+```
+
+CLI preview tests locate repository assets relative to their binaries; keep their build
+outputs beneath the repository. The chat apps also provide mocked layout fixtures for
+responsive and keyboard checks: [Orchestrator Chat](src/FoundryCopilotA2A.Chatbot/README.md)
+and [Knowledge Chat](src/FoundryCopilotA2A.KnowledgeChat/README.md#layout-regression-fixture).
+These fixtures do not call live services.
+
 ### Code navigation
 
 The adapter's [Program.cs](src/FoundryCopilotA2A.Adapter/Program.cs) shows middleware order
@@ -947,6 +1006,17 @@ contains runtime, diagnostics and agent-card mapping.
 - [Streaming](src/FoundryCopilotA2A.Adapter/Streaming): SSE parsing and A2A answer accumulation.
 - [Tracing](src/FoundryCopilotA2A.Adapter/Tracing): caller-owned trace storage and redaction.
 - [Contracts](src/FoundryCopilotA2A.Adapter/Contracts): request, response and diagnostic data.
+
+The CLI groups stateless procedures into [Identity](src/FoundryCopilotA2A.Cli/Identity) and
+[Foundry](src/FoundryCopilotA2A.Cli/Foundry) files, with explicit dispatch in
+[CliApplication.cs](src/FoundryCopilotA2A.Cli/CliApplication.cs). Payload builders and related
+operation inputs are separate from side effects; this is organization, not a command framework.
+
+The [Knowledge API folder guide](src/FoundryCopilotA2A.KnowledgeApi/README.md#code-organization)
+covers its controllers, interfaces, services, stores and infrastructure. Its modules use DI
+interfaces and direct `IConfiguration`; the adapter retains structured provider settings and
+startup validation while simple runtime consumers read `IConfiguration`. The refactor preserves
+mock operation, authorization, protocol compatibility, cancellation and caller isolation.
 
 Keep procedures in execution order, use named helpers for meaningful steps, and keep mutable
 state with its owner. Prefer plain branches over dense expressions. Comments should explain
@@ -1018,7 +1088,7 @@ at most 8 strings, newest first. The adapter uses a handle only when its in-memo
 and the handle matches the same user, agent and `contextId`. It ignores any other handle, and the
 `copilot_studio.conversation.source` span tag shows `adapter_cache` or `client_handle`.
 
-Both browser apps keep the handles with the chat. The chatbot saves them in browser storage with
+The console and Orchestrator Chat keep the handles with the chat. The chatbot saves them in browser storage with
 the conversation, so a reopened chat resumes too. After a failed turn both apps drop the handles,
 so the next turn starts a new conversation with a short replay. An orchestrator does not restart a
 rejected conversation by itself, because doing so could repeat a side effect.
@@ -1726,11 +1796,13 @@ by a `streamId` in `channelData`:
 | `typing` | `streaming` | One chunk of the answer |
 | `message` | `final` | The finished answer |
 
-A final message can repeat the answer already sent as deltas. Once nonempty deltas for its
-`streamId` have been forwarded, the adapter suppresses that final text to avoid duplication.
-It still observes the activity for diagnostics and extracts any citations it carries. A stream
-of empty deltas does not suppress the final answer. Agents that return only a final message
-remain supported.
+A final message can repeat or correct the answer already sent as deltas. A matching final
+text (ignoring surrounding whitespace) is suppressed to avoid duplication, while its metadata
+is still processed. A different, nonempty final answer is authoritative: the adapter replaces
+the streamed portion and emits a replacing artifact rather than appending a second answer.
+The idempotency result, task store and browser retain that corrected answer, including its
+citations/cards. Empty deltas do not suppress a usable final answer, and final-only agents
+remain supported. See [answer accumulation](src/FoundryCopilotA2A.Adapter/CopilotStudio/CopilotStudioAnswerStream.cs).
 
 Copilot Studio can also send `DynamicPlanStepFinished` event activities before a generic final
 error message. When such an event contains a structured plan-step error, the adapter retains only
@@ -1741,7 +1813,7 @@ a successful turn. Arbitrary raw event envelopes are not copied into the respons
 `DynamicPlanReceived`, `DynamicPlanStepTriggered`, `DynamicPlanStepBindUpdate` and
 `DynamicPlanStepFinished` are forwarded as working-status messages, with structured data when
 the optional `urn:foundry-copilot-a2a:dynamic-plan:v1` extension is activated. Arguments and
-observations are bounded and redacted; thoughts are not forwarded. Both frontends show a
+observations are bounded and redacted; thoughts are not forwarded. The console and Orchestrator Chat show a
 collapsible timeline with expandable details, retained after the answer but excluded from
 copied answers, browser persistence and follow-up prompts. Redaction is best effort, not a
 general DLP guarantee. See the [wire contract and limits](src/FoundryCopilotA2A.BrowserShared/README.md#structured-plan-activity-v1).
@@ -1751,7 +1823,7 @@ For a matching connector authentication failure, the adapter maps the failed pla
 `taskDialogId` to its advertised tool display name and derives the current orchestrator's
 environment and bot IDs from the Copilot Studio activity identity. It adds an allowlisted
 `https://copilotstudio.microsoft.com/environments/<environment>/bots/<bot>/settings/connections`
-repair link. Both browser applications render that URL as an explicit connection-settings action;
+repair link. The console and Orchestrator Chat render that URL as an explicit connection-settings action;
 repair responses are excluded from follow-up history.
 
 Progress is marked with `metadata.isInformative` on its part so a caller can show it while the
@@ -1770,7 +1842,7 @@ The shared APIM CORS policy must be updated on existing gateways before using th
 Adapter-managed APIM streams preserve plan data; native Foundry/model-mediated chains may not.
 The browsers do not simulate streaming for final-only responses.
 
-Both browser apps handle task status separately from answer text. Failed, canceled, rejected,
+The A2A browser clients handle task status separately from answer text. Failed, canceled, rejected,
 input-required, and auth-required states remain errors even after partial text. A completed
 task enters a finalizing phase while remaining stream data drains, preserving late citations;
 an artifact's `lastChunk` alone is not task completion. Legacy streams can finish at EOF.
@@ -2087,6 +2159,166 @@ Platform alternative, distinct from this repository's proxy publication:
 [Import an A2A agent API into Azure API Management](https://learn.microsoft.com/azure/api-management/agent-to-agent-api).
 
 
+## Knowledge Chat and local orchestration
+
+[Knowledge Chat](src/FoundryCopilotA2A.KnowledgeChat/README.md) at `http://localhost:5175`
+talks only to the [Knowledge API](src/FoundryCopilotA2A.KnowledgeApi/README.md) at
+`http://localhost:5100`. The API runs Microsoft Agent Framework with Azure OpenAI Responses
+(`store: false`). The model chooses from the permitted tools, asks for clarification, or
+answers a general question without retrieval. It does not call licensed Microsoft 365 Copilot
+retrieval/chat or Work IQ APIs.
+
+```text
+Knowledge Chat -> Knowledge API / Agent Framework
+                   |-- conversation-scoped documents -> Azure AI Search
+                   |-- selected Microsoft 365 tools -> delegated Graph OBO
+                   |-- shared Kamervragen reference index -> Azure AI Search
+                   `-- approved APIM specialists -> adapter -> APIM A2A agent
+```
+
+These are separate source boundaries. A specialist receives its focused question, not the
+uploaded files, accumulated evidence or complete conversation history. "Local" means the
+application owns orchestration; Azure mode is not offline. Mock mode uses clearly labeled
+synthetic providers without calling Azure, Graph, the adapter or remote agents.
+
+### Documents and retrieval
+
+- Upload PDF, DOCX, UTF-8 TXT, Markdown or CSV, or use the SharePoint picker to search sites,
+  select a library and folder, and import a file. An HTTPS SharePoint site-root URL can also
+  resolve a site directly; document/sharing links are not site roots.
+- Local attachments show a pending state before sending; SharePoint imports index immediately
+  without sending the draft. Indexed files remain visible in **Chat documents** and can be removed.
+  Availability is not proof that a particular answer cited the document.
+- Retrieval is scoped to tenant/user, conversation and allowed document IDs, with expiry
+  filters. SharePoint access is rechecked. Answers carry server-assigned numbered citations,
+  including page/passage locators where available.
+- Besides top-eight hybrid search, `retrieve_documents` supports `focused`, `contextual`,
+  `whole_document`, `exhaustive` and `comparison` modes. Full-document paths read ordered
+  chunks; larger inputs use bounded per-document analysis batches. They do not silently turn
+  missing or inaccessible chunks into a successful partial read.
+
+Defaults are **20 MiB per file**, **30 ready documents per conversation**, and **7-day
+retention**. PDF/DOCX extraction uses Document Intelligence `prebuilt-read`: it is text/OCR,
+not a promise to preserve table structure. Metadata and mock passages persist on a private
+local volume; Azure passages/vectors live in Search. Clearing browser history does not delete
+backend documents or retained dialogue. See [retrieval modes](src/FoundryCopilotA2A.KnowledgeApi/README.md#document-retrieval-modes)
+and [ingestion limits](src/FoundryCopilotA2A.KnowledgeApi/README.md#ingestion-and-current-limits).
+
+### Microsoft 365 sources and confirmed actions
+
+Mail, Calendar, Microsoft To Do, Planner, Teams and People can be selected independently.
+Selection makes tools available; it does not force every source to run. Graph uses the
+signed-in user's delegated permissions, not the developer's identity or application access.
+The API resolves user profile/time zone for date-sensitive questions and keeps bounded
+follow-up dialogue without retaining private tool evidence as reusable context.
+Server history keeps at most **12 successful turn pairs / 24,000 characters**, expiring after
+the configured retention interval without a successful turn. Private-context assistant answers
+are replaced by a fixed re-retrieval reminder; follow-ups must retrieve current authorized
+evidence again. This backend history is separate from each app's visible browser transcript.
+[History and privacy details](src/FoundryCopilotA2A.KnowledgeApi/README.md#conversation-history).
+
+The model can propose mail drafts/reply drafts, read-state changes, calendar events, To Do
+changes and Planner progress. **A proposal does not write to Graph.** Knowledge Chat displays
+**Confirm** / **Cancel** cards; only explicit confirmation calls the action endpoint.
+Actions are user/conversation-bound, single-use, expire after 15 minutes and are held in
+memory. Mail sending and deletes are unsupported; confirming an event with attendees can
+send invitations. See [write-back behavior and permissions](src/FoundryCopilotA2A.KnowledgeApi/README.md#confirmed-write-back).
+
+### Optional reference sources
+
+**Kamervragen** searches a separate, existing parliamentary reference index through
+`search_kamervragen`. It is read-only and independent of personal-document ingestion.
+Enable `Kamervragen:Enabled` with its endpoint/index (Aspire: `KnowledgeKamervragen:*`).
+This corpus has no per-user ACL fields: enable it only for material approved for every
+authenticated user of the API. The Search index's vectorizer is separate from uploaded
+document embeddings. [Configuration and schema requirements](src/FoundryCopilotA2A.KnowledgeApi/README.md#shared-kamervragen-search).
+
+**APIM agents** reuse the adapter's discovery catalog, limited by `A2A:AllowedAgentIds`
+and narrowed further by the user's selections. Only approve read-only specialists, not
+orchestrators that route back to this API. Specialist plan/search progress is streamed to
+the chat; cited evidence retains specialist provenance. An agent's answer is untrusted
+evidence, not an authorization decision.
+
+For separate API audiences use `A2A:AuthenticationMode=OnBehalfOf` and the adapter's delegated
+scope. For an explicitly shared registration, `SameAudience` reuses the validated API token
+and requires an empty `A2A:DelegatedScope`. This does not bypass Graph/Power Platform consent.
+Aspire supplies the adapter endpoint when `KnowledgeA2A:Enabled` is set.
+[APIM source configuration](src/FoundryCopilotA2A.KnowledgeApi/README.md#apim-agents-as-knowledge).
+
+The frontend uses `/api/capabilities` to enable optional sources. Missing or failed capabilities
+do not enable them; unavailable catalogs must not re-enable agents the user excluded.
+
+### Configuration and standalone use
+
+The Knowledge API takes defaults from [appsettings.json](src/FoundryCopilotA2A.KnowledgeApi/appsettings.json),
+then optional ignored local settings and non-empty environment overrides. Consumers use
+`IConfiguration`, without custom configuration URL/index-name format checks. Essential backend,
+mock-environment, upload/retention and A2A authorization checks remain. Azure/service errors
+are surfaced rather than replaced with mock results.
+
+Azure mode needs the API identity/OBO credential and configured OpenAI, Search and document
+extraction resources. Keep credentials and environment-specific identifiers out of source.
+AppHost uses `KnowledgeBackend`; standalone configuration uses `Knowledge:Backend`.
+Browser configuration uses `VITE_KNOWLEDGE_BASE_URL` and, for Entra mode,
+`VITE_KNOWLEDGE_API_CLIENT_ID`. [Full settings and identity guide](src/FoundryCopilotA2A.KnowledgeApi/README.md#configuration-and-identity).
+
+For a standalone mock API, use the existing CLI; do not start a second copy alongside Aspire:
+
+```powershell
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- run-knowledge --backend Mock
+```
+
+The CLI also provides `create-knowledge-index` (preview by default; `--apply` creates only an
+absent index) and `test-knowledge-search` (read-only replay of a supplied Search request).
+Neither is a migration/overwrite command. Use non-sensitive diagnostic queries because upstream
+errors can echo request values. Run `<command> --help` through the CLI for current arguments.
+
+This remains a **single-instance sample**, not a production document-management system.
+Durable private storage, approved content-processing regions, malware scanning, sensitivity
+policy, distributed state and production rate limits need a rollout design. Speech endpoint/
+voice settings are reserved; there is no server speech-synthesis feature.
+
+### Chat protocols
+
+| Caller | Endpoint / protocol | Completion |
+| --- | --- | --- |
+| Diagnostic console and Orchestrator Chat | Adapter/APIM A2A JSON-RPC `SendStreamingMessage`, with 1.0/0.3 compatibility | Task lifecycle and artifacts; canonical final answers can replace streamed text |
+| Knowledge Chat | Knowledge API `POST /api/chat/stream`, AG-UI over SSE | `RUN_FINISHED.result` supplies the validated final response |
+| Non-streaming Knowledge client | Knowledge API `POST /api/chat`, ordinary JSON | `{answer,warnings,citations,actions}` |
+
+Knowledge streaming uses official **`AGUI.Abstractions`** server event types and the
+**`@ag-ui/client` `HttpAgent`** in the frontend. It replaces the earlier custom chat-stream
+envelope; it does not replace the adapter's A2A contract or the application's citation schema.
+The request is `RunAgentInput`, not the non-streaming `{conversationId,text,...}` body:
+
+```json
+{
+  "threadId": "11111111-2222-4333-8444-555555555555",
+  "runId": "example-run",
+  "messages": [
+    { "id": "question-1", "role": "user", "content": "What is on my calendar today?" }
+  ],
+  "tools": [],
+  "context": [],
+  "state": {},
+  "forwardedProps": {
+    "sources": ["calendar"],
+    "timeZone": "Europe/Amsterdam"
+  }
+}
+```
+
+`threadId` is the conversation UUID. Only the final user text message is read; documents are
+uploaded separately. `forwardedProps` can carry `sources`, `agents` and `timeZone`. Earlier
+messages, client tools, state and context are ignored because the server owns history and tools.
+
+Events include `RUN_STARTED`, paired `STEP_STARTED`/`STEP_FINISHED`, text-message start/content/end,
+and `RUN_FINISHED` or `RUN_ERROR`. Progress metadata describes tool activity; final results include
+validated citations, warnings and action proposals. Errors before streaming use Problem Details;
+errors after headers use `RUN_ERROR` with structured metadata. Stopped/failed Knowledge replies
+discard partial text; successful final results replace the preview. See the
+[complete streaming contract](src/FoundryCopilotA2A.KnowledgeApi/README.md#streaming-chat).
+
 ## Chatbot frontend
 
 The separate [Orchestrator Chat frontend](src/FoundryCopilotA2A.Chatbot/README.md) provides
@@ -2108,8 +2340,11 @@ the `chat-workspace-install` resource, then starts each app independently of the
 origins are allowed by the local adapter; only the Knowledge Chat origin is allowed by the
 Knowledge API. Configure the chatbot's **dedicated SPA**
 registration and the existing backend API identity in its ignored `.env.local`; its SPA redirect
-URI must be `<chatbot-origin>/auth-redirect.html` for its MSAL redirect bridge. Sign-in, token
-renewal, and sign-out use redirects, like the existing console, not popups.
+URI must be `<chatbot-origin>/auth-redirect.html` for its MSAL redirect bridge. Interactive
+sign-in/renewal and sign-out use redirects, not popups. Before each protected request, the
+chat app acquires a token for the current account and scope; near-expiry or missing-expiry
+tokens trigger one forced silent renewal. Renewal failures do not send a stale bearer token,
+and interactive renewal does not automatically resend the user's turn.
 In live mode, calls use the signed-in user's delegated backend token, and OBO remains on the
 server. The explicit local mock mode does not sign in or perform OBO. Existing console settings
 and its app registration are unchanged.

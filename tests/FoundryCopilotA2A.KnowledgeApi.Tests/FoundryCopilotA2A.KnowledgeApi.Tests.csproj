@@ -12,5 +12,6 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
     <ProjectReference Include="..\..\src\FoundryCopilotA2A.KnowledgeApi\FoundryCopilotA2A.KnowledgeApi.csproj" />
     <Using Include="Xunit" />
+    <Content Include="..\..\skills\**" LinkBase="skills" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

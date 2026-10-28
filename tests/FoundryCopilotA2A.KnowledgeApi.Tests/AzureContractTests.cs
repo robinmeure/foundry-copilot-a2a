@@ -8,6 +8,7 @@ using FoundryCopilotA2A.KnowledgeApi.Services.Chat;
 using FoundryCopilotA2A.KnowledgeApi.Services.Documents;
 using FoundryCopilotA2A.KnowledgeApi.Services.Graph;
 using FoundryCopilotA2A.KnowledgeApi.Services.Retrieval;
+using FoundryCopilotA2A.KnowledgeApi.Services.Skills;
 using FoundryCopilotA2A.KnowledgeApi.Stores;
 using System.Net;
 using System.Text;
@@ -115,18 +116,19 @@ public sealed class AzureContractTests
         Assert.Equal("invalid_operation", (await Assert.ThrowsAsync<ApiException>(() => azure.Extract([1], default))).Code);
     }
 
-    internal static ResponsesCoordinator Coordinator(HttpClient http, KamervragenSkill? kamervragen = null)
+    internal static ResponsesCoordinator Coordinator(HttpClient http, AzureAiSearchConnector? search = null)
     {
         var factory = new Factory(http);
         var configuration = Config();
         var graph = new GraphService(factory, configuration);
-        return new(new AgentModelClient(factory, new Credential(), Config()),
-            new(graph, configuration), NullLogger<ResponsesCoordinator>.Instance,
-            new A2aKnowledgeService(factory, configuration, new DelegatedTokenProvider(
+        var graphSkill = new GraphSkill(graph, configuration);
+        var actions = new GraphActions(graph, configuration);
+        var a2a = new A2aKnowledgeService(factory, configuration, new DelegatedTokenProvider(
                 Microsoft.Identity.Client.ConfidentialClientApplicationBuilder.Create("11111111-1111-1111-1111-111111111111").Build()),
-                NullLogger<A2aKnowledgeService>.Instance),
-            new GraphActions(graph, configuration),
-            kamervragen ?? new(new AzureServices(factory, new Credential(), Config()), configuration));
+            NullLogger<A2aKnowledgeService>.Instance, TestSkills.Catalog);
+        search ??= new(new AzureServices(factory, new Credential(), configuration), configuration);
+        return new(new AgentModelClient(factory, new Credential(), configuration), graphSkill,
+            NullLogger<ResponsesCoordinator>.Instance, a2a, actions, TestSkills.Registry(graphSkill, actions, a2a, search));
     }
 
     [Fact]
@@ -141,8 +143,9 @@ public sealed class AzureContractTests
             Assert.False(body.GetProperty("parallel_tool_calls").GetBoolean());
             Assert.False(body.TryGetProperty("previous_response_id", out _));
             Assert.Contains("reasoning.encrypted_content", body.GetProperty("include").EnumerateArray().Select(v => v.GetString()));
+            // A direct call to an unloaded skill tool is accepted and loads the skill.
             Assert.All(body.GetProperty("tools").EnumerateArray(), tool =>
-                Assert.Matches("^graph_(list|propose)_todo_", tool.GetProperty("name").GetString()));
+                Assert.Matches("^(load_skill|graph_(list|propose)_todo_.*)$", tool.GetProperty("name").GetString()));
             calls++;
             if (calls == 1)
                 return Json("""{"status":"completed","output":[{"type":"reasoning","id":"r1","summary":[],"encrypted_content":"opaque"},{"type":"function_call","call_id":"call1","name":"graph_list_todo_lists","arguments":"{}"}]}""");
@@ -446,7 +449,7 @@ public sealed class AzureContractTests
     }
 
     [Fact]
-    public async Task AgentFrameworkDiscoversAndQueriesApimSpecialistAsCitedKnowledge()
+    public async Task AgentFrameworkLoadsApimSkillsOnDemandAndQueriesSpecialistAsCitedKnowledge()
     {
         var calls = 0;
         using var http = new HttpClient(new Handler(async request =>
@@ -457,17 +460,33 @@ public sealed class AzureContractTests
             Assert.False(body.GetProperty("store").GetBoolean());
             var toolNames = body.GetProperty("tools").EnumerateArray()
                 .Select(tool => tool.GetProperty("name").GetString()).ToArray();
-            Assert.Equal(new[] { "list_a2a_agents", "ask_a2a_agent" }, toolNames);
+            var instructions = body.GetProperty("instructions").GetString()!;
             if (++calls == 1)
             {
-                return Json("""{"status":"completed","output":[{"type":"function_call","call_id":"discover","name":"list_a2a_agents","arguments":"{}"}]}""");
+                Assert.Equal(new[] { "load_skill" }, toolNames);
+                Assert.Contains("apim-agent-mock-knowledge (Mock APIM knowledge agent): Mock APIM knowledge agent for local development.", instructions);
+                return Json("""{"status":"completed","output":[{"type":"function_call","call_id":"load","name":"load_skill","arguments":"{\"names\":[\"apim-agents\",\"apim-agent-mock-knowledge\"]}"}]}""");
             }
+            Assert.Equal(new[] { "load_skill", "list_a2a_agents", "ask_a2a_agent" }, toolNames);
             var output = body.GetProperty("input").EnumerateArray()
                 .Last(item => item.TryGetProperty("type", out var type) && type.GetString() == "function_call_output");
             using var toolResult = JsonDocument.Parse(output.GetProperty("output").GetString()!);
             if (calls == 2)
             {
-                Assert.Equal("mock-apim-knowledge", toolResult.RootElement[0].GetProperty("id").GetString());
+                var loaded = toolResult.RootElement.GetProperty("skills");
+                Assert.Equal(2, loaded.GetArrayLength());
+                Assert.Equal("mock-apim-knowledge", loaded[1].GetProperty("agentId").GetString());
+                Assert.Contains("ask_a2a_agent", loaded[1].GetProperty("instructions").GetString());
+                Assert.Equal(new[] { "ask_a2a_agent" }, loaded[1].GetProperty("tools").EnumerateArray().Select(tool => tool.GetString()));
+                Assert.Contains(toolResult.RootElement.GetProperty("guardrails").EnumerateArray(),
+                    guardrail => guardrail.GetString()!.Contains("'mock-apim-knowledge'"));
+                return Json("""{"status":"completed","output":[{"type":"function_call","call_id":"discover","name":"list_a2a_agents","arguments":"{}"}]}""");
+            }
+            if (calls == 3)
+            {
+                var agent = toolResult.RootElement[0];
+                Assert.Equal("mock-apim-knowledge", agent.GetProperty("id").GetString());
+                Assert.StartsWith("Mock APIM knowledge agent for local development.", agent.GetProperty("description").GetString());
                 return Json("""{"status":"completed","output":[{"type":"function_call","call_id":"ask","name":"ask_a2a_agent","arguments":"{\"agentId\":\"mock-apim-knowledge\",\"question\":\"When is the review?\"}"}]}""");
             }
             Assert.Equal("[[cite:1]]", toolResult.RootElement.GetProperty("items")[0].GetProperty("citation").GetString());
@@ -475,10 +494,30 @@ public sealed class AzureContractTests
         }));
         var result = await Coordinator(http).Run(
             new DefaultHttpContext(), "Ask the specialist when the review is.", [], ["a2a"], [], default);
-        Assert.Equal(3, calls);
+        Assert.Equal(4, calls);
         Assert.Equal("The review is Friday [1].", result.Answer);
         Assert.Equal(["mock-apim-knowledge", "mock-apim-knowledge"], result.Evidence.Select(item => item.OriginatingAgent!.Id));
         Assert.Equal("https://example.org/", result.Evidence[1].Url);
+    }
+
+    [Fact]
+    public async Task LoadSkillRejectsSkillsOutsideTheSelectedSources()
+    {
+        var rejected = false;
+        using var http = new HttpClient(new Handler(async request =>
+        {
+            using var json = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            var outputs = json.RootElement.GetProperty("input").EnumerateArray()
+                .Where(item => item.TryGetProperty("type", out var type) && type.GetString() == "function_call_output").ToArray();
+            if (outputs.Length == 0)
+            {
+                return Json("""{"status":"completed","output":[{"type":"function_call","call_id":"load","name":"load_skill","arguments":"{\"names\":[\"m365-mail\"]}"}]}""");
+            }
+            rejected = outputs[0].GetProperty("output").GetString()!.Contains("invalid_tool_arguments");
+            return Json("""{"status":"completed","output":[{"type":"message","role":"assistant","status":"completed","id":"msg1","content":[{"type":"output_text","text":"Mail is not enabled."}]}]}""");
+        }));
+        await Coordinator(http).Run(new DefaultHttpContext(), "mail?", [], ["todo"], [], default);
+        Assert.True(rejected);
     }
 
     [Fact]

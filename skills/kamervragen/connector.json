@@ -1,0 +1,50 @@
+{
+  "configurationSection": "Kamervragen",
+  "tool": {
+    "name": "search_kamervragen",
+    "description": "Search the shared Dutch parliamentary questions (Kamervragen) reference index. Combines keyword, vector and semantic search. Returns a bounded sample, not an exhaustive list. Use Dutch search terms where appropriate. Optional exact metadata filters must use values supplied by the user or previous search results; otherwise pass null. Publication dates are inclusive UTC dates."
+  },
+  "apiVersion": "2024-07-01",
+  "maxResults": 8,
+  "maxContentLength": 3000,
+  "maxQueryLength": 2000,
+  "search": {
+    "queryType": "semantic",
+    "semanticConfiguration": "semantic",
+    "scoringProfile": "freshness",
+    "searchFields": ["content", "onderwerp", "samenvatting", "keyPoints", "thema", "minister", "ministerie", "indieners", "partijen"],
+    "select": ["id", "parentId", "level", "content", "onderwerp", "samenvatting", "keyPoints", "thema", "minister", "ministerie", "indieners", "partijen", "vergaderjaar", "soort", "kamer", "datum", "documentNummer", "aanhangselnummer"],
+    "vector": { "fields": "contentVector", "k": 50, "filterMode": "preFilter" }
+  },
+  "filters": [
+    { "argument": "thema", "field": "thema", "kind": "equals", "description": "Exact thema value, or null." },
+    { "argument": "ministerie", "field": "ministerie", "kind": "equals", "description": "Exact ministerie value, or null." },
+    { "argument": "documentNummer", "field": "documentNummer", "kind": "equals", "description": "Exact documentNummer, or null." },
+    { "argument": "partij", "field": "partijen", "kind": "any", "description": "Exact member of partijen, or null." },
+    { "argument": "fromDate", "field": "datum", "kind": "dateFrom", "description": "Earliest publication date, yyyy-MM-dd, or null." },
+    { "argument": "toDate", "field": "datum", "kind": "dateTo", "description": "Latest publication date, yyyy-MM-dd, or null." }
+  ],
+  "result": {
+    "idPrefix": "kamervragen",
+    "id": "id",
+    "parentId": "parentId",
+    "title": ["onderwerp", "documentNummer"],
+    "defaultTitle": "Kamervraag",
+    "content": ["content", "samenvatting"],
+    "metadata": ["thema", "minister", "ministerie", "vergaderjaar", "soort", "aanhangselnummer"],
+    "listMetadata": ["partijen", "indieners", "keyPoints"],
+    "locatorLabel": "Kamervragen",
+    "locator": ["documentNummer", "datum", "level"]
+  },
+  "coverage": "Top matching Kamervragen excerpts; results are not exhaustive and text/metadata may be shortened.",
+  "mock": {
+    "title": "Mock Kamervragen",
+    "content": "Mock parliamentary reference: questions about responsible use of AI in public services.",
+    "locator": "Kamervragen | mock data, not an actual parliamentary document"
+  },
+  "status": {
+    "started": "Searching Kamervragen",
+    "resultNoun": "Kamervragen passage",
+    "failed": "Kamervragen could not be searched"
+  }
+}

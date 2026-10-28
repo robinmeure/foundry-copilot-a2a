@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from 'react'
-import { availableKnowledgeSources, KNOWLEDGE_SOURCE_OPTIONS, selectedKnowledgeAgents, selectedKnowledgeSources,
+import { availableKnowledgeSources, knowledgeSourceOptions, selectedKnowledgeAgents, selectedKnowledgeSources,
   setKnowledgeAgent, setKnowledgeSource, toggleAllKnowledgeSources, type KnowledgeSelectionState } from './knowledgeSelection.ts'
 import type { KnowledgeCapabilityState } from './useKnowledgeCapabilities.ts'
 
@@ -21,21 +21,21 @@ export default function SourceSettings({ selection, onChange, capabilityState, d
         <div>
           <h3 id="source-settings-title">Available sources</h3>
           <p>
-            Selected sources are allowed, not necessarily called. Graph tools read with delegated permissions and only propose changes, which are written after you confirm them; APIM agents use their configured access. Kamervragen searches a shared, read-only parliamentary index.
+            Selected sources are allowed, not necessarily called. Graph tools read with delegated permissions and only propose changes, which are written after you confirm them; APIM agents use their configured access. Search sources query shared, read-only indexes.
             Clearing all leaves document retrieval and general model answers available.
           </p>
         </div>
         <div className="settings-section-actions">
           <span className="settings-tool-counter">{activeSources.length}/{availableSources.length} selected</span>
           <button type="button" className="text-button settings-toggle-all" disabled={disabled}
-            onClick={() => onChange((previous) => ({ sources: toggleAllKnowledgeSources(previous.sources, capabilities), excludedAgents: [] }))}>
+            onClick={() => onChange((previous) => ({ ...previous, sources: toggleAllKnowledgeSources(previous.sources, capabilities), excludedAgents: [] }))}>
             {activeSources.length === availableSources.length ? 'Clear all' : 'Select all'}
           </button>
         </div>
       </div>
 
       <div className="settings-sources-grid">
-        {KNOWLEDGE_SOURCE_OPTIONS.map((option) => {
+        {knowledgeSourceOptions(capabilities).map((option) => {
           const available = availableSources.includes(option.id)
           const checked = activeSources.includes(option.id)
           const hint = !available ? 'Unavailable · not enabled by the Knowledge API'
@@ -75,6 +75,7 @@ export default function SourceSettings({ selection, onChange, capabilityState, d
                         <span className="settings-agent-text">
                           <span className="settings-source-label">{agent.displayName}</span>
                           <code className="settings-agent-id">{agent.id}</code>
+                          {agent.description && <small className="settings-source-hint">{agent.description}</small>}
                         </span>
                       </label>
                     </li>

@@ -10,10 +10,29 @@ namespace FoundryCopilotA2A.KnowledgeApi.Infrastructure;
 internal sealed class BoundedChatClient(
     IChatClient innerClient,
     IReadOnlySet<string> allowedTools,
-    Action checkToolFailure) : DelegatingChatClient(innerClient)
+    Action checkToolFailure,
+    Func<IEnumerable<AITool>>? loadedTools = null) : DelegatingChatClient(innerClient)
 {
     private readonly HashSet<string> callIds = new(StringComparer.Ordinal);
     private int rounds;
+
+    /// <summary>Advertises tools of skills loaded during this turn on every later request.</summary>
+    private ChatOptions? WithLoadedTools(ChatOptions? options)
+    {
+        if (options is null || loadedTools is null)
+        {
+            return options;
+        }
+        var advertised = options.Tools?.Select(tool => tool.Name).ToHashSet(StringComparer.Ordinal) ?? [];
+        var extra = loadedTools().Where(tool => !advertised.Contains(tool.Name)).ToArray();
+        if (extra.Length == 0)
+        {
+            return options;
+        }
+        var clone = options.Clone();
+        clone.Tools = [.. options.Tools ?? [], .. extra];
+        return clone;
+    }
 
     public override async Task<Microsoft.Extensions.AI.ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
@@ -25,7 +44,7 @@ internal sealed class BoundedChatClient(
         Microsoft.Extensions.AI.ChatResponse response;
         try
         {
-            response = await base.GetResponseAsync(messages, options, cancellationToken);
+            response = await base.GetResponseAsync(messages, WithLoadedTools(options), cancellationToken);
         }
         catch (ClientResultException exception)
         {
@@ -66,7 +85,7 @@ internal sealed class BoundedChatClient(
         IAsyncEnumerator<ChatResponseUpdate> updates;
         try
         {
-            updates = base.GetStreamingResponseAsync(messages, options, cancellationToken)
+            updates = base.GetStreamingResponseAsync(messages, WithLoadedTools(options), cancellationToken)
                 .GetAsyncEnumerator(cancellationToken);
         }
         catch (ClientResultException exception)

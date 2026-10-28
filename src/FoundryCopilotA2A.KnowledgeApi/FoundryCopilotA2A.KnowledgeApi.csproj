@@ -13,5 +13,8 @@
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.10" />
     <PackageReference Include="Microsoft.Identity.Client" Version="4.88.0" />
     <ProjectReference Include="..\FoundryCopilotA2A.ServiceDefaults\FoundryCopilotA2A.ServiceDefaults.csproj" />
+    <ProjectReference Include="..\FoundryCopilotA2A.Skills\FoundryCopilotA2A.Skills.csproj" />
+    <!-- Skill folders ship with the API; Skills:Paths can add administrator-managed folders. -->
+    <Content Include="..\..\skills\**" LinkBase="skills" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

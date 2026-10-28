@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { availableKnowledgeSources, defaultKnowledgeSelection, KNOWLEDGE_SOURCE_OPTIONS, knowledgeRequestSelection,
+import { availableKnowledgeSources, defaultKnowledgeSelection, KNOWLEDGE_SOURCE_OPTIONS, knowledgeRequestSelection, knowledgeSourceOptions,
   selectedKnowledgeAgents, selectedKnowledgeSources, setKnowledgeAgent, setKnowledgeSource,
-  toggleAllKnowledgeSources } from '../src/knowledgeSelection.ts'
+  toggleAllKnowledgeSources, withOfferedKnowledgeSources } from '../src/knowledgeSelection.ts'
 
 const defaults = KNOWLEDGE_SOURCE_OPTIONS.map(option => option.id)
 const graph = ['mail', 'calendar', 'todo', 'planner', 'teams', 'people']
@@ -95,4 +95,37 @@ test('catalog refresh or failure cannot temporarily permit excluded specialists'
   assert.deepEqual(select(agents), { sources: ['mail', 'a2a'], agents: ['finance', 'legal'] })
   assert.deepEqual(select(undefined), { sources: ['mail'] }, 'a failed refresh must not broaden access')
   assert.deepEqual(state.excludedAgents, ['hr'])
+})
+
+const reported = { a2a: true, sources: [
+  { id: 'mail', label: 'Mail', hint: 'Mailbox' },
+  { id: 'a2a', label: 'APIM agents' },
+  { id: 'wetten', label: 'Wetten', hint: 'Shared legislation search' },
+  { id: 'mail', label: 'Duplicate' },
+  { id: 'Bad Id', label: 'Rejected' },
+  'not an object',
+] }
+
+test('skill-described sources replace the built-in list and unconfigured built-ins stay visible as unavailable', () => {
+  assert.deepEqual(availableKnowledgeSources(reported), ['mail', 'a2a', 'wetten'])
+  const options = knowledgeSourceOptions(reported)
+  assert.deepEqual(options.slice(0, 3), [
+    { id: 'mail', label: 'Mail', hint: 'Mailbox' },
+    { id: 'a2a', label: 'APIM agents', hint: undefined },
+    { id: 'wetten', label: 'Wetten', hint: 'Shared legislation search' },
+  ])
+  assert.deepEqual(options.slice(3).map(option => option.id), ['calendar', 'todo', 'planner', 'teams', 'people', 'kamervragen'])
+  assert.deepEqual(availableKnowledgeSources({ sources: [] }), [], 'an empty report fails closed')
+})
+
+test('newly offered sources start selected once and later choices are kept', () => {
+  let state = withOfferedKnowledgeSources(defaultKnowledgeSelection(), reported)
+  assert.ok(state.sources.includes('wetten'))
+  assert.deepEqual(selectedKnowledgeSources(state.sources, reported), ['mail', 'a2a', 'wetten'])
+  state = setKnowledgeSource(state, 'wetten', false)
+  state = setKnowledgeAgent(state, agents, 'hr', false)
+  assert.equal(withOfferedKnowledgeSources(state, reported), state, 'refreshing capabilities does not reselect')
+  assert.deepEqual(state.offeredSources?.includes('wetten'), true)
+  const unchanged = defaultKnowledgeSelection()
+  assert.equal(withOfferedKnowledgeSources(unchanged, { a2a: true }), unchanged)
 })

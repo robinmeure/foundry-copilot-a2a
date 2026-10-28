@@ -12,13 +12,18 @@ export interface GraphItem { id: string; name: string; folder: boolean }
 export interface GraphPage { items: GraphItem[]; nextPage?: string; resolvedSiteId?: string }
 export type KnowledgeToken = (claims?: string) => Promise<string>
 
+/** A selectable knowledge source described by a skill folder on the Knowledge API. */
+export interface KnowledgeSourceOption { id: string; label: string; hint?: string; group?: string }
+
 export interface KnowledgeCapabilities {
   a2a?: boolean
   kamervragen?: boolean
+  /** Configured sources; when present this replaces the built-in source list. */
+  sources?: KnowledgeSourceOption[]
 }
 
 /** An administrator-approved APIM A2A agent the local orchestrator may consult. */
-export interface KnowledgeAgent { id: string; displayName: string }
+export interface KnowledgeAgent { id: string; displayName: string; description?: string }
 
 /** Sources allowed for a turn; `agents` narrows the `a2a` source to specific APIM agents. */
 export interface KnowledgeSourceSelection { sources: readonly string[]; agents?: readonly string[] }
@@ -28,9 +33,11 @@ export async function knowledgeAgents(baseUrl: string, token: KnowledgeToken, si
   const agents = response && typeof response === 'object' ? (response as { agents?: unknown }).agents : undefined
   if (!Array.isArray(agents)) throw new Error('The Knowledge API returned an invalid agent list.')
   return agents.flatMap((agent: unknown) => {
-    const { id, displayName } = agent && typeof agent === 'object' ? agent as Record<string, unknown> : {}
-    return typeof id === 'string' && id.trim()
-      ? [{ id, displayName: (typeof displayName === 'string' && displayName.trim()) || id }] : []
+    const { id, displayName, description } = agent && typeof agent === 'object' ? agent as Record<string, unknown> : {}
+    if (typeof id !== 'string' || !id.trim()) return []
+    const result: KnowledgeAgent = { id, displayName: (typeof displayName === 'string' && displayName.trim()) || id }
+    if (typeof description === 'string' && description.trim()) result.description = description.trim()
+    return [result]
   })
 }
 

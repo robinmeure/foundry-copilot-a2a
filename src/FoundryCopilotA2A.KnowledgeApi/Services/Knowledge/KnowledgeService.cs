@@ -11,6 +11,7 @@ using FoundryCopilotA2A.KnowledgeApi.Services.Context;
 using FoundryCopilotA2A.KnowledgeApi.Services.Documents;
 using FoundryCopilotA2A.KnowledgeApi.Services.Graph;
 using FoundryCopilotA2A.KnowledgeApi.Services.Retrieval;
+using FoundryCopilotA2A.KnowledgeApi.Services.Skills;
 using FoundryCopilotA2A.KnowledgeApi.Stores;
 using FoundryCopilotA2A.KnowledgeApi.Streaming;
 
@@ -28,7 +29,7 @@ public sealed class KnowledgeService(
     GraphActionStore pendingActions,
     UserContextService userContexts,
     IA2aKnowledgeService a2a,
-    KamervragenSkill kamervragen,
+    KnowledgeSkillRegistry skills,
     IDocumentRetrieval retrieval,
     ILogger<KnowledgeService> logger) : IKnowledgeService, IDisposable
 {
@@ -139,18 +140,9 @@ public sealed class KnowledgeService(
         }
 
         var requestedSources = input.Sources ?? [];
-        if (requestedSources.Any(source => source != "a2a" && source != KamervragenSkill.Source && !GraphSkill.Sources.Contains(source)))
-        {
-            throw new ApiException(
-                StatusCodes.Status400BadRequest,
-                "invalid_source",
-                "Unknown knowledge source.");
-        }
+        skills.EnsureKnown(requestedSources);
         var selectedAgents = a2a.ResolveSelection(requestedSources, input.Agents);
-        if (requestedSources.Contains(KamervragenSkill.Source) && !kamervragen.Enabled)
-        {
-            throw new ApiException(400, "kamervragen_disabled", "Kamervragen search is not configured.");
-        }
+        skills.EnsureConfigured(requestedSources);
 
         var scope = caller.Scope(input.ConversationId);
         await progress.ReportAsync(new ChatStatus("Checking your profile and time zone"), cancellationToken);

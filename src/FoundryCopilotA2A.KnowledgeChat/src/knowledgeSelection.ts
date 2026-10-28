@@ -1,5 +1,6 @@
-import type { KnowledgeAgent, KnowledgeCapabilities, KnowledgeSourceSelection } from './knowledgeClient.ts'
+import type { KnowledgeAgent, KnowledgeCapabilities, KnowledgeSourceOption, KnowledgeSourceSelection } from './knowledgeClient.ts'
 
+/** Built-in sources, used until the Knowledge API describes its skill-based sources. */
 export const KNOWLEDGE_SOURCE_OPTIONS = [
   { id: 'mail', label: 'Mail', hint: 'Mailbox message previews' },
   { id: 'calendar', label: 'Calendar', hint: 'Schedule & event occurrences' },
@@ -11,7 +12,32 @@ export const KNOWLEDGE_SOURCE_OPTIONS = [
   { id: 'kamervragen', label: 'Kamervragen', hint: 'Shared parliamentary questions · read-only search' },
 ] as const
 
+const SOURCE_ID = /^[a-z0-9][a-z0-9-]{0,63}$/
+
+/** Sources the API reports as configured, or undefined when it predates skill-described sources. */
+function reportedSources(capabilities?: KnowledgeCapabilities): KnowledgeSourceOption[] | undefined {
+  if (!Array.isArray(capabilities?.sources)) return undefined
+  const seen = new Set<string>()
+  return capabilities.sources.flatMap((source: unknown) => {
+    const { id, label, hint } = source && typeof source === 'object' ? source as Record<string, unknown> : {}
+    if (typeof id !== 'string' || !SOURCE_ID.test(id) || seen.has(id)) return []
+    seen.add(id)
+    return [{ id, label: typeof label === 'string' && label.trim() ? label.trim() : id,
+      hint: typeof hint === 'string' && hint.trim() ? hint.trim() : undefined }]
+  })
+}
+
+/** Every source to show: configured sources first, then built-in sources the API did not enable. */
+export function knowledgeSourceOptions(capabilities?: KnowledgeCapabilities): KnowledgeSourceOption[] {
+  const reported = reportedSources(capabilities)
+  if (!reported) return KNOWLEDGE_SOURCE_OPTIONS.map(option => ({ ...option }))
+  const ids = new Set(reported.map(option => option.id))
+  return [...reported, ...KNOWLEDGE_SOURCE_OPTIONS.filter(option => !ids.has(option.id)).map(option => ({ ...option }))]
+}
+
 export function availableKnowledgeSources(capabilities?: KnowledgeCapabilities): string[] {
+  const reported = reportedSources(capabilities)
+  if (reported) return reported.map(option => option.id)
   return KNOWLEDGE_SOURCE_OPTIONS
     .filter(option => option.id !== 'a2a' || capabilities?.a2a === true)
     .filter(option => option.id !== 'kamervragen' || capabilities?.kamervragen === true)
@@ -31,10 +57,23 @@ export function toggleAllKnowledgeSources(selected: readonly string[], capabilit
  * Source choices plus APIM agents the user switched off. Storing exclusions keeps every agent
  * selected by default, including agents that load after the settings open.
  */
-export interface KnowledgeSelectionState { sources: string[]; excludedAgents: string[] }
+export interface KnowledgeSelectionState {
+  sources: string[]
+  excludedAgents: string[]
+  /** Sources already offered to the user; newly configured sources start selected once. */
+  offeredSources?: string[]
+}
 
 export function defaultKnowledgeSelection(): KnowledgeSelectionState {
   return { sources: KNOWLEDGE_SOURCE_OPTIONS.map(option => option.id), excludedAgents: [] }
+}
+
+/** Selects sources the API offers for the first time; returns the same state when nothing is new. */
+export function withOfferedKnowledgeSources(state: KnowledgeSelectionState, capabilities?: KnowledgeCapabilities): KnowledgeSelectionState {
+  const offered = state.offeredSources ?? KNOWLEDGE_SOURCE_OPTIONS.map(option => option.id)
+  const fresh = availableKnowledgeSources(capabilities).filter(id => !offered.includes(id))
+  return fresh.length === 0 ? state
+    : { ...state, sources: [...new Set([...state.sources, ...fresh])], offeredSources: [...offered, ...fresh] }
 }
 
 export function selectedKnowledgeAgents(agents: readonly KnowledgeAgent[], excludedAgents: readonly string[]): string[] {
@@ -44,6 +83,7 @@ export function selectedKnowledgeAgents(agents: readonly KnowledgeAgent[], exclu
 export function setKnowledgeSource(state: KnowledgeSelectionState, id: string, checked: boolean): KnowledgeSelectionState {
   if (!checked) return { ...state, sources: state.sources.filter(source => source !== id) }
   return {
+    ...state,
     sources: [...new Set([...state.sources, id])],
     // Turning APIM agents back on starts from every approved agent again.
     excludedAgents: id === 'a2a' ? [] : state.excludedAgents,
@@ -56,11 +96,11 @@ export function setKnowledgeAgent(state: KnowledgeSelectionState, agents: readon
   if (checked) {
     return state.sources.includes('a2a')
       ? { ...state, excludedAgents: state.excludedAgents.filter(agent => agent !== id) }
-      : { sources: [...state.sources, 'a2a'], excludedAgents: ids.filter(agent => agent !== id) }
+      : { ...state, sources: [...state.sources, 'a2a'], excludedAgents: ids.filter(agent => agent !== id) }
   }
   const excludedAgents = [...new Set([...state.excludedAgents, id])]
   return ids.every(agent => excludedAgents.includes(agent))
-    ? { sources: state.sources.filter(source => source !== 'a2a'), excludedAgents: [] }
+    ? { ...state, sources: state.sources.filter(source => source !== 'a2a'), excludedAgents: [] }
     : { ...state, excludedAgents }
 }
 

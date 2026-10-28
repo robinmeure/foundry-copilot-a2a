@@ -72,6 +72,8 @@ internal sealed class CliApplication(CliContext context)
                 "run-knowledge" => await KnowledgeCommands.RunAsync(context, commandArguments, cancellationToken),
                 "create-knowledge-index" => await KnowledgeCommands.CreateIndexAsync(context, commandArguments, cancellationToken),
                 "test-knowledge-search" => await KnowledgeCommands.TestSearchAsync(context, commandArguments, cancellationToken),
+                "new-skill" => await SkillCommands.NewAsync(context, commandArguments, cancellationToken),
+                "validate-skills" => await SkillCommands.ValidateAsync(context, commandArguments, cancellationToken),
                 "start-tunnel" => await RuntimeCommands.StartTunnelAsync(
                     context, commandArguments, cancellationToken),
                 "test-adapter" => await SmokeTestCommands.TestAdapterAsync(
@@ -180,6 +182,9 @@ internal sealed class CliApplication(CliContext context)
                             Preview or create the RAG Search index; never replace an existing index.
               test-knowledge-search
                             Replay a read-only Search JSON request and report upstream validation errors.
+              new-skill     Scaffold a Knowledge API skill folder for an APIM agent, Search index or Graph source.
+              validate-skills
+                            Validate the Knowledge API skill folders without starting the API.
               test-adapter  Exercise an adapter directly over A2A.
               test-copilot-file-upload
                             Probe file-grounded answers through the Copilot Studio SDK.
@@ -216,6 +221,20 @@ internal sealed class CliApplication(CliContext context)
                 "create-knowledge-index --endpoint <https-search-root> [--index asrlocalrag] [--dimensions 3072] [--apply]",
             "test-knowledge-search" =>
                 "test-knowledge-search --endpoint <https-search-root> [--index kamervragen-openai] --request-file <json-path>",
+            "new-skill" =>
+                """
+                new-skill --connector apim-a2a|azure-ai-search|graph --name <skill-name> --description <text>
+                    [--label <display-name>] [--agent-id <apim-agent-id>] [--source <graph-source>]
+                    [--directory <skills-folder>]
+
+                Writes <directory>/<name>/SKILL.md (and connector.json for azure-ai-search), then validates
+                the whole folder. Existing skills are never overwritten. The description is what the model
+                sees before it loads the skill: say what the agent or index knows and when to use it.
+                apim-a2a requires --agent-id; graph requires --source mail|calendar|todo|planner|teams|people.
+                Default directory: the repository's skills folder.
+                """,
+            "validate-skills" =>
+                "validate-skills [--directory <skills-folder>]",
             "test-adaptive-cards" =>
                 """
                 test-adaptive-cards

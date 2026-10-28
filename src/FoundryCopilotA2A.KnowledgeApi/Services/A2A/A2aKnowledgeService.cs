@@ -7,6 +7,7 @@ using FoundryCopilotA2A.KnowledgeApi.Contracts.Citations;
 using FoundryCopilotA2A.KnowledgeApi.Contracts.Documents;
 using FoundryCopilotA2A.KnowledgeApi.Interfaces;
 using FoundryCopilotA2A.KnowledgeApi.Middleware;
+using FoundryCopilotA2A.KnowledgeApi.Services.Skills;
 using Microsoft.Agents.AI;
 
 namespace FoundryCopilotA2A.KnowledgeApi.Services.A2A;
@@ -16,7 +17,8 @@ public sealed class A2aKnowledgeService(
     IHttpClientFactory clients,
     IConfiguration configuration,
     DelegatedTokenProvider tokens,
-    ILogger<A2aKnowledgeService> logger) : IA2aKnowledgeService
+    ILogger<A2aKnowledgeService> logger,
+    KnowledgeSkillCatalog? skills = null) : IA2aKnowledgeService
 {
     public const string ListToolName = "list_a2a_agents";
     public const string AskToolName = "ask_a2a_agent";
@@ -91,7 +93,7 @@ public sealed class A2aKnowledgeService(
         EnsureEnabled();
         if (configuration["Knowledge:Backend"] == "Mock")
         {
-            return [MockAgent];
+            return [Describe(MockAgent)];
         }
         using var client = clients.CreateClient("knowledge-a2a");
         using var request = new HttpRequestMessage(HttpMethod.Get, Endpoint("api/agents"));
@@ -113,7 +115,7 @@ public sealed class A2aKnowledgeService(
                 .Where(agent => agent.Provider == "apiManagement" && agent.Supported &&
                     IsApproved(agent.Id))
                 .DistinctBy(agent => agent.Id, StringComparer.OrdinalIgnoreCase)
-                .Select(agent => new KnowledgeAgentDescriptor(agent.Id, agent.DisplayName))
+                .Select(agent => Describe(new KnowledgeAgentDescriptor(agent.Id, agent.DisplayName)))
                 .ToArray();
         }
         catch (JsonException)
@@ -266,6 +268,13 @@ public sealed class A2aKnowledgeService(
         Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(sourceId)))[..16];
 
     private Uri Endpoint(string path) => new($"{configuration["A2A:AdapterBaseUrl"]?.TrimEnd('/')}/{path}");
+
+    public bool IsAgentAvailable(string agentId, IReadOnlyCollection<string>? selectedAgentIds) =>
+        Enabled && IsApproved(agentId) && IsSelected(agentId, selectedAgentIds);
+
+    // Administrators describe agents in skill folders; the adapter catalog only knows display names.
+    private KnowledgeAgentDescriptor Describe(KnowledgeAgentDescriptor agent) =>
+        skills?.AgentDescription(agent.Id) is { } description ? agent with { Description = description } : agent;
 
     private bool IsApproved(string agentId) => configuration["Knowledge:Backend"] == "Mock"
         ? string.Equals(agentId, MockAgent.Id, StringComparison.OrdinalIgnoreCase)

@@ -9,6 +9,7 @@ using FoundryCopilotA2A.KnowledgeApi.Services.Context;
 using FoundryCopilotA2A.KnowledgeApi.Services.Graph;
 using FoundryCopilotA2A.KnowledgeApi.Services.Knowledge;
 using FoundryCopilotA2A.KnowledgeApi.Services.Retrieval;
+using FoundryCopilotA2A.KnowledgeApi.Services.Skills;
 using FoundryCopilotA2A.KnowledgeApi.Stores;
 
 namespace FoundryCopilotA2A.KnowledgeApi.Extensions;
@@ -39,7 +40,12 @@ public static class KnowledgeServiceCollectionExtensions
         services.AddSingleton<GraphService>();
         services.AddSingleton<IGraphService>(provider => provider.GetRequiredService<GraphService>());
         services.AddSingleton<GraphSkill>();
-        services.AddSingleton<KamervragenSkill>();
+        services.AddSingleton(provider => KnowledgeSkillCatalog.Load(provider.GetRequiredService<IConfiguration>()));
+        services.AddSingleton<IKnowledgeSkillConnector, GraphSkillConnector>();
+        services.AddSingleton<IKnowledgeSkillConnector, ApimA2aSkillConnector>();
+        services.AddSingleton<AzureAiSearchConnector>();
+        services.AddSingleton<IKnowledgeSkillConnector>(provider => provider.GetRequiredService<AzureAiSearchConnector>());
+        services.AddSingleton<KnowledgeSkillRegistry>();
         services.AddSingleton<GraphActions>();
         services.AddSingleton<GraphActionStore>();
         services.AddSingleton<UserContextService>();
@@ -50,6 +56,7 @@ public static class KnowledgeServiceCollectionExtensions
         services.AddSingleton<ContinuationTokens>();
         services.AddScoped<KnowledgeAccessFilter>();
         services.AddDataProtection();
+        services.AddHostedService<SkillValidationHostedService>();
         services.AddHostedService<TokenWarmupHostedService>();
         services.AddHostedService<CleanupWorker>();
 

@@ -5,6 +5,7 @@
     <Project Path="src/FoundryCopilotA2A.Cli/FoundryCopilotA2A.Cli.csproj" />
     <Project Path="src/FoundryCopilotA2A.KnowledgeApi/FoundryCopilotA2A.KnowledgeApi.csproj" />
     <Project Path="src/FoundryCopilotA2A.ServiceDefaults/FoundryCopilotA2A.ServiceDefaults.csproj" />
+    <Project Path="src/FoundryCopilotA2A.Skills/FoundryCopilotA2A.Skills.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/FoundryCopilotA2A.Adapter.Tests/FoundryCopilotA2A.Adapter.Tests.csproj" />
