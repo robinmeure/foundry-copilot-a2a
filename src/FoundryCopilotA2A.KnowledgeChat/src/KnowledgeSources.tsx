@@ -1,7 +1,12 @@
 import { type RefObject, useEffect, useRef, useState } from 'react'
 import ChatIcon from '@foundry-copilot-a2a/chat-shared/ChatIcon.tsx'
 import DocumentChip from './DocumentChip.tsx'
-import { knowledgeRequest, type GraphItem, type GraphPage, type KnowledgeDocument, type KnowledgeToken } from './knowledgeClient.ts'
+import { actionErrorHint, type GraphActionResult } from './graphActions.ts'
+import { KnowledgeApiError, knowledgeRequest, uploadDocumentToOneDrive,
+  type GraphItem, type GraphPage, type KnowledgeDocument, type KnowledgeToken } from './knowledgeClient.ts'
+
+type UploadState = { state: 'uploading' } | { state: 'completed'; result: GraphActionResult }
+  | { state: 'failed'; error: string; hint?: string }
 
 export default function KnowledgeSources({ baseUrl, conversation, token, disabled, revision,
   pickerOpen, onPickerClose, opener }: {
@@ -13,7 +18,8 @@ export default function KnowledgeSources({ baseUrl, conversation, token, disable
   const [pickerError, setPickerError] = useState('')
   const [notice, setNotice] = useState('')
   const [reload, setReload] = useState(0)
-  const [busy, setBusy] = useState<'browse' | 'import' | 'remove'>()
+  const [busy, setBusy] = useState<'browse' | 'import' | 'remove' | 'upload'>()
+  const [uploads, setUploads] = useState<Record<string, UploadState>>({})
   const [query, setQuery] = useState('')
   const searchedQuery = useRef('')
   const [searched, setSearched] = useState(false)
@@ -63,12 +69,12 @@ export default function KnowledgeSources({ baseUrl, conversation, token, disable
     onPickerClose()
   }
 
-  async function run(kind: 'browse' | 'import' | 'remove', action: (signal: AbortSignal) => Promise<void>) {
+  async function run(kind: 'browse' | 'import' | 'remove' | 'upload', action: (signal: AbortSignal) => Promise<void>) {
     if (disabled || controller.current) return
     const abort = new AbortController()
     controller.current = abort
     setBusy(kind)
-    const setError = kind === 'remove' ? setDocumentError : setPickerError
+    const setError = kind === 'remove' || kind === 'upload' ? setDocumentError : setPickerError
     setError('')
     setNotice('')
     try { await action(abort.signal) } catch (reason) {
@@ -79,6 +85,25 @@ export default function KnowledgeSources({ baseUrl, conversation, token, disable
         setBusy(undefined)
       }
     }
+  }
+
+  function uploadToOneDrive(document: KnowledgeDocument) {
+    if (uploads[document.id]) return
+    void run('upload', async signal => {
+      setUploads(previous => ({ ...previous, [document.id]: { state: 'uploading' } }))
+      try {
+        const result = await uploadDocumentToOneDrive(baseUrl, conversation, document.id, token, signal)
+        if (!signal.aborted) {
+          setUploads(previous => ({ ...previous, [document.id]: { state: 'completed', result } }))
+        }
+      } catch (reason) {
+        if (!signal.aborted) setUploads(previous => ({ ...previous, [document.id]: {
+          state: 'failed',
+          error: reason instanceof Error ? reason.message : 'The upload to OneDrive failed.',
+          hint: reason instanceof KnowledgeApiError ? actionErrorHint(reason.code) : undefined,
+        } }))
+      }
+    })
   }
 
   async function browse(kind: 'sites' | 'drives' | 'items', parent: string, driveId: string,
@@ -106,8 +131,32 @@ export default function KnowledgeSources({ baseUrl, conversation, token, disable
     {documents.length > 0 && <section className="knowledge-sources" aria-label="Chat documents">
       <div className="knowledge-sources-heading">Chat documents <span>{documents.length}</span></div>
       <p>Retrieved when relevant. Private to this conversation; expires after 7 days.</p>
-        <ul>{documents.map(document => <li key={document.id}>
+        <ul>{documents.map(document => {
+          const upload = uploads[document.id]
+          const available = Boolean(document.oneDriveUploadExpiresAt &&
+            Date.parse(document.oneDriveUploadExpiresAt) > Date.now())
+          return <li key={document.id}>
           <DocumentChip name={document.name} state="ready" detail={`${document.chunks} passages`} disabled={blocked}
+            actions={(available || upload) && (upload?.state === 'completed'
+              ? upload.result.webLink
+                ? <a className="secondary-button document-onedrive-button" href={upload.result.webLink}
+                  target="_blank" rel="noopener noreferrer">Open in OneDrive<ChatIcon name="link" /></a>
+                : <span className="document-onedrive-complete"><ChatIcon name="check" />
+                  {upload.result.message.startsWith('Mock:') ? 'Mock upload complete' : 'Uploaded to OneDrive'}</span>
+              : <button type="button" className="secondary-button document-onedrive-button"
+                disabled={blocked || Boolean(upload)} aria-busy={upload?.state === 'uploading'}
+                aria-label={`Upload to OneDrive: ${document.name}`}
+                title="Upload a copy to your OneDrive. Existing files are kept."
+                onClick={() => uploadToOneDrive(document)}>
+                <ChatIcon name="arrow-up" />{upload?.state === 'uploading' ? 'Uploading...' : 'Upload to OneDrive'}
+              </button>)}
+            feedback={upload && <div className="document-onedrive-status" role={upload.state === 'failed' ? 'alert' : 'status'}
+              data-state={upload.state}>
+              {upload.state === 'failed'
+                ? <>{upload.error}{upload.hint && <> {upload.hint}</>} Attach the file again to try another upload.</>
+                : upload.state === 'uploading' ? 'Uploading a copy to OneDrive...'
+                : upload.result.message}
+            </div>}
             onRemove={() => void run('remove', async signal => {
               await knowledgeRequest(baseUrl, `conversations/${conversation}/documents/${document.id}`, token,
                 { method: 'DELETE', signal })
@@ -116,7 +165,7 @@ export default function KnowledgeSources({ baseUrl, conversation, token, disable
                 setNotice(`Removed ${document.name} from this conversation.`)
               }
             })} />
-        </li>)}</ul>
+        </li>})}</ul>
     </section>}
     <p className="sr-only" role="status">
       {busy === 'remove' ? 'Removing document...' : notice}

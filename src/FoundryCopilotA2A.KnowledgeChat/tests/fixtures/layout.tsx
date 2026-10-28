@@ -64,6 +64,19 @@ window.fetch = async (input, init) => {
     { id: 'contoso-hr-agent', displayName: 'Contoso HR policies' },
     { id: 'contoso-finance-agent', displayName: 'Finance expense rules' },
   ] })
+  const oneDrivePath = parsed.pathname.match(/\/conversations\/([^/]+)\/documents\/([^/]+)\/onedrive$/)
+  if (oneDrivePath && init?.method === 'POST') {
+    const saved = documents.get(oneDrivePath[1]) ?? []
+    const document = saved.find(document => document.id === oneDrivePath[2])
+    if (!document?.oneDriveUploadExpiresAt) return Response.json({ title: 'file_not_found',
+      detail: 'The original is no longer available. Attach it again to upload.' }, { status: 404 })
+    document.oneDriveUploadExpiresAt = null
+    await new Promise(resolve => setTimeout(resolve, 800))
+    if (document.name === 'denied-onedrive.txt') return Response.json({ title: 'graph_error',
+      detail: 'Microsoft Graph returned HTTP 403. Check access, delegated consent and tenant policy.' }, { status: 403 })
+    return Response.json({ id: document.id, status: 'completed', message: `Uploaded "${document.name}" to OneDrive.`,
+      webLink: 'https://contoso-my.sharepoint.com/fixture-document' })
+  }
   const documentPath = parsed.pathname.match(/\/conversations\/([^/]+)\/documents(?:\/([^/]+))?$/)
   if (documentPath) {
     const saved = documents.get(documentPath[1]) ?? []
@@ -75,8 +88,9 @@ window.fetch = async (input, init) => {
       }
       await new Promise(resolve => setTimeout(resolve, 800))
       if (init.signal?.aborted) throw new DOMException('Upload cancelled.', 'AbortError')
-      const document = { id: crypto.randomUUID(), name: file.name, chunks: 4,
-        expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString() }
+      const document = { id: crypto.randomUUID().replaceAll('-', ''), name: file.name, chunks: 4,
+        expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString(),
+        oneDriveUploadExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString() }
       documents.set(documentPath[1], [...saved, document])
       return Response.json(document)
     }

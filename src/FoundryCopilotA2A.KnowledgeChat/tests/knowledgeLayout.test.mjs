@@ -48,6 +48,21 @@ test('Documents & SharePoint opens a native dialog listing this chat documents',
     sources.attribute(element.opening, 'aria-label')?.initializer.getText(sources.tree) === '"Chat documents"'))
 })
 
+test('local originals have a OneDrive upload button on the chat document row with inline status', () => {
+  const sources = jsx('KnowledgeSources.tsx')
+  const [chip] = sources.elements.filter(element => sources.tag(element) === 'DocumentChip')
+  assert.ok(chip)
+  const actions = sources.attribute(chip.opening, 'actions')
+  assert.ok(actions)
+  assert.match(actions.getText(sources.tree), /Upload to OneDrive/)
+  assert.match(actions.getText(sources.tree), /uploadToOneDrive\(document\)/)
+  assert.match(actions.getText(sources.tree), /Open in OneDrive/)
+  assert.match(sources.attribute(chip.opening, 'feedback').getText(sources.tree), /'alert' : 'status'/)
+  assert.match(sources.source, /oneDriveUploadExpiresAt/)
+  assert.match(knowledgeCss, /\.document-chip-actions\s*\{[^}]*display:\s*flex/)
+  assert.match(mobile, /\.document-onedrive-button\s*\{[^}]*min-height:\s*44px/)
+})
+
 test('verbose orchestration and file explanations are settings sections, rendered in the shared dialog', () => {
   const sections = propElements('settings').filter((element) => chat.tag(element) === 'SettingsSection')
   assert.deepEqual(sections.map((section) => chat.attribute(section.opening, 'id').initializer.getText(chat.tree)),
@@ -58,9 +73,15 @@ test('verbose orchestration and file explanations are settings sections, rendere
 })
 
 test('Graph action cards render inside the assistant reply as plain text with accessible live status', () => {
-  const [cards] = propElements('renderTurnExtras')
-  assert.equal(chat.tag(cards), 'ActionCards')
+  const elements = propElements('renderTurnExtras')
+  const cards = elements.find(element => chat.tag(element) === 'ActionCards')
+  assert.ok(cards)
   assert.match(chat.attribute(cards.opening, 'onDecide').initializer.getText(chat.tree), /resolveGraphAction\(session, endpoint/)
+  const files = elements.find(element => chat.tag(element) === 'GeneratedFiles')
+  assert.ok(files)
+  assert.match(chat.attribute(files.opening, 'onDownload').initializer.getText(chat.tree),
+    /downloadGeneratedFile\(endpoint\.baseUrl, contextId, file, endpoint\.token\)/)
+  assert.ok(elements.indexOf(files) < elements.indexOf(cards))
   const component = readFileSync(new URL('../src/ActionCards.tsx', import.meta.url), 'utf8')
   assert.doesNotMatch(component, /dangerouslySetInnerHTML/)
   assert.match(component, /aria-live="polite"/)

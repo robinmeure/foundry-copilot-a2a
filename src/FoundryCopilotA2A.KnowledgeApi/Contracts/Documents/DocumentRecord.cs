@@ -15,4 +15,5 @@ public sealed record DocumentRecord(
     string? UserId = null)
 {
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset? OneDriveUploadExpiresAt { get; init; }
 }
