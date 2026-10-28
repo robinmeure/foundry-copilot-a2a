@@ -1,25 +1,15 @@
 import { readEndpoint } from '../../FoundryCopilotA2A.BrowserShared/configuration.ts'
+import { isLoopback, readAuthMode, readFlag, type ChatAuthMode, type Env } from '@foundry-copilot-a2a/chat-shared/config.ts'
 
-interface ChatbotBaseConfig {
+export type ChatbotConfig = {
   adapterBaseUrl: string
   agentId: string
   agentName: string
   /** Browser speech-to-text in the composer. Off unless explicitly enabled. */
   speechInput: boolean
-  knowledgeBaseUrl?: string
-  knowledgeApiClientId?: string
-}
+} & ChatAuthMode<{ adapterApiClientId: string }>
 
-export type ChatbotConfig = ChatbotBaseConfig & (
-  | { authMode: 'anonymous' }
-  | { authMode: 'entra'; tenantId: string; spaClientId: string; adapterApiClientId: string }
-)
-
-export function readChatbotConfig(
-  env: Record<string, string | undefined>,
-  isDevelopment: boolean,
-  pageOrigin: string,
-): ChatbotConfig {
+export function readChatbotConfig(env: Env, isDevelopment: boolean, pageOrigin: string): ChatbotConfig {
   const direct = readEndpoint(env.VITE_ADAPTER_BASE_URL, 'VITE_ADAPTER_BASE_URL')
   const gateway = readEndpoint(env.VITE_GATEWAY_BASE_URL, 'VITE_GATEWAY_BASE_URL', true)
   const adapterBaseUrl = gateway ?? direct
@@ -30,55 +20,23 @@ export function readChatbotConfig(
   if (!agentId || !/^[a-zA-Z0-9_-]+$/.test(agentId)) {
     throw new Error('VITE_ORCHESTRATOR_AGENT_ID must name one configured agent using letters, digits, hyphens or underscores.')
   }
-  const base = {
+  return {
     adapterBaseUrl,
     agentId,
     agentName: env.VITE_ORCHESTRATOR_NAME?.trim() || 'Orchestrator',
     speechInput: readFlag(env.VITE_SPEECH_INPUT_ENABLED, 'VITE_SPEECH_INPUT_ENABLED'),
-    knowledgeBaseUrl: readEndpoint(env.VITE_KNOWLEDGE_BASE_URL, 'VITE_KNOWLEDGE_BASE_URL'),
-    knowledgeApiClientId: env.VITE_KNOWLEDGE_API_CLIENT_ID?.trim(),
-  }
-  const authMode = env.VITE_CHATBOT_AUTH_MODE?.trim() || 'entra'
-  if (authMode === 'anonymous') {
-    if (base.knowledgeBaseUrl && !isLoopback(base.knowledgeBaseUrl)) {
-      throw new Error('Anonymous knowledge mode requires a loopback backend.')
-    }
-    if (!isDevelopment || gateway || !isLoopback(adapterBaseUrl) || !isLoopback(pageOrigin)) {
-      throw new Error('Anonymous mode is only allowed in local development with a loopback browser origin and direct loopback adapter, without a gateway.')
-    }
-    return { ...base, authMode }
-  }
-  if (authMode !== 'entra') {
-    throw new Error('VITE_CHATBOT_AUTH_MODE must be entra or anonymous.')
-  }
-  const identities = {
-    VITE_ENTRA_TENANT_ID: env.VITE_ENTRA_TENANT_ID?.trim(),
-    VITE_ENTRA_CLIENT_ID: env.VITE_ENTRA_CLIENT_ID?.trim(),
-    VITE_ADAPTER_API_CLIENT_ID: env.VITE_ADAPTER_API_CLIENT_ID?.trim(),
-  }
-  const missing = Object.entries(identities).filter(([, value]) => !value).map(([key]) => key)
-  if (missing.length) {
-    throw new Error(`Missing chatbot configuration: ${missing.join(', ')}`)
-  }
-  return {
-    ...base,
-    authMode,
-    tenantId: identities.VITE_ENTRA_TENANT_ID!,
-    spaClientId: identities.VITE_ENTRA_CLIENT_ID!,
-    adapterApiClientId: identities.VITE_ADAPTER_API_CLIENT_ID!,
+    ...readAuthMode(env, {
+      variable: 'VITE_CHATBOT_AUTH_MODE',
+      appName: 'chatbot',
+      allowAnonymous: () => isDevelopment && !gateway && isLoopback(adapterBaseUrl) && isLoopback(pageOrigin),
+      anonymousError: 'Anonymous mode is only allowed in local development with a loopback browser origin and direct loopback adapter, without a gateway.',
+      entraVariables: ['VITE_ADAPTER_API_CLIENT_ID'],
+      entra: (values) => ({ adapterApiClientId: values.VITE_ADAPTER_API_CLIENT_ID }),
+    }),
   }
 }
 
-function readFlag(value: string | undefined, name: string) {
-  const flag = value?.trim().toLowerCase() || 'false'
-  if (flag !== 'true' && flag !== 'false') {
-    throw new Error(`${name} must be true or false.`)
-  }
-  return flag === 'true'
-}
-
-function isLoopback(value: string) {
-  const url = new URL(value)
-  return ['http:', 'https:'].includes(url.protocol) &&
-    ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+/** Browser-history key; unchanged since before the Knowledge chat split so saved chats keep loading. */
+export function historyKey(owner: string, config: Pick<ChatbotConfig, 'adapterBaseUrl' | 'agentId'>) {
+  return `copilot-chat:v1:${JSON.stringify([owner, config.adapterBaseUrl, config.agentId])}`
 }

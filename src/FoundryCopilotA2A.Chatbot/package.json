@@ -11,7 +11,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@ag-ui/client": "1.0.3",
+    "@foundry-copilot-a2a/chat-shared": "*",
     "@azure/msal-browser": "^5.19.0",
     "@azure/msal-react": "^5.6.0",
     "react": "^19.2.8",
@@ -30,8 +30,5 @@
     "oxlint": "^1.75.0",
     "typescript": "~6.0.2",
     "vite": "^8.2.0"
-  },
-  "overrides": {
-    "zod": "^4.6.6"
   }
 }

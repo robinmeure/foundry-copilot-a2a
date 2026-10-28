@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { readChatbotConfig } from '../src/config.ts'
+import { historyKey, readChatbotConfig } from '../src/config.ts'
 
 const live = {
   VITE_ADAPTER_BASE_URL: 'http://localhost:5099',
@@ -66,12 +66,20 @@ test('speech input is off unless explicitly enabled, and rejects ambiguous value
   assert.throws(() => read({ ...live, VITE_SPEECH_INPUT_ENABLED: 'yes' }), /VITE_SPEECH_INPUT_ENABLED must be true or false/)
 })
 
-test('knowledge backend is opt-in and anonymous mode refuses a remote backend', () => {
-  assert.equal(read(live).knowledgeBaseUrl, undefined)
-  const config = read({ ...live, VITE_KNOWLEDGE_BASE_URL: 'http://localhost:5100',
-    VITE_KNOWLEDGE_API_CLIENT_ID: 'knowledge-api' })
-  assert.equal(config.knowledgeApiClientId, 'knowledge-api')
-  assert.equal(config.knowledgeBaseUrl, 'http://localhost:5100')
-  assert.throws(() => read({ ...live, VITE_CHATBOT_AUTH_MODE: 'anonymous',
-    VITE_KNOWLEDGE_BASE_URL: 'https://remote.test' }), /loopback backend/)
+test('knowledge settings belong to the Knowledge Chat app and are ignored here', () => {
+  const config = read({ ...live, VITE_CHATBOT_AUTH_MODE: 'anonymous', VITE_KNOWLEDGE_BASE_URL: 'https://remote.test',
+    VITE_KNOWLEDGE_API_CLIENT_ID: 'knowledge-api' }, true, 'http://localhost:5174')
+  assert.equal(config.authMode, 'anonymous')
+  assert.deepEqual(Object.keys(read(live)).sort(),
+    ['adapterApiClientId', 'adapterBaseUrl', 'agentId', 'agentName', 'authMode', 'spaClientId', 'speechInput', 'tenantId'])
+})
+
+test('missing Entra settings are reported together for the chatbot', () => {
+  assert.throws(() => read({ ...live, VITE_ENTRA_TENANT_ID: '', VITE_ADAPTER_API_CLIENT_ID: ' ' }),
+    /^Error: Missing chatbot configuration: VITE_ENTRA_TENANT_ID, VITE_ADAPTER_API_CLIENT_ID$/)
+})
+
+test('browser history keys keep the pre-split format per account, endpoint and agent', () => {
+  assert.equal(historyKey('owner', read(live)), 'copilot-chat:v1:["owner","http://localhost:5099","orchestrator"]')
+  assert.notEqual(historyKey('owner', read(live)), historyKey('other', read(live)))
 })
