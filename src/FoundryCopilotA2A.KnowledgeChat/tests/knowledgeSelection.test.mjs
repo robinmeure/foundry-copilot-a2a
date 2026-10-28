@@ -1,18 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { availableKnowledgeSources, defaultKnowledgeSelection, KNOWLEDGE_SOURCE_OPTIONS, knowledgeRequestSelection,
-  ORCHESTRATORS, selectedKnowledgeAgents, selectedKnowledgeSources, setKnowledgeAgent, setKnowledgeSource,
-  toggleAllKnowledgeSources } from '../src/orchestrator.ts'
+  selectedKnowledgeAgents, selectedKnowledgeSources, setKnowledgeAgent, setKnowledgeSource,
+  toggleAllKnowledgeSources } from '../src/knowledgeSelection.ts'
 
 const defaults = KNOWLEDGE_SOURCE_OPTIONS.map(option => option.id)
 const graph = ['mail', 'calendar', 'todo', 'planner', 'teams', 'people']
-
-test('mode identities distinguish hosting from offline inference', () => {
-  assert.deepEqual(ORCHESTRATORS.map(option => option.id), ['online', 'local'])
-  assert.equal(ORCHESTRATORS[0].provider, 'Copilot Studio')
-  assert.match(ORCHESTRATORS[1].provider, /Knowledge API.*Microsoft Agent Framework/)
-  assert.match(ORCHESTRATORS[1].description, /Azure-hosted model, not an offline LLM/)
-})
 
 test('Graph, APIM and shared parliamentary search are default preferences when available', () => {
   assert.deepEqual(defaults, [...graph, 'a2a', 'kamervragen'])

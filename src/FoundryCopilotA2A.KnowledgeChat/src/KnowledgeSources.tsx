@@ -1,5 +1,5 @@
 import { type RefObject, useEffect, useRef, useState } from 'react'
-import ChatIcon from './ChatIcon.tsx'
+import ChatIcon from '@foundry-copilot-a2a/chat-shared/ChatIcon.tsx'
 import DocumentChip from './DocumentChip.tsx'
 import { knowledgeRequest, type GraphItem, type GraphPage, type KnowledgeDocument, type KnowledgeToken } from './knowledgeClient.ts'
 

@@ -1,14 +1,5 @@
 import type { KnowledgeAgent, KnowledgeCapabilities, KnowledgeSourceSelection } from './knowledgeClient.ts'
 
-export type OrchestratorMode = 'online' | 'local'
-
-export const ORCHESTRATORS = [
-  { id: 'online', label: 'Online orchestrator', provider: 'Copilot Studio',
-    description: 'Messages and attachments go through the A2A adapter to Copilot Studio.' },
-  { id: 'local', label: 'Local orchestrator', provider: 'Knowledge API · Microsoft Agent Framework',
-    description: 'The .NET Knowledge API orchestrates documents and selected tools. Live mode still uses an Azure-hosted model, not an offline LLM.' },
-] as const
-
 export const KNOWLEDGE_SOURCE_OPTIONS = [
   { id: 'mail', label: 'Mail', hint: 'Mailbox message previews' },
   { id: 'calendar', label: 'Calendar', hint: 'Schedule & event occurrences' },

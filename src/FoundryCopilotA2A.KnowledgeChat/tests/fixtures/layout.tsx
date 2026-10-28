@@ -1,15 +1,16 @@
 import { createRoot } from 'react-dom/client'
-import Chatbot from '../../src/Chatbot.tsx'
-import { ChatSession } from '../../src/chatSession.ts'
-import type { ChatbotConfig } from '../../src/config.ts'
+import { anonymousAuthentication } from '@foundry-copilot-a2a/chat-shared/authentication.ts'
+import { ChatSession } from '@foundry-copilot-a2a/chat-shared/chatSession.ts'
+import '@foundry-copilot-a2a/chat-shared/style.css'
+import { historyKey, type KnowledgeChatConfig } from '../../src/config.ts'
 import type { KnowledgeDocument } from '../../src/knowledgeClient.ts'
-import '../../src/style.css'
+import KnowledgeChat from '../../src/KnowledgeChat.tsx'
+import { createKnowledgeTransport, knowledgeTurnCodec } from '../../src/knowledgeTransport.ts'
+import '../../src/knowledge.css'
 
-// Isolated browser layout fixture: no Entra, adapter, Knowledge API or Azure calls.
-const config: ChatbotConfig = {
-  authMode: 'anonymous', agentName: 'Orchestrator', agentId: 'layout-fixture',
-  adapterBaseUrl: `${location.origin}/mock-adapter`,
-  knowledgeBaseUrl: `${location.origin}/mock-knowledge`, speechInput: false,
+// Isolated browser layout fixture: no Entra, Knowledge API or Azure calls.
+const config: KnowledgeChatConfig = {
+  authMode: 'anonymous', knowledgeBaseUrl: `${location.origin}/mock-knowledge`, speechInput: false,
 }
 const answer = 'This is a mocked answer for layout verification.\n\n' +
   'The transcript should remain readable while navigation and settings stay available. '.repeat(12)
@@ -30,7 +31,7 @@ const documents = new Map<string, KnowledgeDocument[]>()
 let paceStream = false
 // The fixture speaks the same AG-UI event stream as POST /api/chat/stream.
 const agUi = (event: Record<string, unknown>) => `data: ${JSON.stringify(event)}\n\n`
-const knowledgeStream = (done: { answer: string }) => {
+const knowledgeStream = (done: { answer: string } & Record<string, unknown>) => {
   const encoder = new TextEncoder()
   const profile = { message: 'Checking your profile and time zone', state: 'started' }
   const reading = { message: 'Reading your latest Inbox messages', state: 'started', tool: 'graph_list_recent_mail' }
@@ -132,26 +133,18 @@ window.fetch = async (input, init) => {
   if (action) return Response.json(action[2] === 'confirm'
     ? { id: action[1], status: 'completed', message: 'Created the item (mock).', webLink: 'https://outlook.office.com/' }
     : { id: action[1], status: 'cancelled', message: 'Proposal cancelled. Nothing was changed.', webLink: null })
-  if (url.includes('/mock-adapter/')) return new Response(
-    `data: ${JSON.stringify({ result: { message: { parts: [{ text: answer }] } } })}\n\n`,
-    { headers: { 'Content-Type': 'text/event-stream' } },
-  )
   throw new Error(`Unmocked fixture request: ${url}`)
 }
 
-for (const mode of ['online', 'local']) {
-  const key = `copilot-chat:v1:${JSON.stringify(mode === 'local'
-    ? ['local-mock', config.knowledgeBaseUrl, 'knowledge']
-    : ['local-mock', config.adapterBaseUrl, config.agentId])}`
-  localStorage.removeItem(key)
-  const session = new ChatSession(config, { key, storage: localStorage })
-  for (let index = 0; index < 8; index++) {
-    session.reset()
-    await session.send(`${mode} layout conversation ${index + 1}`, async () => '', [], mode === 'local'
-      ? { baseUrl: config.knowledgeBaseUrl!, sources: [], token: async () => '' } : undefined)
-  }
+const key = historyKey(anonymousAuthentication.accountId!, config)
+localStorage.removeItem(key)
+const session = new ChatSession(createKnowledgeTransport({ baseUrl: config.knowledgeBaseUrl, token: async () => '' }),
+  { store: { key, storage: localStorage }, codec: knowledgeTurnCodec })
+for (let index = 0; index < 8; index++) {
+  session.reset()
+  await session.send(`Knowledge layout conversation ${index + 1}`, { selection: { sources: [] } })
 }
 
 paceStream = true
-createRoot(document.getElementById('root')!).render(<Chatbot config={config}
-  auth={{ signedIn: true, busy: false, accountName: 'Mock user', getAccessToken: async () => '' }} />)
+createRoot(document.getElementById('root')!).render(<KnowledgeChat config={config}
+  auth={{ ...anonymousAuthentication, accountName: 'Mock user' }} />)

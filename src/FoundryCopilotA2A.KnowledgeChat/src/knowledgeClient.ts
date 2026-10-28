@@ -128,7 +128,7 @@ export async function knowledgeChat(baseUrl: string, conversationId: string, tex
   return parseChatResponse(response)
 }
 
-export type KnowledgeStatusState = 'started' | 'completed' | 'failed'
+export type KnowledgeStatusState = 'started' | 'progress' | 'completed' | 'failed'
 export interface KnowledgeStatus { message: string; state: KnowledgeStatusState; tool?: string }
 export interface KnowledgeStreamHandlers {
   /** A step started, completed or failed, such as a Microsoft Graph call. */
@@ -233,7 +233,7 @@ async function runKnowledgeAgent(baseUrl: string, conversationId: string, text: 
 function reportStatus(metadata: unknown, handlers: KnowledgeStreamHandlers) {
   const { message, state, tool } = asRecord(metadata)
   if (typeof message !== 'string' || !message.trim() ||
-      (state !== 'started' && state !== 'completed' && state !== 'failed')) return
+      (state !== 'started' && state !== 'progress' && state !== 'completed' && state !== 'failed')) return
   handlers.onStatus?.({ message, state, ...(typeof tool === 'string' ? { tool } : {}) })
 }
 

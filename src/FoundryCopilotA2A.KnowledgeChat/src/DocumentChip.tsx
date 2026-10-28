@@ -1,4 +1,4 @@
-import ChatIcon from './ChatIcon.tsx'
+import ChatIcon from '@foundry-copilot-a2a/chat-shared/ChatIcon.tsx'
 
 const labels = { pending: 'Ready to add', indexing: 'Indexing', ready: 'Available for answers' }
 

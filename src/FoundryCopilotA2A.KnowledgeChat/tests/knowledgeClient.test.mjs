@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { agUiAnswer, agUiFrames, agUiResponse, runError, runFinished, runStarted, stepFinished, stepStarted, textContent, textEnd, textStart } from './agUi.mjs'
 import { browserTimeZone, cancelAction, confirmAction, KnowledgeApiError, knowledgeAgents, knowledgeChat, knowledgeChatStream, uploadDocument, validateKnowledgeFile } from '../src/knowledgeClient.ts'
-import { KNOWLEDGE_SOURCE_OPTIONS, selectedKnowledgeSources } from '../src/orchestrator.ts'
+import { KNOWLEDGE_SOURCE_OPTIONS, selectedKnowledgeSources } from '../src/knowledgeSelection.ts'
 
 const actionId = '0123456789abcdef0123456789abcdef'
 const proposal = (overrides = {}) => ({

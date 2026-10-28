@@ -50,27 +50,31 @@ test('SharePoint uses a labelled native modal with selection and explicit import
   assert.doesNotMatch(source, /<summary>Documents &amp; SharePoint/)
 })
 
-test('attachment choices preserve the native local chooser and gate SharePoint by mode', () => {
-  const { tree, nodes, attr } = jsx('Chatbot.tsx')
+test('attachment choices preserve the native local chooser, and SharePoint is always offered by Knowledge Chat', () => {
+  const { tree, nodes, attr } = jsx('useKnowledgeDocumentAttachment.tsx')
   const menu = nodes.find(node => node.opening.tagName.getText(tree) === 'AttachmentMenu')
-  assert.match(attr(menu, 'onLocalFile'), /fileInput\.current\?\.click\(\)/)
-  assert.match(attr(menu, 'sharePointAvailable'), /knowledgeEnabled && Boolean\(config\.knowledgeBaseUrl\)/)
-  assert.match(attr(menu, 'disabled'), /isSending \|\| readingFile/)
-  const picker = nodes.find(node => node.opening.tagName.getText(tree) === 'KnowledgeSources')
-  assert.equal(attr(picker, 'pickerOpen'), '{sharePointOpen}')
+  assert.match(attr(menu, 'onLocalFile'), /input\.current\?\.click\(\)/)
+  assert.equal(attr(menu, 'sharePointAvailable'), undefined, 'a boolean shorthand attribute has no initializer')
+  assert.ok(menu.opening.attributes.properties.some(property => ts.isJsxAttribute(property) && property.name.text === 'sharePointAvailable'))
+  assert.equal(attr(menu, 'disabled'), '{disabled}')
+  assert.match(attr(menu, 'onSharePoint'), /setPickerOpen\(true\)/)
+  const chat = jsx('KnowledgeChat.tsx')
+  assert.match(chat.source, /useKnowledgeDocumentAttachment\(!ready \|\| isSending, contextId\)/)
+  const picker = chat.nodes.find(node => node.opening.tagName.getText(chat.tree) === 'KnowledgeSources')
+  assert.equal(chat.attr(picker, 'pickerOpen'), '{attachment.pickerOpen}')
 })
 
 test('local documents show named chips for pending, indexing and available states', () => {
-  const chat = jsx('Chatbot.tsx')
+  const chat = jsx('useKnowledgeDocumentAttachment.tsx')
   const pending = chat.nodes.find(node => node.opening.tagName.getText(chat.tree) === 'DocumentChip' &&
     chat.attr(node, 'state') === '"pending"')
   const indexing = chat.nodes.find(node => node.opening.tagName.getText(chat.tree) === 'DocumentChip' &&
     chat.attr(node, 'state') === '"indexing"')
-  assert.equal(chat.attr(pending, 'name'), '{knowledgeFile.name}')
+  assert.equal(chat.attr(pending, 'name'), '{document.name}')
   assert.ok(chat.attr(pending, 'onRemove'))
-  assert.equal(chat.attr(indexing, 'name'), '{documentUpload.file.name}')
+  assert.equal(chat.attr(indexing, 'name'), '{indexing.file.name}')
   assert.doesNotMatch(chat.source, /Selected for backend ingestion|Remove selected document/)
-  assert.match(chat.source, /documentUpload\?\.contextId === contextId/)
+  assert.match(chat.source, /upload\?\.contextId === contextId/)
   const sources = jsx('KnowledgeSources.tsx')
   assert.ok(sources.nodes.some(node => node.opening.tagName.getText(sources.tree) === 'section' &&
     sources.attr(node, 'aria-label') === '"Chat documents"'))

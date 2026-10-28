@@ -1,5 +1,5 @@
 import { type RefObject, useId, useRef, useState } from 'react'
-import ChatIcon from './ChatIcon.tsx'
+import ChatIcon from '@foundry-copilot-a2a/chat-shared/ChatIcon.tsx'
 
 export default function AttachmentMenu({ buttonRef, disabled, sharePointAvailable, localDescription,
   sharePointUnavailableReason, onLocalFile, onSharePoint }: {
