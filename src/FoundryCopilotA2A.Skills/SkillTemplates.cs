@@ -71,6 +71,18 @@ public static class SkillTemplates
                     <!-- Describe when and how to use the {source} Graph tools. -->
                     """;
                 break;
+            case SkillConventions.OfficeDocumentsConnector:
+                metadata.Add(("source", SkillConventions.DocumentsSource));
+                metadata.Add(("group", "Create"));
+                body = $"""
+                    # {label ?? name}
+
+                    Use `create_word_document` for reports and memos and `create_presentation` for slide decks.
+                    Write the content yourself from the conversation and cited evidence; the server renders the file.
+
+                    <!-- Administrator: describe house style, preferred structure, tone and length limits. -->
+                    """;
+                break;
             default:
                 throw new ArgumentException(
                     $"Connector must be one of {string.Join(", ", SkillConventions.Connectors)}.", nameof(connector));

@@ -21,17 +21,22 @@ public static partial class SkillConventions
     public const string AzureAiSearchConnector = "azure-ai-search";
     public const string ApimA2aConnector = "apim-a2a";
     public const string GraphConnector = "graph";
+    public const string OfficeDocumentsConnector = "office-documents";
 
     /// <summary>The selection id shared by every APIM agent skill; agents are narrowed by the per-chat agent selection.</summary>
     public const string ApimSource = "a2a";
 
-    public static readonly string[] Connectors = [AzureAiSearchConnector, ApimA2aConnector, GraphConnector];
+    /// <summary>The selection id of the single office-documents skill.</summary>
+    public const string DocumentsSource = "documents";
+
+    public static readonly string[] Connectors = [AzureAiSearchConnector, ApimA2aConnector, GraphConnector, OfficeDocumentsConnector];
     public static readonly string[] GraphSources = ["mail", "calendar", "todo", "planner", "teams", "people"];
     public static readonly string[] AllowedResourceExtensions = [".md", ".txt", ".json", ".csv"];
 
     /// <summary>Tool names owned by the runtime or by code-defined connectors; skill-defined tools cannot shadow them.</summary>
     public static readonly string[] ReservedToolNames =
-        ["load_skill", "read_skill_resource", "search_documents", "retrieve_documents", "list_a2a_agents", "ask_a2a_agent"];
+        ["load_skill", "read_skill_resource", "search_documents", "retrieve_documents", "list_a2a_agents", "ask_a2a_agent",
+            "create_word_document", "create_presentation"];
 
     public static bool IsValidName(string? value) =>
         value is { Length: > 0 and <= MaxNameLength } && NamePattern().IsMatch(value);

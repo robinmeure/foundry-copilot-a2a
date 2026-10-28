@@ -59,6 +59,8 @@ internal static class SkillCommands
             SkillConventions.AzureAiSearchConnector =>
                 $"Next: map connector.json to the index schema, set Skills:{name}:Enabled/Endpoint/Index in configuration, " +
                 "grant the API identity Search Index Data Reader, then restart the Knowledge API.",
+            SkillConventions.OfficeDocumentsConnector =>
+                "Next: refine SKILL.md, grant delegated Files.ReadWrite for Save to OneDrive, then restart the Knowledge API.",
             _ => "Next: refine SKILL.md and restart the Knowledge API."
         });
         return 0;

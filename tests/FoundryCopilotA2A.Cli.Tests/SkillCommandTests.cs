@@ -51,6 +51,24 @@ public sealed class SkillCommandTests : IDisposable
         Assert.Contains("source wetten", validated.Out);
     }
 
+    [Fact]
+    public async Task ScaffoldsAnOfficeDocumentsSkillThatUsesTheDocumentsSource()
+    {
+        var created = await Run("new-skill", "--connector", "office-documents", "--name", "office-documents",
+            "--description", "Word and PowerPoint files.");
+        Assert.Equal(0, created.Exit);
+        Assert.Contains("Files.ReadWrite", created.Out);
+        Assert.Contains("source: \"documents\"", await File.ReadAllTextAsync(Path.Combine(directory, "office-documents", "SKILL.md")));
+        Assert.False(File.Exists(Path.Combine(directory, "office-documents", "connector.json")));
+
+        var validated = await Run("validate-skills");
+        Assert.Equal(0, validated.Exit);
+        Assert.Contains("1 valid skill(s)", validated.Out);
+
+        Assert.Equal(2, (await Run("new-skill", "--connector", "office-documents", "--name", "slides",
+            "--description", "More slides.")).Exit);
+    }
+
     [Theory]
     [InlineData("--connector", "apim-a2a", "--name", "no-agent", "--description", "d")]
     [InlineData("--connector", "graph", "--name", "files", "--source", "files", "--description", "d")]

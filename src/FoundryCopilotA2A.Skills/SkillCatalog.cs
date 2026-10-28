@@ -160,6 +160,16 @@ public static class SkillCatalog
                     errors.Add($"{folderName}: metadata.agent-id must be at most {SkillConventions.MaxAgentIdLength} characters without whitespace.");
                 }
                 break;
+            case SkillConventions.OfficeDocumentsConnector:
+                if (skill.Source != SkillConventions.DocumentsSource)
+                {
+                    errors.Add($"{folderName}: office-documents skills always use source '{SkillConventions.DocumentsSource}'.");
+                }
+                if (skill.ConnectorConfiguration is not null || File.Exists(connectorFile))
+                {
+                    errors.Add($"{folderName}: office-documents skills do not use a connector.json.");
+                }
+                break;
             case SkillConventions.AzureAiSearchConnector:
                 if (!SkillConventions.IsValidName(skill.Source))
                 {
@@ -232,7 +242,8 @@ public static class SkillCatalog
             errors.Add($"source '{group.Key}' is claimed by more than one skill ({string.Join(", ", group.Select(skill => skill.Name))}).");
         }
         foreach (var skill in skills.Where(skill => skill.Connector == SkillConventions.AzureAiSearchConnector &&
-            (skill.Source == SkillConventions.ApimSource || SkillConventions.GraphSources.Contains(skill.Source))))
+            (skill.Source is SkillConventions.ApimSource or SkillConventions.DocumentsSource ||
+                SkillConventions.GraphSources.Contains(skill.Source))))
         {
             errors.Add($"{skill.Name}: source '{skill.Source}' is reserved for another connector.");
         }

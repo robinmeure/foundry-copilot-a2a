@@ -19,7 +19,12 @@ public sealed record SkillDefinition(
     public string Connector => Get("connector") ?? "";
 
     /// <summary>The knowledge-source selection id that enables this skill for a chat turn.</summary>
-    public string Source => Get("source") ?? (Connector == SkillConventions.ApimA2aConnector ? SkillConventions.ApimSource : Name);
+    public string Source => Get("source") ?? Connector switch
+    {
+        SkillConventions.ApimA2aConnector => SkillConventions.ApimSource,
+        SkillConventions.OfficeDocumentsConnector => SkillConventions.DocumentsSource,
+        _ => Name
+    };
 
     public string Label => Get("label") ?? Name;
     public string? Hint => Get("hint");

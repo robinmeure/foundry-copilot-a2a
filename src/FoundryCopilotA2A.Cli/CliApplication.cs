@@ -223,7 +223,7 @@ internal sealed class CliApplication(CliContext context)
                 "test-knowledge-search --endpoint <https-search-root> [--index kamervragen-openai] --request-file <json-path>",
             "new-skill" =>
                 """
-                new-skill --connector apim-a2a|azure-ai-search|graph --name <skill-name> --description <text>
+                new-skill --connector apim-a2a|azure-ai-search|graph|office-documents --name <skill-name> --description <text>
                     [--label <display-name>] [--agent-id <apim-agent-id>] [--source <graph-source>]
                     [--directory <skills-folder>]
 
