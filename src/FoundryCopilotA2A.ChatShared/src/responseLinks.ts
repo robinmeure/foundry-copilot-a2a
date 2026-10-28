@@ -13,6 +13,15 @@ export interface ResponseLink {
 
 const parser = unified().use(remarkParse).use(remarkGfm)
 const nativeCitation = /(?:[ \t]*-?[ \t]*(?:Bron|Source):[ \t]*)?\uE200(?:filecite|cite)\uE202[^\uE201\r\n]*\uE201/g
+const partialNativeCitation = /\uE200[^\uE201\r\n]*$/
+
+/**
+ * Removes Copilot Studio's private-use citation markers, including one still arriving at the end of a
+ * streamed answer. The canonical final answer replaces them with numbered links.
+ */
+export function stripNativeCitations(text: string) {
+  return text.replace(nativeCitation, '').replace(partialNativeCitation, '')
+}
 
 function walk(node: Root | RootContent, visit: (node: RootContent) => void) {
   if (node.type !== 'root') visit(node)

@@ -1,0 +1,13 @@
+{
+  "name": "foundry-copilot-a2a-chat",
+  "private": true,
+  "description": "npm workspace for the chat frontends and their shared React package.",
+  "workspaces": [
+    "src/FoundryCopilotA2A.ChatShared",
+    "src/FoundryCopilotA2A.Chatbot",
+    "src/FoundryCopilotA2A.KnowledgeChat"
+  ],
+  "overrides": {
+    "zod": "^4.6.6"
+  }
+}

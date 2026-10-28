@@ -1,0 +1,42 @@
+{
+  "name": "@foundry-copilot-a2a/chat-shared",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Shared React chat shell, session core and presentation for the chat frontends.",
+  "exports": {
+    "./*": "./src/*"
+  },
+  "scripts": {
+    "lint": "oxlint",
+    "test": "node --experimental-strip-types --test",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "@azure/msal-browser": "^5.19.0",
+    "@azure/msal-react": "^5.6.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
+    "unified": "^11.0.5"
+  },
+  "devDependencies": {
+    "@azure/msal-browser": "^5.19.0",
+    "@azure/msal-react": "^5.6.0",
+    "@types/mdast": "^4.0.4",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "oxlint": "^1.75.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
+    "typescript": "~6.0.2",
+    "unified": "^11.0.5",
+    "vite": "^8.2.0"
+  }
+}

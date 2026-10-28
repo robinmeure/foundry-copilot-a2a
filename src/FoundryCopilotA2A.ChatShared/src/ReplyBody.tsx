@@ -4,7 +4,7 @@ import { parseConsentRequest } from '../../FoundryCopilotA2A.BrowserShared/conse
 import type { ChatTurn } from './chatSession.ts'
 import MarkdownAnswer from './MarkdownAnswer.ts'
 import ResponseActions from './ResponseActions.tsx'
-import { prepareResponseLinks, type ResponseLink } from './responseLinks.ts'
+import { prepareResponseLinks, stripNativeCitations, type ResponseLink } from './responseLinks.ts'
 import { prepareResponseAttribution } from './responseAttribution.ts'
 import ChatIcon from './ChatIcon.tsx'
 import AdaptiveCards from './AdaptiveCards.ts'
@@ -24,7 +24,7 @@ export default function ReplyBody({ turn, agentName, children }: {
       !citations?.sources.length &&
       !parseConsentRequest(answer) &&
       !parseConnectionRepairRequest(answer)
-      ? prepareResponseLinks(text) : { text, sources: [] }
+      ? prepareResponseLinks(text) : { text: stripNativeCitations(text), sources: [] }
   }, [answer, citations, status, attribution])
   return (
     <>

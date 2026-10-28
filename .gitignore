@@ -5,3 +5,6 @@
 appsettings.Local.json
 *.user
 **/.knowledge-data/
+
+# npm workspace (chat apps) installs at the repository root
+/node_modules/

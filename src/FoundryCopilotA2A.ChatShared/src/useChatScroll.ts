@@ -9,7 +9,7 @@ export function isNearBottom({ scrollHeight, clientHeight, scrollTop }: {
   return scrollHeight - clientHeight - scrollTop <= followThreshold
 }
 
-export function useChatScroll(turns: ChatTurn[], contextId: string) {
+export function useChatScroll(turns: readonly ChatTurn[], contextId: string) {
   const conversation = useRef<HTMLElement>(null)
   const following = useRef(true)
   const previous = useRef({ contextId, turnId: turns.at(-1)?.id })

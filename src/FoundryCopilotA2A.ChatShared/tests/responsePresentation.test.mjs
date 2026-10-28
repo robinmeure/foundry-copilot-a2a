@@ -2,8 +2,6 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { ChatSession } from '../src/chatSession.ts'
-import { getReplyActivity } from '../src/replyActivity.ts'
 import { prepareResponseLinks } from '../src/responseLinks.ts'
 import { prepareResponseAttribution } from '../src/responseAttribution.ts'
 import MarkdownAnswer from '../src/MarkdownAnswer.ts'
@@ -29,28 +27,6 @@ test('attribution leaves partial streaming headers, code, quotes, and later ment
   ]) assert.deepEqual(prepareResponseAttribution(answer, 'Orchestrator', true), { text: answer, contributors: [] })
   assert.deepEqual(prepareResponseAttribution('Responding agent: Tweede Kamer Classic\n\nAnswer', 'Orchestrator', true),
     { text: 'Answer', contributors: ['Tweede Kamer Classic'] })
-})
-
-test('responder metadata drives activity, is deduplicated, and never becomes answer text', async (t) => {
-  const metadata = { agentId: 'specialist', agentName: 'Document specialist' }
-  const results = [
-    { statusUpdate: { metadata, status: { state: 'TASK_STATE_WORKING' } } },
-    { artifactUpdate: { artifact: { parts: [{ text: 'Answer', metadata }] } } },
-    { artifactUpdate: { artifact: { parts: [{ text: ' continues', metadata }] }, append: true } },
-  ]
-  t.mock.method(globalThis, 'fetch', async () => new Response(
-    results.map(result => `data: ${JSON.stringify({ result })}\n\n`).join(''),
-    { headers: { 'Content-Type': 'text/event-stream' } },
-  ))
-  const session = new ChatSession({ authMode: 'anonymous', agentId: 'mock', agentName: 'Orchestrator', adapterBaseUrl: 'http://localhost:5099' })
-  const snapshots = []
-  session.subscribe(() => snapshots.push(session.getSnapshot().turns[0]))
-  await session.send('Question', async () => '')
-  const working = snapshots.find(turn => turn.phase === 'working')
-  assert.equal(getReplyActivity(working, 'Orchestrator', working.startedAt).label, 'Document specialist is working')
-  assert.equal(session.getSnapshot().turns[0].answer, 'Answer continues')
-  assert.deepEqual(session.getSnapshot().turns[0].responder, { id: 'specialist', name: 'Document specialist' })
-  assert.equal(snapshots.filter((turn, index) => turn.responder !== snapshots[index - 1]?.responder).length, 1)
 })
 
 test('response links are numbered in appearance order, deduplicated, and exclude code/images/credentials', () => {

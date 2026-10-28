@@ -5,7 +5,7 @@ export interface BrowserIdentityConfig {
 }
 
 export function createBrowserAuthConfig(
-  config: BrowserIdentityConfig,
+  config: Pick<BrowserIdentityConfig, 'spaClientId' | 'tenantId'>,
   origin: string,
   redirectUri = origin,
 ) {

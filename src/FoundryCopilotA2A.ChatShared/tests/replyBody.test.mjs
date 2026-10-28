@@ -66,3 +66,13 @@ test('ordinary progress retains its existing visibility when no plans were recei
   assert.doesNotMatch(completed, /a2a-plan-timeline|activity-trail-plan-count/)
   assert.doesNotMatch(render({ activityUpdates: [], planUpdates: [] }), /class="activity-trail"/)
 })
+
+test('streaming answers hide raw native citation markers, including a partial trailing one', () => {
+  const html = render({
+    status: 'sending', planUpdates: undefined,
+    answer: 'Asielopvang \uE200cite\uE202turn0search0\uE201 is besproken \uE200cite\uE202turn0',
+  })
+  assert.doesNotMatch(html, /[\uE200-\uE202]|turn0search0/)
+  assert.match(html, /Asielopvang/)
+  assert.match(html, /is besproken/)
+})
