@@ -157,12 +157,15 @@ public sealed partial class ResponsesCoordinator
             var slides = MockSlidesRequest.IsMatch(question);
             var tool = documents.Tools.Single(candidate => candidate.Name ==
                 (slides ? OfficeDocumentOutline.PresentationToolName : OfficeDocumentOutline.WordToolName));
+            await progress.ReportAsync(new ChatStatus(
+                OfficeDocumentsConnector.DraftingStatus(tool.Name)!, ChatStatus.Progress, tool.Name), ct);
             var arguments = MockOutline(question, evidence, slides);
             await progress.ReportAsync(new ChatStatus(
                 tool.Started?.Invoke(arguments, userContext.TimeZone) ?? ToolStatus.Started(tool.Name, arguments, userContext.TimeZone),
                 ChatStatus.Started, tool.Name), ct);
             var result = (FileToolResult)await tool.InvokeAsync(
-                new SkillToolCall(context, scope, userContext, arguments, (_, _) => ValueTask.CompletedTask), ct);
+                new SkillToolCall(context, scope, userContext, arguments,
+                    (line, token) => progress.ReportAsync(new ChatStatus(line, ChatStatus.Progress, tool.Name), token)), ct);
             files.Add(result.Document);
             await progress.ReportAsync(new ChatStatus(result.Status, ChatStatus.Completed, tool.Name), ct);
         }

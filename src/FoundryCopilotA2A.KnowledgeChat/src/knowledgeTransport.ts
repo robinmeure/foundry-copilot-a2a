@@ -45,7 +45,7 @@ export function createKnowledgeTransport({ baseUrl, token }: KnowledgeEndpoint):
       let streamed = ''
       const response = await knowledgeChatStream(baseUrl, contextId, text, input.selection, token, signal, {
         onStatus: ({ message, state }) => update((turn) => ({
-          ...(streamed ? {} : { progress: state === 'started' ? `${message}...` : message, phase: 'working' as const }),
+          progress: state === 'started' ? `${message}...` : message, phase: 'working' as const,
           ...(state === 'started' ? {} : { activityUpdates: appendActivityUpdate(turn.activityUpdates, message) }),
         })),
         onDelta: (delta) => {

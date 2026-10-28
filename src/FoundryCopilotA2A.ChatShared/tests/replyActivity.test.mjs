@@ -48,11 +48,12 @@ test('following uses a 64px boundary including subpixel positions and short tran
   assert.equal(isNearBottom({ scrollHeight: 500, clientHeight: 500, scrollTop: 0 }), true)
 })
 
-test('the wait line shows the latest agent update in place of the phase label until the answer starts', () => {
+test('the wait line shows fresh tool updates even after an answer preamble, but not stale history', () => {
   const working = { ...turn, progress: 'Responding agent: Orchestrator\n\nPlanning: Tweede Kamer',
     activityUpdates: ['Responding agent: Orchestrator\n\nWorking...'] }
   assert.equal(getReplyActivity(working, 'Agent', 2_000).line, 'Planning: Tweede Kamer')
   assert.equal(getReplyActivity({ ...working, progress: undefined }, 'Agent', 2_000).line, 'Working\u00a0…')
+  assert.equal(getReplyActivity({ ...working, answer: 'Hi' }, 'Agent', 2_000).line, 'Planning: Tweede Kamer')
   assert.equal(getReplyActivity({ ...working, phase: 'receiving', answer: 'Hi' }, 'Agent', 2_000).line,
     'Receiving answer\u00a0…')
   const stalled = getReplyActivity({ ...turn, phase: 'sending' }, 'Agent', 2_000)

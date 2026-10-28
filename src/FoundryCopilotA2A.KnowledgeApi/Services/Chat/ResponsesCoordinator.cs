@@ -114,7 +114,11 @@ public sealed partial class ResponsesCoordinator(
         using var bounded = new BoundedChatClient(model.Create(),
             tools.Concat(skillTools).Select(tool => tool.Name).ToHashSet(StringComparer.Ordinal),
             turn.ThrowIfFatal,
-            () => LoadedSkillTools(turn, skillTools));
+            () => LoadedSkillTools(turn, skillTools),
+            (name, token) => turn.SkillTool(name)?.Tool.CreatesFile == true &&
+                OfficeDocumentsConnector.DraftingStatus(name) is { } message
+                    ? turn.ReportAsync(name, message, ChatStatus.Progress, token)
+                    : ValueTask.CompletedTask);
         using var functions = new FunctionInvokingChatClient(bounded)
         {
             AllowConcurrentInvocation = false,

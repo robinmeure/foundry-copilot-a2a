@@ -361,6 +361,12 @@ renders it with the OpenXML SDK. At most two files are created per turn. The cha
 returns them in `files` (`{id,name,mediaType,size,expiresAt}`); download them with
 `GET /api/conversations/{conversation}/files/{id}`.
 
+The chat stream reports document progress through the existing AG-UI status line: drafting
+content (as soon as the model announces the file tool, before its outline is complete),
+validating the outline, creating the file with its section/slide count, and the created file
+name. Partial outline JSON is never shown. These are actual pipeline stages, not simulated
+percentages or timed messages. Mock mode emits the same stages without Azure resources.
+
 Each file also gets a `files.save` proposal. On **Confirm** the API uploads it to
 `/me/drive/root:/<Documents:OneDriveFolder>/<name>` (default folder `Knowledge Chat`, existing
 names are renamed) and returns the OneDrive link. Saving needs the delegated **Files.ReadWrite**

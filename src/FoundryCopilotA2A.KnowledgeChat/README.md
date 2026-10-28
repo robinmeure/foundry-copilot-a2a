@@ -51,6 +51,11 @@ file notes under **General**, so the drawer fits the viewport without scrolling.
 without a group fall back to a built-in group or **Other**. Tabs follow the WAI-ARIA tabs
 pattern (arrow keys, Home/End).
 
+Word and PowerPoint requests use the live status line to report drafting content, validating
+the outline, creating the file (with its section or slide count), and the created filename.
+Updates stay visible even after an assistant introduction; the next answer-text delta
+returns the line to receiving feedback. These stages come from the backend, not a timer or
+estimated percentage, and work in mock mode too.
 
 ### Confirm-before-write Microsoft 365 actions
 

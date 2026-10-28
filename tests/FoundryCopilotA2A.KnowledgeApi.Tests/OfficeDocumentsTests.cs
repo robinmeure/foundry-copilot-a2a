@@ -6,6 +6,7 @@ using System.Text.Json;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Validation;
 using FoundryCopilotA2A.KnowledgeApi.Contracts.Files;
+using FoundryCopilotA2A.KnowledgeApi.Contracts.Chat;
 using FoundryCopilotA2A.KnowledgeApi.Services.Graph;
 using FoundryCopilotA2A.KnowledgeApi.Services.OfficeDocuments;
 using FoundryCopilotA2A.KnowledgeApi.Services.Skills;
@@ -148,6 +149,48 @@ public sealed class OfficeDocumentsTests
 
         var failure = Assert.Throws<ApiException>(() => OfficeDocumentOutline.ParsePresentation(json));
         Assert.Equal("invalid_tool_arguments", failure.Code);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InvalidOutlinesNeverReportFileCreationProgress(bool slides)
+    {
+        var scope = new SkillScope(["documents"], null);
+        var tool = new OfficeDocumentsConnector().GetTools(TestSkills.Get("office-documents"), scope)
+            .Single(candidate => candidate.Name == (slides
+                ? OfficeDocumentOutline.PresentationToolName : OfficeDocumentOutline.WordToolName));
+        var updates = new List<string>();
+        var call = new SkillToolCall(new DefaultHttpContext(), scope, UserContext.Utc(DateTimeOffset.UtcNow),
+            Parse("{}"), (message, _) => { updates.Add(message); return ValueTask.CompletedTask; });
+
+        var failure = await Assert.ThrowsAsync<ApiException>(() => tool.InvokeAsync(call, default));
+        Assert.Equal("invalid_tool_arguments", failure.Code);
+        Assert.Empty(updates);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CancellingAtTheRenderingStageDoesNotCreateAFile(bool slides)
+    {
+        var scope = new SkillScope(["documents"], null);
+        var tool = new OfficeDocumentsConnector().GetTools(TestSkills.Get("office-documents"), scope)
+            .Single(candidate => candidate.Name == (slides
+                ? OfficeDocumentOutline.PresentationToolName : OfficeDocumentOutline.WordToolName));
+        using var cancellation = new CancellationTokenSource();
+        var updates = new List<string>();
+        var call = new SkillToolCall(new DefaultHttpContext(), scope, UserContext.Utc(DateTimeOffset.UtcNow),
+            Parse(slides ? PresentationJson : WordJson), (message, token) =>
+            {
+                Assert.Equal(cancellation.Token, token);
+                updates.Add(message);
+                cancellation.Cancel();
+                return ValueTask.CompletedTask;
+            });
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => tool.InvokeAsync(call, cancellation.Token));
+        Assert.StartsWith("Creating", Assert.Single(updates));
     }
 
     [Fact]

@@ -21,11 +21,10 @@ export function getReplyActivity(turn: ChatTurn | undefined, agentName: string, 
     ? responder ? `${responder} is still working` : 'Still working'
     : labels[turn.phase]
   const detail = longWait ? 'No answer text has arrived yet. You can stop this request.' : undefined
-  // One status line: the agent's own latest update replaces the generic phase label until the
-  // answer starts streaming.
-  const reported = turn.answer
-    ? undefined
-    : activityLine(turn.progress) ?? activityLine(turn.activityUpdates?.at(-1))
+  // A fresh tool update can follow an answer preamble. Text deltas clear progress again;
+  // older activity history must not replace the receiving label.
+  const reported = (turn.phase === 'working' || !turn.answer ? activityLine(turn.progress) : undefined) ??
+    (turn.answer ? undefined : activityLine(turn.activityUpdates?.at(-1)))
   const line = reported ?? activityLine(label) ?? label
   return {
     label, line, elapsedSeconds, detail,

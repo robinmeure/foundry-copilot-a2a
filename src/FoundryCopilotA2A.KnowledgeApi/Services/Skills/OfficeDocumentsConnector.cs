@@ -42,31 +42,49 @@ public sealed class OfficeDocumentsConnector : IKnowledgeSkillConnector
 
     public IReadOnlyList<KnowledgeSkillTool> GetTools(SkillDefinition skill, SkillScope scope) =>
     [
-        KnowledgeSkillTool.FromDefinition(OfficeDocumentOutline.WordDefinition, (call, _) =>
+        KnowledgeSkillTool.FromDefinition(OfficeDocumentOutline.WordDefinition, async (call, ct) =>
         {
-            var document = OfficeDocumentRenderer.RenderWord(OfficeDocumentOutline.ParseWord(call.Arguments));
-            return Task.FromResult<SkillToolResult>(new FileToolResult(document, $"Created {document.Name}"));
+            ct.ThrowIfCancellationRequested();
+            var outline = OfficeDocumentOutline.ParseWord(call.Arguments);
+            await call.ReportProgress(
+                $"Creating Word document with {outline.Sections.Length} section{(outline.Sections.Length == 1 ? "" : "s")}", ct);
+            ct.ThrowIfCancellationRequested();
+            var document = OfficeDocumentRenderer.RenderWord(outline);
+            ct.ThrowIfCancellationRequested();
+            return new FileToolResult(document, $"Created {document.Name}");
         }) with
         {
             CreatesFile = true,
             MaxArgumentLength = OfficeDocumentOutline.MaxArgumentLength,
-            Started = (arguments, _) => $"Writing Word document {Quoted(arguments)}".TrimEnd(),
+            Started = (arguments, _) => $"Validating Word document {Quoted(arguments)}".TrimEnd(),
             Failed = "The Word document could not be created"
         },
-        KnowledgeSkillTool.FromDefinition(OfficeDocumentOutline.PresentationDefinition, (call, _) =>
+        KnowledgeSkillTool.FromDefinition(OfficeDocumentOutline.PresentationDefinition, async (call, ct) =>
         {
-            var document = OfficeDocumentRenderer.RenderPresentation(OfficeDocumentOutline.ParsePresentation(call.Arguments));
-            return Task.FromResult<SkillToolResult>(new FileToolResult(document, $"Created {document.Name}"));
+            ct.ThrowIfCancellationRequested();
+            var outline = OfficeDocumentOutline.ParsePresentation(call.Arguments);
+            await call.ReportProgress($"Creating PowerPoint presentation with {outline.Slides.Length + 1} slides, including the title slide", ct);
+            ct.ThrowIfCancellationRequested();
+            var document = OfficeDocumentRenderer.RenderPresentation(outline);
+            ct.ThrowIfCancellationRequested();
+            return new FileToolResult(document, $"Created {document.Name}");
         }) with
         {
             CreatesFile = true,
             MaxArgumentLength = OfficeDocumentOutline.MaxArgumentLength,
-            Started = (arguments, _) => $"Building presentation {Quoted(arguments)}".TrimEnd(),
+            Started = (arguments, _) => $"Validating PowerPoint presentation {Quoted(arguments)}".TrimEnd(),
             Failed = "The presentation could not be created"
         }
     ];
 
     public string? Guardrails(SkillDefinition skill, IReadOnlyList<KnowledgeSkillTool> tools) => Instructions;
+
+    internal static string? DraftingStatus(string tool) => tool switch
+    {
+        OfficeDocumentOutline.WordToolName => "Drafting Word document content",
+        OfficeDocumentOutline.PresentationToolName => "Drafting PowerPoint slide content",
+        _ => null
+    };
 
     /// <summary>The OneDrive folder for saved files; each segment is sanitized like a file name.</summary>
     public static string Folder(IConfiguration configuration)

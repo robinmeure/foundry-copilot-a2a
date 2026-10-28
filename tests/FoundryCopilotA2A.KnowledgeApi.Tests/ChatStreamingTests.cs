@@ -3,6 +3,7 @@ using FoundryCopilotA2A.KnowledgeApi.Infrastructure;
 using FoundryCopilotA2A.KnowledgeApi.Middleware;
 using FoundryCopilotA2A.KnowledgeApi.Services.A2A;
 using FoundryCopilotA2A.KnowledgeApi.Services.Retrieval;
+using FoundryCopilotA2A.KnowledgeApi.Services.OfficeDocuments;
 using FoundryCopilotA2A.KnowledgeApi.Streaming;
 using System.Net;
 using System.Net.Http.Json;
@@ -143,6 +144,91 @@ public sealed class ChatStreamingTests : IDisposable
                 Assert.Matches(@"^Found \d+ To Do lists?$", status.Message);
                 Assert.Equal(ChatStatus.Completed, status.State);
             });
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DocumentToolsReportDraftingBeforeValidationAndRendering(bool slides)
+    {
+        var tool = slides ? OfficeDocumentOutline.PresentationToolName : OfficeDocumentOutline.WordToolName;
+        var arguments = slides
+            ? """{"fileName":"Review","title":"Review","subtitle":"","slides":[{"title":"Summary","bullets":["A point"],"notes":""}]}"""
+            : """{"fileName":"Review","title":"Review","subtitle":"","sections":[{"heading":"Summary","paragraphs":["A point"],"bullets":[],"table":{"columns":[],"rows":[]}}]}""";
+        var calls = 0;
+        var progress = new RecordingProgress();
+        using var http = new HttpClient(new Handler(_ =>
+        {
+            if (++calls == 1)
+            {
+                var added = new { type = "function_call", id = "fc1", call_id = "document", name = tool, arguments = "", status = "in_progress" };
+                var completed = new { type = "function_call", id = "fc1", call_id = "document", name = tool, arguments, status = "completed" };
+                return Task.FromResult(Sse(Created(0),
+                    ("response.output_item.added", JsonSerializer.Serialize(new
+                    {
+                        type = "response.output_item.added", sequence_number = 1, output_index = 0, item = added
+                    })),
+                    ("response.function_call_arguments.delta", JsonSerializer.Serialize(new
+                    {
+                        type = "response.function_call_arguments.delta", sequence_number = 2,
+                        output_index = 0, item_id = "fc1", delta = arguments
+                    })),
+                    ("response.output_item.done", JsonSerializer.Serialize(new
+                    {
+                        type = "response.output_item.done", sequence_number = 3, output_index = 0, item = completed
+                    })),
+                    Completed(4, JsonSerializer.Serialize(new[] { completed }))));
+            }
+
+            Assert.Contains(progress.Statuses, status => status.State == ChatStatus.Completed && status.Tool == tool);
+            return Task.FromResult(Sse(Created(0),
+                ("response.output_item.added", """{"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"type":"message","id":"msg1","role":"assistant","status":"in_progress","content":[]}}"""),
+                Delta(2, "Your file is ready."),
+                ("response.output_item.done", """{"type":"response.output_item.done","sequence_number":3,"output_index":0,"item":{"type":"message","id":"msg1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Your file is ready.","annotations":[]}]}}"""),
+                Completed(4, """[{"type":"message","id":"msg1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Your file is ready.","annotations":[]}]}]""")));
+        }));
+
+        var result = await AzureContractTests.Coordinator(http).Run(
+            new DefaultHttpContext(), "Create a review file", [], ["documents"], [], default, progress: progress);
+
+        Assert.Equal(2, calls);
+        Assert.EndsWith(slides ? ".pptx" : ".docx", Assert.Single(result.Files).Name);
+        var statuses = progress.Statuses.Where(status => status.Tool == tool).ToArray();
+        Assert.Equal(
+            new[] { ChatStatus.Progress, ChatStatus.Started, ChatStatus.Progress, ChatStatus.Completed },
+            statuses.Select(status => status.State));
+        Assert.Equal(slides ? "Drafting PowerPoint slide content" : "Drafting Word document content", statuses[0].Message);
+        Assert.StartsWith("Validating", statuses[1].Message);
+        Assert.Contains(slides ? "2 slides, including the title slide" : "1 section", statuses[2].Message);
+        Assert.Equal($"Created Review{(slides ? ".pptx" : ".docx")}", statuses[3].Message);
+        Assert.Equal("Your file is ready.", progress.Text.ToString());
+        Assert.DoesNotContain(progress.Statuses, status => status.Message.Contains("A point"));
+    }
+
+    [Theory]
+    [InlineData("Create a Word document", "create_word_document", "2 sections")]
+    [InlineData("Create a PowerPoint presentation", "create_presentation", "3 slides")]
+    public async Task MockDocumentStreamIncludesPipelineStatusesBeforeTheAnswer(string question, string tool, string count)
+    {
+        using var api = CreateMockApi();
+        using var client = api.CreateClient();
+        using var response = await client.PostAsync("/api/chat/stream",
+            JsonContent.Create(AgUi.Run(Guid.NewGuid().ToString(), question, ["documents"])));
+        response.EnsureSuccessStatusCode();
+        var events = AgUi.ParseEvents(await response.Content.ReadAsStringAsync());
+        AssertValidAgUiSequence(events);
+        var statuses = events.Select(item => item.Status()).OfType<JsonElement>()
+            .Where(status => status.TryGetProperty("tool", out var name) && name.GetString() == tool).ToArray();
+        Assert.Equal(4, statuses.Length);
+        Assert.StartsWith("Drafting", statuses[0].GetProperty("message").GetString());
+        Assert.StartsWith("Validating", statuses[1].GetProperty("message").GetString());
+        Assert.Contains(count, statuses[2].GetProperty("message").GetString());
+        Assert.StartsWith("Created", statuses[3].GetProperty("message").GetString());
+        Assert.Equal(1, events[^1].GetProperty("result").GetProperty("files").GetArrayLength());
+        var firstText = events.FindIndex(item => item.Type() == "TEXT_MESSAGE_CONTENT");
+        Assert.All(events.Where(item => item.Status() is { } status &&
+                status.TryGetProperty("tool", out var name) && name.GetString() == tool),
+            item => Assert.True(events.IndexOf(item) < firstText));
     }
 
     [Fact]

@@ -11,7 +11,8 @@ internal sealed class BoundedChatClient(
     IChatClient innerClient,
     IReadOnlySet<string> allowedTools,
     Action checkToolFailure,
-    Func<IEnumerable<AITool>>? loadedTools = null) : DelegatingChatClient(innerClient)
+    Func<IEnumerable<AITool>>? loadedTools = null,
+    Func<string, CancellationToken, ValueTask>? draftingTool = null) : DelegatingChatClient(innerClient)
 {
     private readonly HashSet<string> callIds = new(StringComparer.Ordinal);
     private int rounds;
@@ -95,6 +96,7 @@ internal sealed class BoundedChatClient(
 
         await using (updates)
         {
+            var draftingItems = new HashSet<int>();
             while (await MoveNextAsync(updates))
             {
                 var update = updates.Current;
@@ -103,6 +105,17 @@ internal sealed class BoundedChatClient(
                 if (update.RawRepresentation is StreamingResponseIncompleteUpdate or StreamingResponseFailedUpdate)
                 {
                     throw new ApiException(502, "incomplete_response", "The model did not complete its response.");
+                }
+                // Function arguments can contain a whole document. Report the tool as soon as
+                // its name arrives, without waiting for or exposing its unfinished JSON.
+                if (draftingTool is not null &&
+                    update.RawRepresentation is StreamingResponseOutputItemAddedUpdate
+                    {
+                        Item: FunctionCallResponseItem function
+                    } added &&
+                    allowedTools.Contains(function.FunctionName) && draftingItems.Add(added.OutputIndex))
+                {
+                    await draftingTool(function.FunctionName, cancellationToken);
                 }
 #pragma warning restore OPENAI001
                 foreach (var call in update.Contents.OfType<FunctionCallContent>())

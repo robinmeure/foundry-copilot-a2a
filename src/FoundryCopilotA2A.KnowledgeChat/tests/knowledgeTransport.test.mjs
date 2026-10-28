@@ -138,6 +138,34 @@ test('failed or cancelled uploads are never announced as indexed', async (t) => 
   assert.match(cancelled.getSnapshot().turns[0].error, /Response stopped/)
 })
 
+test('document progress remains live after an assistant preamble and clears on the next text delta', async (t) => {
+  const tool = 'create_word_document'
+  const frames = [
+    runStarted(), textStart, textContent('I will prepare a report.'),
+    stepStarted('drafting'),
+    stepFinished('drafting', { message: 'Drafting Word document content', state: 'progress', tool }),
+    stepStarted(tool, { message: 'Validating Word document', state: 'started', tool }),
+    stepStarted('rendering'),
+    stepFinished('rendering', { message: 'Creating Word document with 2 sections', state: 'progress', tool }),
+    stepFinished(tool, { message: 'Created Report.docx', state: 'completed', tool }),
+    textContent(' Your report is ready.'), textEnd,
+    runFinished({ answer: 'Your report is ready.', warnings: [], citations: emptyCitations }),
+  ]
+  t.mock.method(globalThis, 'fetch', async () => agUiResponse(frames))
+  const chat = knowledgeSession()
+  const states = []
+  chat.subscribe(() => {
+    const turn = chat.getSnapshot().turns[0]
+    if (turn) states.push({ answer: turn.answer, progress: turn.progress, phase: turn.phase })
+  })
+  await chat.send('Create a Word report', input({ selection: { sources: ['documents'] } }))
+  for (const status of ['Drafting Word document content', 'Validating Word document...', 'Creating Word document with 2 sections', 'Created Report.docx']) {
+    assert.ok(states.some(turn => turn.answer === 'I will prepare a report.' && turn.progress === status && turn.phase === 'working'))
+  }
+  assert.ok(states.some(turn => turn.answer.endsWith(' Your report is ready.') && turn.progress === undefined && turn.phase === 'receiving'))
+  assert.equal(chat.getSnapshot().turns[0].progress, undefined)
+})
+
 test('knowledge chat streams live tool statuses and answer text, then keeps the final answer', async (t) => {
   const reading = { message: 'Reading your latest Inbox messages', state: 'started', tool: 'graph_list_recent_mail' }
   const frames = [
