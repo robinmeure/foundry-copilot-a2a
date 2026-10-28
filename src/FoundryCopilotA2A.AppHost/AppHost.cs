@@ -8,14 +8,14 @@ builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true).AddE
 var adapterPort = builder.Configuration.GetValue("AdapterPort", 5099);
 var frontendPort = builder.Configuration.GetValue("FrontendPort", 5173);
 var chatbotPort = builder.Configuration.GetValue("ChatbotPort", 5174);
+var knowledgeChatPort = builder.Configuration.GetValue("KnowledgeChatPort", 5175);
+var knowledgePort = builder.Configuration.GetValue("KnowledgePort", 5100);
 var requestTimeoutSeconds = builder.Configuration.GetValue("AdapterRequestTimeoutSeconds", 120);
-if (adapterPort is < 1 or > 65535 || frontendPort is < 1 or > 65535 || chatbotPort is < 1 or > 65535)
+int[] ports = [adapterPort, frontendPort, chatbotPort, knowledgeChatPort, knowledgePort];
+if (ports.Any(port => port is < 1 or > 65535) || ports.Distinct().Count() != ports.Length)
 {
-    throw new InvalidOperationException("AdapterPort, FrontendPort and ChatbotPort must be between 1 and 65535.");
-}
-if (new[] { adapterPort, frontendPort, chatbotPort }.Distinct().Count() != 3)
-{
-    throw new InvalidOperationException("AdapterPort, FrontendPort and ChatbotPort must be distinct.");
+    throw new InvalidOperationException(
+        "AdapterPort, FrontendPort, ChatbotPort, KnowledgeChatPort and KnowledgePort must be distinct ports between 1 and 65535.");
 }
 if (requestTimeoutSeconds <= 0)
 {
@@ -23,9 +23,7 @@ if (requestTimeoutSeconds <= 0)
 }
 var frontendOrigin = $"http://localhost:{frontendPort}";
 var chatbotOrigin = $"http://localhost:{chatbotPort}";
-var knowledgePort = builder.Configuration.GetValue("KnowledgePort", 5100);
-if (knowledgePort is < 1 or > 65535 || new[] { adapterPort, frontendPort, chatbotPort }.Contains(knowledgePort))
-    throw new InvalidOperationException("KnowledgePort must be a distinct port between 1 and 65535.");
+var knowledgeChatOrigin = $"http://localhost:{knowledgeChatPort}";
 string ResolveParameterDefault(string name, string fallback = "") =>
     builder.Configuration[$"Parameters:{name}"] is { Length: > 0 } configured
         ? configured
@@ -44,7 +42,7 @@ var knowledge = builder.AddProject<Projects.FoundryCopilotA2A_KnowledgeApi>("kno
     .WithEndpoint("http", endpoint => endpoint.Port = knowledgePort)
     .WithHttpHealthCheck("/health")
     .WithEnvironment("Knowledge__Backend", knowledgeBackend)
-    .WithEnvironment("Knowledge__AllowedOrigins__0", chatbotOrigin)
+    .WithEnvironment("Knowledge__AllowedOrigins__0", knowledgeChatOrigin)
     .WithEnvironment("OpenAI__Endpoint", openAiEndpoint)
     .WithEnvironment("OpenAI__ChatDeployment", chatDeployment)
     .WithEnvironment("OpenAI__EmbeddingDeployment", embeddingDeployment)
@@ -271,24 +269,40 @@ builder
     .WaitFor(adapter)
     .WithExternalHttpEndpoints();
 
+// Both chat apps share one npm workspace rooted at the repository. Install it once, then start
+// each app independently so neither depends on the other's backend.
+var chatWorkspace = builder
+    .AddExecutable("chat-workspace-install", "npm", "../..", "install", "--no-audit", "--no-fund")
+    .ExcludeFromManifest();
+
 var chatbot = builder
     .AddViteApp("chatbot", "../FoundryCopilotA2A.Chatbot")
+    .WithNpm(install: false)
+    .WaitForCompletion(chatWorkspace)
     .WithEndpoint("http", endpoint => endpoint.Port = chatbotPort)
     .WithEnvironment("VITE_ADAPTER_BASE_URL", adapter.GetEndpoint("http"))
-    .WithEnvironment("VITE_KNOWLEDGE_BASE_URL", knowledge.GetEndpoint("http"))
     .WithEnvironment(
-
         "VITE_ORCHESTRATOR_AGENT_ID",
         builder.Configuration["ChatbotOrchestratorAgentId"] ?? (useLiveBackend ? "orchestrator" : "mock"))
-    .WithEnvironment("VITE_CHATBOT_AUTH_MODE", useLiveBackend || knowledgeBackend == "Azure" ? "entra" : "anonymous")
+    .WithEnvironment("VITE_CHATBOT_AUTH_MODE", useLiveBackend ? "entra" : "anonymous")
     .WithReference(adapter)
     .WaitFor(adapter)
-    .WithReference(knowledge)
     .WithExternalHttpEndpoints();
 
-// An empty value would override the chatbot's .env.local, so only set it when configured.
+var knowledgeChat = builder
+    .AddViteApp("knowledge-chat", "../FoundryCopilotA2A.KnowledgeChat")
+    .WithNpm(install: false)
+    .WithEndpoint("http", endpoint => endpoint.Port = knowledgeChatPort)
+    .WithEnvironment("VITE_KNOWLEDGE_BASE_URL", knowledge.GetEndpoint("http"))
+    .WithEnvironment("VITE_KNOWLEDGE_CHAT_AUTH_MODE", knowledgeBackend == "Azure" ? "entra" : "anonymous")
+    .WithReference(knowledge)
+    .WaitFor(knowledge)
+    .WaitForCompletion(chatWorkspace)
+    .WithExternalHttpEndpoints();
+
+// An empty value would override the app's .env.local, so only set it when configured.
 if (builder.Configuration["Parameters:knowledge-client-id"] is { Length: > 0 } knowledgeClientId)
-    chatbot.WithEnvironment("VITE_KNOWLEDGE_API_CLIENT_ID", knowledgeClientId);
+    knowledgeChat.WithEnvironment("VITE_KNOWLEDGE_API_CLIENT_ID", knowledgeClientId);
 
 var chatbotGatewayBaseUrl = builder.Configuration["ChatbotGatewayBaseUrl"] ?? gatewayBaseUrl;
 if (chatbotGatewayBaseUrl is not null)
@@ -308,6 +322,20 @@ foreach (var setting in new Dictionary<string, string>
     if (builder.Configuration[setting.Key] is { } value)
     {
         chatbot.WithEnvironment(setting.Value, value);
+    }
+}
+
+// The Knowledge Chat may share the chatbot's tenant and SPA registration (with its own redirect URI).
+foreach (var (key, fallback, variable) in new[]
+{
+    ("KnowledgeChatTenantId", "ChatbotTenantId", "VITE_ENTRA_TENANT_ID"),
+    ("KnowledgeChatSpaClientId", "ChatbotSpaClientId", "VITE_ENTRA_CLIENT_ID"),
+    ("KnowledgeChatSpeechInputEnabled", "ChatbotSpeechInputEnabled", "VITE_SPEECH_INPUT_ENABLED"),
+})
+{
+    if ((builder.Configuration[key] ?? builder.Configuration[fallback]) is { } value)
+    {
+        knowledgeChat.WithEnvironment(variable, value);
     }
 }
 

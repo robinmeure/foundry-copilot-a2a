@@ -21,7 +21,7 @@ internal static class KnowledgeCommands
             binding.Scheme is not ("http" or "https") || !binding.IsLoopback || binding.AbsolutePath != "/" ||
             binding.Query.Length > 0 || binding.UserInfo.Length > 0 || binding.Fragment.Length > 0)
             throw new CliException("--urls must be a single loopback HTTP(S) origin.");
-        var origin = args.Optional("allowed-origin", "http://localhost:5174")!;
+        var origin = args.Optional("allowed-origin", "http://localhost:5175")!;
         if (!Uri.TryCreate(origin, UriKind.Absolute, out var originUri) ||
             originUri.Scheme is not ("http" or "https") || originUri.AbsolutePath != "/" ||
             originUri.Query.Length > 0 || originUri.UserInfo.Length > 0 || originUri.Fragment.Length > 0)
