@@ -2173,6 +2173,7 @@ Knowledge Chat -> Knowledge API / Agent Framework
                    |-- conversation-scoped documents -> Azure AI Search
                    |-- selected Microsoft 365 tools -> delegated Graph OBO
                    |-- shared Kamervragen reference index -> Azure AI Search
+                   |-- Word / PowerPoint generation -> OpenXML -> optional OneDrive save
                    `-- approved APIM specialists -> adapter -> APIM A2A agent
 ```
 
@@ -2180,6 +2181,31 @@ These are separate source boundaries. A specialist receives its focused question
 uploaded files, accumulated evidence or complete conversation history. "Local" means the
 application owns orchestration; Azure mode is not offline. Mock mode uses clearly labeled
 synthetic providers without calling Azure, Graph, the adapter or remote agents.
+
+### Skills
+
+Every optional source is described by an [Agent Skill](https://agentskills.io/specification)
+in [skills](skills/README.md): Microsoft 365 sources (`m365-*`), the Kamervragen index,
+APIM agents (`apim-agents`, `apim-agent-*`) and Office documents (`office-documents`). A skill
+holds only a description, instructions and declarative configuration; endpoints, keys and
+identities stay in configuration, and typed C# connectors execute the calls.
+
+Skills use progressive disclosure. Each request lists only `name: description` for the
+sources the user selected in **Settings**, plus `load_skill`. The model loads a skill when it
+needs it; only then are its instructions returned and its tools offered. Skills outside the
+selection cannot be loaded. The API validates all skills at startup and refuses to start when
+one is invalid or its connector is missing.
+
+Adding an APIM agent or a Search index is a folder plus configuration; no code changes are
+needed. Scaffold and check skills with the CLI:
+
+```powershell
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- new-skill --help
+dotnet run --project .\src\FoundryCopilotA2A.Cli -- validate-skills
+```
+
+See the [skill authoring guide](skills/README.md) and the
+[Knowledge API skill internals](src/FoundryCopilotA2A.KnowledgeApi/README.md#knowledge-skills).
 
 ### Documents and retrieval
 
@@ -2218,11 +2244,36 @@ evidence again. This backend history is separate from each app's visible browser
 [History and privacy details](src/FoundryCopilotA2A.KnowledgeApi/README.md#conversation-history).
 
 The model can propose mail drafts/reply drafts, read-state changes, calendar events, To Do
-changes and Planner progress. **A proposal does not write to Graph.** Knowledge Chat displays
-**Confirm** / **Cancel** cards; only explicit confirmation calls the action endpoint.
+changes and Planner progress. **A proposal does not write to Graph.** Knowledge Chat shows each
+proposal as a content-preview card with an action-specific confirm button and **Dismiss**; only
+explicit confirmation calls the action endpoint.
 Actions are user/conversation-bound, single-use, expire after 15 minutes and are held in
 memory. Mail sending and deletes are unsupported; confirming an event with attendees can
 send invitations. See [write-back behavior and permissions](src/FoundryCopilotA2A.KnowledgeApi/README.md#confirmed-write-back).
+
+### Word and PowerPoint documents
+
+Select **Word & PowerPoint** under the **Create** tab in Settings, then ask the chat to turn a
+conversation, uploaded files or other evidence into a report, memo or slide deck. The
+[office-documents](skills/office-documents/SKILL.md) skill exposes `create_word_document` and
+`create_presentation`:
+
+1. The model writes only a JSON outline (title, sections or slides, plain text). It never
+   produces file bytes, markup or macros.
+2. The API validates the outline (sizes, counts, plain text) and renders a `.docx` or
+   `.pptx` with the OpenXML SDK. At most two files are created per turn.
+3. The chat status line streams the real stages: drafting content, validating the outline,
+   creating the file with its section or slide count, and the created filename.
+4. The reply shows a download link and a **Save to OneDrive** card. Saving uploads the file to
+   `/<Documents:OneDriveFolder>` (default `Knowledge Chat`) only after the user confirms, and
+   needs the delegated **Files.ReadWrite** scope.
+
+Local files uploaded for retrieval can also be saved to OneDrive with the **Upload to
+OneDrive** button in **Chat documents**, again through a confirmation card.
+
+Generated files are kept in memory for 60 minutes, bound to the user and conversation, and
+lost when the API restarts. Mock mode generates real files and shows the same stages but
+makes no Graph call. [Document generation details](src/FoundryCopilotA2A.KnowledgeApi/README.md#generated-word-and-powerpoint-files).
 
 ### Optional reference sources
 

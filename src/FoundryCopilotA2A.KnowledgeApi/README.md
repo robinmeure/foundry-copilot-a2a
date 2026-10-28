@@ -267,7 +267,7 @@ used. The host operator needs Search Service Contributor to create the index.
 
 ## Knowledge skills
 
-Graph sources, APIM agents and Azure AI Search indexes are described by
+Graph sources, APIM agents, Azure AI Search indexes and Office document generation are described by
 [Agent Skills](https://agentskills.io/specification) in the repository's [skills](../../skills)
 folder, which is copied next to the API binaries. See the [authoring guide](../../skills/README.md)
 for the format and the `new-skill` / `validate-skills` CLI commands.
@@ -278,8 +278,9 @@ for the format and the `new-skill` / `validate-skills` CLI commands.
   when a skill is invalid or its connector is missing.
 - [KnowledgeSkillRegistry](Services/Skills/KnowledgeSkillRegistry.cs) maps each skill to a typed
   connector: [GraphSkillConnector](Services/Skills/GraphSkillConnector.cs),
-  [ApimA2aSkillConnector](Services/Skills/ApimA2aSkillConnector.cs) or
-  [AzureAiSearchConnector](Services/Skills/AzureAiSearchConnector.cs). It owns source
+  [ApimA2aSkillConnector](Services/Skills/ApimA2aSkillConnector.cs),
+  [AzureAiSearchConnector](Services/Skills/AzureAiSearchConnector.cs) or
+  [OfficeDocumentsConnector](Services/Skills/OfficeDocumentsConnector.cs). It owns source
   validation and reports configured sources to `/api/capabilities`.
 - Skills load on demand. The instructions list only `name: description` for the selected
   sources and advertise `load_skill` (plus `read_skill_resource` when references exist). After
