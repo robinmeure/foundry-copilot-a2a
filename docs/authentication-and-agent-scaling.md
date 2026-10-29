@@ -402,14 +402,16 @@ own OBO credentials. See
 | Component | Current registration arrangement |
 | --- | --- |
 | Chatbot frontend | Its own public SPA registration |
-| Diagnostic console frontend | Its own public SPA registration |
+| Knowledge Chat frontend | Can share the chatbot SPA with its own redirect, or use a dedicated SPA |
 | Adapter API and OBO exchanges | One shared confidential registration |
 | APIM | No additional registration for this delegated-token path |
 | Specialists behind the adapter | No additional registration merely because an agent is added |
 
-One frontend plus the adapter normally means **two runtime registrations**.
-Both frontends plus the shared adapter normally means **three**. Adding another
-20 specialists does not automatically increase that number.
+Orchestrator Chat plus the adapter normally means **two runtime registrations**.
+Knowledge Chat also needs delegated access to its Knowledge API audience; sharing a SPA does
+not remove that backend identity requirement. A shared API Hub registration can consolidate
+the API audiences when explicitly configured. Adding another 20 specialists behind the
+adapter does not automatically increase the registration count.
 
 The sample also reuses the backend registration for native OAuth connections,
 including the Foundry identity-passthrough connection. That reuse is distinct from

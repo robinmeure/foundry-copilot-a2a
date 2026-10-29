@@ -547,8 +547,8 @@ internal sealed class CliApplication(CliContext context)
                                   [--agent-ids <comma-separated-specialist-ids>] [--replace]
 
                 Defaults to a separate copilot-studio-local API and browser origin
-                http://localhost:5173. Use --allowed-origins when both the console and chatbot
-                call the gateway.
+                http://localhost:5173. Pass --allowed-origin http://localhost:5174 for
+                Orchestrator Chat, or --allowed-origins for multiple approved browser origins.
                 Creates no APIM service or app registrations. Only APIs owned by this command
                 may be updated, and only with --replace. Existing hosted APIs are untouched.
                 Optional configured Copilot Studio or Foundry agents each receive a separate

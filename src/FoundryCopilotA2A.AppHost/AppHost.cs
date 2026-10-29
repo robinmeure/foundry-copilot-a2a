@@ -6,22 +6,20 @@ var builder = DistributedApplication.CreateBuilder(args);
 builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true).AddEnvironmentVariables();
 
 var adapterPort = builder.Configuration.GetValue("AdapterPort", 5099);
-var frontendPort = builder.Configuration.GetValue("FrontendPort", 5173);
 var chatbotPort = builder.Configuration.GetValue("ChatbotPort", 5174);
 var knowledgeChatPort = builder.Configuration.GetValue("KnowledgeChatPort", 5175);
 var knowledgePort = builder.Configuration.GetValue("KnowledgePort", 5100);
 var requestTimeoutSeconds = builder.Configuration.GetValue("AdapterRequestTimeoutSeconds", 120);
-int[] ports = [adapterPort, frontendPort, chatbotPort, knowledgeChatPort, knowledgePort];
+int[] ports = [adapterPort, chatbotPort, knowledgeChatPort, knowledgePort];
 if (ports.Any(port => port is < 1 or > 65535) || ports.Distinct().Count() != ports.Length)
 {
     throw new InvalidOperationException(
-        "AdapterPort, FrontendPort, ChatbotPort, KnowledgeChatPort and KnowledgePort must be distinct ports between 1 and 65535.");
+        "AdapterPort, ChatbotPort, KnowledgeChatPort and KnowledgePort must be distinct ports between 1 and 65535.");
 }
 if (requestTimeoutSeconds <= 0)
 {
     throw new InvalidOperationException("AdapterRequestTimeoutSeconds must be positive.");
 }
-var frontendOrigin = $"http://localhost:{frontendPort}";
 var chatbotOrigin = $"http://localhost:{chatbotPort}";
 var knowledgeChatOrigin = $"http://localhost:{knowledgeChatPort}";
 string ResolveParameterDefault(string name, string fallback = "") =>
@@ -87,8 +85,7 @@ var adapter = builder
     .WithEnvironment("Adapter__EnableFailureMock", "true")
     .WithEnvironment(
         "Adapter__RequestTimeoutSeconds", requestTimeoutSeconds.ToString(CultureInfo.InvariantCulture))
-    .WithEnvironment("Adapter__AllowedOrigins__0", frontendOrigin)
-    .WithEnvironment("Adapter__AllowedOrigins__1", chatbotOrigin);
+    .WithEnvironment("Adapter__AllowedOrigins__0", chatbotOrigin);
 
 if (builder.Configuration.GetValue("KnowledgeA2A:Enabled", false))
 {
@@ -270,15 +267,6 @@ else
         .WithEnvironment("Adapter__AllowAnonymousDevelopmentMode", "true")
         .WithEnvironment("Authentication__Enabled", "false");
 }
-
-builder
-    .AddViteApp("frontend", "../FoundryCopilotA2A.Web")
-    .WithEndpoint("http", endpoint => endpoint.Port = frontendPort)
-    .WithEnvironment("VITE_ADAPTER_BASE_URL", adapter.GetEndpoint("http"))
-    .WithEnvironment("VITE_GATEWAY_BASE_URL", gatewayBaseUrl ?? "")
-    .WithReference(adapter)
-    .WaitFor(adapter)
-    .WithExternalHttpEndpoints();
 
 // Both chat apps share one npm workspace rooted at the repository. Install it once, then start
 // each app independently so neither depends on the other's backend.

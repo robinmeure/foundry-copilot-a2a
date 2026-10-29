@@ -9,6 +9,10 @@ still stripped.
 Basis: [reviewed feasibility research](adaptive-cards-a2a-research.md), repository
 baseline `072dbbb`, and the independent **Opus 5.5** second opinion.
 
+Current browser scope: Orchestrator Chat is the A2A card client, using the renderer in
+ChatShared. The diagnostic flow-builder application has been removed. Knowledge Chat
+continues to use the separate Knowledge API protocol; this plan does not add A2A cards there.
+
 The lead and reviewer agree on the bounded approach below. The reviewer returned
 **CONFIRMED WITH CORRECTIONS**; all six corrections were incorporated into the
 research before this plan was written. That confirms feasibility, not live
@@ -20,7 +24,7 @@ Copilot Studio compatibility or native orchestrator support.
 | --- | --- |
 | Normal Adaptive Card attachments from a directly invoked Copilot Studio agent | Implement behind an off-by-default adapter feature flag; prove live delivery separately |
 | A2A 1.0 and 0.3, streaming and nonstreaming | Support through the existing hosting/compatibility stack |
-| Display in both repository browser clients | One shared, restricted, read-only renderer |
+| Display in Orchestrator Chat | One shared, restricted, read-only renderer in ChatShared |
 | Text-only/unaware clients | Continue to receive usable text without needing a renderer |
 | Object-valued `Action.Submit` | Separate opt-in phase, only after a live SDK probe succeeds |
 | `Action.Execute`, refresh, SSO/authentication cards, automatic actions | Not in the initial implementation |
@@ -112,7 +116,7 @@ Do not silently present a dropped form as a completed business action.
    two cards, late final card after streamed text, unsupported version,
    unsupported action, malformed card, and oversized/nested payloads.
 2. Establish the exact renderer version and supported display subset, and pin
-   the dependency in both frontend manifests/lockfiles. Prefer the official
+   any dependency in the consuming workspace manifest/lockfile. Prefer the official
    `adaptivecards` package with a small shared React/DOM wrapper; no new UI framework.
 3. Add tests demonstrating the proposed keyed envelope follows the existing
    citation transport path in both A2A versions. Include router and target-specific
@@ -173,8 +177,8 @@ remain covered.
 **Depends on:** Phase 1 and the renderer selection from Phase 0.
 
 1. Extend [BrowserShared/a2aClient.ts](../src/FoundryCopilotA2A.BrowserShared/a2aClient.ts)
-   with typed card parsing, exchange snapshots and update notifications. Both
-   clients must use it; the Web-local file is only a re-export.
+   with typed card parsing, exchange snapshots and update notifications.
+   Orchestrator Chat uses this shared transport.
 2. Accumulate by artifact/message and card identity. Handle data-only updates,
    replacements, late finals, repeated snapshots and replay without resetting
    existing answer text/citations accidentally.
@@ -183,21 +187,20 @@ remain covered.
    authentication, remote resources, or HTML. Plain card text is sufficient
    initially; do not introduce an HTML-producing Markdown hook. Unsupported
    features must yield a visible notice, not silent removal.
-4. Wire both render surfaces:
-   [Chatbot chatSession](../src/FoundryCopilotA2A.Chatbot/src/chatSession.ts),
-   [ReplyBody](../src/FoundryCopilotA2A.Chatbot/src/ReplyBody.tsx), and
-   [Web App](../src/FoundryCopilotA2A.Web/src/App.tsx). Preserve existing Markdown,
+4. Wire the chatbot transport to the shared render surface:
+   [Chatbot chatSession](../src/FoundryCopilotA2A.Chatbot/src/chatSession.ts) and
+   [ReplyBody](../src/FoundryCopilotA2A.ChatShared/src/ReplyBody.tsx). Preserve existing Markdown,
    source attribution, consent/connection repair, progress and cancellation UX.
 5. Keep card objects transient. Persist only safe fallback text through
-   [conversationStore](../src/FoundryCopilotA2A.Chatbot/src/conversationStore.ts);
+   [conversationStore](../src/FoundryCopilotA2A.ChatShared/src/conversationStore.ts);
    restored chats must not restore forms or hidden data. Existing conversation
    handles remain under their current policy; future action handles do not.
-6. Ensure trace capture and the Web request/response inspector use redacted
+6. Ensure trace capture and any request/response diagnostics use redacted
    diagnostic projections. Never mutate the actual transport payload to produce
    a diagnostic view. Card data and future submitted values are not safe just
    because their property names lack the words `token` or `secret`.
 
-**Exit:** both clients render the supported mock cards, show honest fallbacks,
+**Exit:** Orchestrator Chat renders the supported mock cards, shows honest fallbacks,
 and perform zero action callbacks or external card-resource requests. Verify
 keyboard/screen-reader reading order, narrow layout, theme contrast, safe
 restoration and renderer cleanup with focused browser checks.
@@ -282,7 +285,7 @@ After that gate:
   dispatch, report an ambiguous outcome and do not issue a fresh action. A client
   disconnect does not establish that the provider stopped. Poll/replay local
   recorded results only when available, without resubmitting the provider action.
-- Extend both clients with validated inputs, a visible pending/submitted/
+- Extend Orchestrator Chat with validated inputs, a visible pending/submitted/
   unavailable/unknown-outcome state, and duplicate-click prevention. Do not
   persist form inputs or action handles; use safe text labels in the transcript.
 - Add explicit redaction for Activity `Value`, keyed action envelopes, hidden
@@ -332,11 +335,11 @@ trusted correlation/delegation design and live evidence.
 | Existing behavior | Text, uploaded files, citation provenance, OAuth/connection repair, responder identity, failure/progress/cancellation |
 | Persistence/telemetry | Restored fallback only; no input/action data or handles in saved chat, replayed history, traces or diagnostics |
 | Submit gate | Expected live business result in original conversation; tampering; stale revision; duplicate click/new message ID; concurrency; unknown outcome; restart fail-closed |
-| Route claims | Direct SDK, full adapter, both clients, transparent APIM, APIM invoker and each native orchestrator reported separately |
+| Route claims | Direct SDK, full adapter, Orchestrator Chat, transparent APIM, APIM invoker and each native orchestrator reported separately |
 
 Use the existing xUnit and Node test infrastructure. Start with the affected
 adapter test classes and browser parser/session/persistence tests; add focused
-card counterparts. Run both frontend builds and linters for the renderer work.
+card counterparts. Run the chat workspace builds and linters for the renderer work.
 Use browser checks for DOM behavior and accessibility that Node model tests
 cannot establish. Run wider suites when shared parser/runtime changes warrant it.
 
@@ -346,7 +349,7 @@ the current transport; they are not card implementation or live-provider tests.
 
 ## 5. Completion, documentation and rollback
 
-- Update the main README, both frontend READMEs, CLI help/README, and this
+- Update the main README, Orchestrator Chat and shared-client READMEs, CLI help/README, and this
   research/plan status as features actually land. Distinguish supported feature
   subsets, mock verification and each live route's evidence.
 - Keep provider identifiers and credentials in existing environment/configuration
@@ -354,12 +357,12 @@ the current transport; they are not card implementation or live-provider tests.
 - Backend display and later submit gates default off. Disabling structured card
   emission restores the prior text/file/citation path; invalidated actions never
   execute after disable/re-enable.
-- Suggested implementation slices: (1) contract+mock+adapter tests, (2) both
-  read-only clients+safe persistence/diagnostics, (3) CLI/live display verification,
+- Suggested implementation slices: (1) contract+mock+adapter tests, (2) the
+  read-only client+safe persistence/diagnostics, (3) CLI/live display verification,
   (4) separately gated direct Submit. Do not block useful read-only support on
   unsupported native orchestration or Universal Actions.
 
-**Definition of done for the first release:** both browser clients display
+**Definition of done for the first release:** Orchestrator Chat displays
 validated mock cards over the unchanged A2A endpoints, fallback/error/limit and
 regression tests pass, and no card action or remote resource executes. Claim
 live direct Copilot Studio support only after Phase 3 passes. Interactive and

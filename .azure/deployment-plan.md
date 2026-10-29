@@ -4,6 +4,12 @@
 > Mode: MODIFY - update only existing CORS extension-header lists
 > Scope: Six approved APIs on the original Citadel gateway; historical provisioning record retained below
 
+Repository scope note: the diagnostic web application has been removed. Origins such as
+`http://localhost:5173` below record prior deployments, not the current chat configuration.
+For new setup, use the [Orchestrator Chat guide](../src/FoundryCopilotA2A.Chatbot/README.md)
+and [infrastructure guide](../infra/README.md). Removing local code does not change deployed
+redirect URIs, CORS policies, registrations, or Azure resources.
+
 ## 1. Summary
 
 ### Current incremental operation (2026-10-26)

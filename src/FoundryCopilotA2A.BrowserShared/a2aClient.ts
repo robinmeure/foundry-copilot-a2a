@@ -199,7 +199,7 @@ export interface SendMessageOptions {
   conversationHandles?: readonly string[]
   chainTargetAgentId?: string
   signal?: AbortSignal
-  /** The diagnostic console loads traces by default; chat-only clients can opt out. */
+  /** Trace loading is enabled by default; chat-only clients can opt out. */
   includeTrace?: boolean
   onRequest?: (request: A2AHttpRequest) => void
   /** Complete current answer, citation and card snapshot, including data-only updates. */

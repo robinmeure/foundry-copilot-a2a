@@ -4,9 +4,8 @@ A separately runnable React/Vite chatbot. By default it sends every turn to one 
 through the adapter's A2A `SendStreamingMessage` handler. It has no flow designer, agent picker,
 specialist selector, catalog discovery, or network/trace panels.
 
-The console and chatbot reuse the transport, endpoint validation, and consent helpers in
-[`FoundryCopilotA2A.BrowserShared`](../FoundryCopilotA2A.BrowserShared). The existing console's
-behavior and default trace collection are preserved.
+The chatbot uses the transport, endpoint validation, and consent helpers in
+[`FoundryCopilotA2A.BrowserShared`](../FoundryCopilotA2A.BrowserShared).
 
 ## Scope
 
@@ -39,7 +38,7 @@ Current user -> chatbot's dedicated SPA (MSAL, authorization code + PKCE)
             -> native A2A delegation to specialists
 ```
 
-The chatbot shares the console's MSAL configuration and delegated-scope helpers. It uses
+The chatbot uses shared MSAL configuration and delegated-scope helpers. It uses
 `loginRedirect`, `acquireTokenSilent` with `acquireTokenRedirect` when interaction is required,
 and `logoutRedirect`, not popups. The dedicated `auth-redirect.html` page implements the
 MSAL v5 redirect bridge without loading React or starting another authentication flow.
@@ -100,8 +99,8 @@ npm ci
 npm run dev -w src/FoundryCopilotA2A.Chatbot
 ```
 
-Open `http://localhost:5174` and sign in. The existing diagnostic console remains at
-`http://localhost:5173`. The Aspire AppHost starts both frontends and the adapter API; see
+Open `http://localhost:5174` and sign in. The Aspire AppHost starts both chat frontends,
+the adapter and the Knowledge API; see
 the [repository guide](../../README.md) for AppHost configuration. A live run requires the
 backend API's confidential credentials and Orchestrator connection configuration on the
 server, not in browser environment variables.
@@ -171,7 +170,7 @@ file context or reupload files. A locally deleted chat can remain with the provi
 
 The chatbot uses a compact navigation sidebar, a centered reading column, and a yellow
 send control. On narrow screens the sidebar becomes a compact top bar. New chat, account
-sign-in/sign-out, and Help & guidance remain available without adding console-only tools.
+sign-in/sign-out, and Help & guidance remain available without adding diagnostic tools.
 Help & guidance explains the keyboard shortcuts and browser history lifetime. Completed replies
 offer Copy response with visible success or clipboard-error feedback.
 

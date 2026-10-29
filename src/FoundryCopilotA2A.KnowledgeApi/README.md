@@ -58,7 +58,8 @@ The existing Aspire AppHost includes the `knowledge` resource and passes its URL
 dedicated [Knowledge Chat](../FoundryCopilotA2A.KnowledgeChat/README.md) at
 `http://localhost:5175`. It talks only to this API; the Orchestrator Chat at 5174 talks only to
 Copilot Studio. "Local" means application-owned orchestration, not offline inference: Azure
-mode still calls the configured Azure OpenAI model. The diagnostic A2A console is unchanged.
+mode still calls the configured Azure OpenAI model. Orchestrator Chat remains on its separate
+adapter/APIM A2A path.
 
 - Upload a document with the composer; the backend indexes it before answering.
 - Open **Documents & SharePoint** to find a site, library, folder and file, then import it.

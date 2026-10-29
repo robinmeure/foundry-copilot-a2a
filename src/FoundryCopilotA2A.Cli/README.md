@@ -255,7 +255,7 @@ dotnet run --project .\src\FoundryCopilotA2A.Cli -- test-adaptive-cards `
 Repeat the live wire check using the transparent APIM runtime URL/token if configured.
 A wire pass against the mock is **not** proof of live Copilot Studio delivery.
 The command does not publish topics, change consent/settings, execute card actions or test
-browser rendering. To finish Phase 3, send the fixture trigger in **both Chatbot and Web**
+browser rendering. To finish Phase 3, send the fixture trigger in **Orchestrator Chat**
 against the live route, verify the card is rendered rather than printed as JSON, and check
 the usable text fallback. Live delivery remains experimental until those checks and the
 live SDK/wire probes pass. Native Foundry/Copilot Studio delegation and `Action.Submit`

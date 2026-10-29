@@ -90,7 +90,7 @@ $hubClientId = az ad app list `
 
 dotnet run --project .\src\FoundryCopilotA2A.Cli -- register-spa `
   --api-client-id $hubClientId --display-name fca2a-dev-frontend-spa `
-  --redirect-uri http://localhost:5173 `
+  --redirect-uri http://localhost:5174/auth-redirect.html `
   --owner-object-id $ownerObjectId
 
 dotnet run --project .\src\FoundryCopilotA2A.Cli -- register-oauth-client `
@@ -121,7 +121,7 @@ dotnet run --project .\src\FoundryCopilotA2A.Cli -- configure-hub `
   --tenant-id $tenantId `
   --hub-client-id $hubClientId `
   --adapter-client-id $env:HANDLER_CLIENT_ID `
-  --allowed-origins http://localhost:5173
+  --allowed-origins http://localhost:5174
 ```
 
 Use `set-hub-backend --backend-mode appservice` after an authorized secret

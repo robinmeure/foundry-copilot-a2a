@@ -1,4 +1,4 @@
-# Run the web console through Citadel and a local adapter
+# Run Orchestrator Chat through Citadel and a local adapter
 
 This workflow uses an **existing** APIM instance and the existing **two app registrations**.
 `configure-citadel` creates a separate `copilot-studio-local` API; it does not repoint the
@@ -41,7 +41,8 @@ delegated permission grants.
 ## 1. Start the adapter
 
 Choose the exact localhost origin already registered on the SPA. The examples use
-`http://localhost:5137`; use your registered port consistently.
+`http://localhost:5174`, with SPA redirect `http://localhost:5174/auth-redirect.html`;
+use your registered port consistently.
 
 Keep `COPILOT_STUDIO_CLIENT_SECRET` in server-side configuration. Start a single-agent
 adapter through the existing CLI, setting its advertised URL to the **gateway API
@@ -52,23 +53,22 @@ dotnet run --project .\src\FoundryCopilotA2A.Cli -- run-adapter `
   --tenant-id <tenant-id> --client-id <backend-client-id> `
   --direct-connect-url "<copilot-studio-connection-url>" `
   --public-base-url "https://<apim-host>/copilot-studio-local" `
-  --allowed-origin http://localhost:5137
+  --allowed-origin http://localhost:5174
 ```
 
 For an existing multi-agent Aspire setup, set `GatewayBaseUrl` to that same API base
-URL and `FrontendPort` to the registered port before starting the AppHost. The AppHost
-uses `GatewayBaseUrl` for adapter discovery and the initial frontend route, while also
-injecting the actual adapter endpoint for direct ingress in the flow builder. The chatbot
+URL and `ChatbotPort` to the registered port before starting the AppHost. The AppHost
+uses `GatewayBaseUrl` for the adapter's advertised public URL. The chatbot
 inherits `GatewayBaseUrl` unless `ChatbotGatewayBaseUrl` is explicitly configured; set
 that setting to an empty value to retain a direct local chatbot route. Omitting the
 gateway preserves direct-adapter operation. `AdapterPort` defaults to 5099,
-`FrontendPort` to 5173, `ChatbotPort` to 5174, `KnowledgeChatPort` to 5175 and
+`ChatbotPort` to 5174, `KnowledgeChatPort` to 5175 and
 `KnowledgePort` to 5100. The Knowledge Chat does not use the gateway; it talks only to the Knowledge API.
 
 **Worktrees:** `aspire start --isolated` randomizes resource ports, even explicit ones.
 Discover the running adapter URL with `aspire describe` and use its allocated port for
 the tunnel. To keep an existing SPA redirect URI unchanged, stop the Aspire-managed
-frontend with `aspire resource frontend stop` and run Vite on the registered port as
+chatbot with `aspire resource chatbot stop` and run Vite on the registered port as
 shown below. Supply `--apphost .\src\FoundryCopilotA2A.AppHost\FoundryCopilotA2A.AppHost.csproj`
 to Aspire commands when necessary. Keep credentials in AppHost parameters or process
 environment; do not copy secrets into frontend files.
@@ -114,12 +114,10 @@ URL. For either hosting approach, Dev Tunnel
 backends receive the noninteractive anti-phishing bypass header from the gateway so
 browser-originated requests receive API responses rather than the tunnel warning page.
 
-While the app is running, open **Connectivity** in the web console and select **Refresh
-status** to see adapter configuration and browser reachability. Paste the printed connection
-URL into **Check a Dev Tunnel** to test its `/health` endpoint without credentials. When the
-adapter advertises APIM, the tunnel behind it is not automatically discoverable. These
-checks do not inspect tunnel port mappings or APIM backend policies; browser CORS or the
-tunnel warning page can leave reachability **Not verified** even when the tunnel is running.
+While the app is running, use `aspire describe --include-hidden --format Json` to inspect
+the tunnel resources. The adapter's public `/health` endpoint and the CLI probes below
+provide API reachability checks. When the adapter advertises APIM, its public card does not
+reveal the tunnel behind it; inspect the configured APIM backend separately.
 
 When APIM fronts the tunnel, confirm that its API `serviceUrl` matches the URL shown
 by the current `adapter-dev-tunnel` port resource. A healthy Aspire tunnel does not
@@ -199,8 +197,8 @@ adapter-configured Copilot Studio or Foundry agent as a separate API beneath
 Specialist cards use a strict A2A v0.3 schema without v1-only `supportedInterfaces`,
 which Copilot Studio rejects even when `protocolVersion` is `0.3.0`. The runtime
 continues to accept both v0.3 and v1 requests.
-This supports native discovery from Foundry and standard-harness Copilot Studio, not just
-the console. Existing provider connections are **not** automatically retargeted;
+This supports native discovery from Foundry and standard-harness Copilot Studio.
+Existing provider connections are **not** automatically retargeted;
 the direct browser -> APIM -> adapter -> Copilot Studio flow needs no Foundry hop.
 Repeat the same `--agent-ids` list when retargeting those APIs to a new tunnel;
 omitted specialist APIs are not changed or deleted.
@@ -236,7 +234,7 @@ dotnet run --project .\src\FoundryCopilotA2A.Cli -- configure-citadel `
   --backend-url "https://<adapter-or-dev-tunnel-host>" `
   --tenant-id <tenant-id> `
   --api-client-id <adapter-api-client-id> `
-  --allowed-origin http://localhost:5173 `
+  --allowed-origin http://localhost:5174 `
   --agent-ids ($agentIds -join ',') `
   --replace
 ```
@@ -262,13 +260,13 @@ param specialistAgentIds = [
 
 The reusable resource loop is in `infra/modules/citadel.bicep`; `infra/main.bicep` passes this
 parameter to it. After deployment, verify the public card first, then invoke `/a2a` with a
-delegated token for the adapter API. APIM discovery in the console requires
+delegated token for the adapter API. Adapter-side APIM discovery requires
 `subscriptionRequired: false`, an HTTPS card/runtime URL on the same gateway host and API path,
 and the adapter identity to have APIM Reader access.
 
 ## 4. Run the frontend and sign in
 
-In the ignored `src\FoundryCopilotA2A.Web\.env.local`:
+In the ignored `src\FoundryCopilotA2A.Chatbot\.env.local`:
 
 ```text
 VITE_ENTRA_TENANT_ID=<tenant-id>
@@ -276,30 +274,29 @@ VITE_ENTRA_CLIENT_ID=<frontend-spa-client-id>
 VITE_ADAPTER_API_CLIENT_ID=<backend-client-id>
 VITE_ADAPTER_BASE_URL=http://localhost:5099
 VITE_GATEWAY_BASE_URL=https://<apim-host>/copilot-studio-local
+VITE_CHATBOT_AUTH_MODE=entra
+VITE_ORCHESTRATOR_AGENT_ID=orchestrator
 ```
 
-`VITE_GATEWAY_BASE_URL` enables APIM blocks and selects APIM for the initial flow.
-Keep `VITE_ADAPTER_BASE_URL` set to the real adapter endpoint to also enable **Direct
-to agent**. In an isolated run, replace the example port with the current allocated
-adapter port. The selected graph controls catalog, message, and trace requests; neither
-route changes the requested OAuth scope. No request falls back to the other endpoint
-on failure. Network records the ingress used for each turn and actual adapter spans;
-it does not invent APIM-internal telemetry or relabel old turns when the graph changes.
+`VITE_GATEWAY_BASE_URL` routes chatbot messages through APIM. Keep
+`VITE_ADAPTER_BASE_URL` set to the real adapter endpoint for direct operation when the
+gateway setting is empty. In an isolated run, replace the example adapter port with
+the current allocated port. Neither route changes the requested OAuth scope, and no
+request falls back to the other endpoint on failure. The orchestrator ID must match
+a configured, supported Copilot Studio agent in the adapter catalog.
+For the standalone single-agent `run-adapter` command in section 1, use its default
+catalog ID `default` instead of the AppHost's `orchestrator`.
 
 ```powershell
-npm run dev --prefix .\src\FoundryCopilotA2A.Web -- --port 5137
+npm run dev -w src/FoundryCopilotA2A.Chatbot -- --port 5174
 ```
 
-Open `http://localhost:5137` and configure **Via APIM** in the flow-builder drawer,
-or connect frontend -> APIM -> adapter -> a supported agent. Choose **Done** to close
-the drawer, then sign in using the SPA registration if needed. Send a message; both
-the answer and its trace must return through the gateway. **Native chain / APIM twice**
-adds the requested provider-managed specialist leg; it is not evidence that the
-remote connection works. **Native chain / no APIM** uses the orchestrator's existing
-A2A OAuth connection without either gateway hop. APIM is optional independently on
-each leg: remove a gateway block and reconnect its neighbors, retaining both OBO
-adapters. The builder does not retarget the provider-managed connection. See the
-[flow builder guide](../src/FoundryCopilotA2A.Web/README.md#build-and-execute-a-flow).
+Open `http://localhost:5174`, sign in using the SPA registration, and send a message.
+The answer must return through the gateway. Native specialist calls use the
+orchestrator's existing A2A OAuth connections; chatbot configuration does not retarget
+those connections. Verify delegation using real specialist callbacks and the CLI's
+trace/evidence checks, not the answer text alone. See the
+[Orchestrator Chat guide](../src/FoundryCopilotA2A.Chatbot/README.md).
 Vite must be restarted after changing `.env.local`; inherited process environment
 variables take precedence over that file.
 
@@ -312,7 +309,7 @@ not a command argument or source file:
 $env:CITADEL_USER_TOKEN = Read-Host 'Delegated backend API access token' -MaskInput
 dotnet run --project .\src\FoundryCopilotA2A.Cli -- test-citadel `
   --base-url "https://<apim-host>/copilot-studio-local" `
-  --allowed-origin http://localhost:5137 --bearer-token-env CITADEL_USER_TOKEN `
+  --allowed-origin http://localhost:5174 --bearer-token-env CITADEL_USER_TOKEN `
   --agent-id reverser-classic --prompt "Please reverse this text: citadel" `
   --expected-output-pattern ledatic --require-obo
 ```
@@ -457,7 +454,7 @@ the catalog capability; they do not create or publish the native connections.
 
 Native A2A is supported by Copilot Studio, but selecting OAuth does not prove same-user
 authentication through the Direct Connect channel. Exercise the published agent through this
-console with two different users, including a non-maker, and compare authenticated tenant/user
+Orchestrator Chat with two different users, including a non-maker, and compare authenticated tenant/user
 identity at the specialist boundary without logging tokens. The adapter retains OAuth-card
 handling, but a maker-only test is not proof that this channel completes every connector consent
 or token-exchange challenge. Do not switch to maker credentials or app-only tokens to hide a
@@ -477,7 +474,7 @@ First exercise the target-specific route with the same delegated-token environme
 ```powershell
 dotnet run --project .\src\FoundryCopilotA2A.Cli -- test-citadel `
   --base-url "https://<apim-host>/copilot-studio-local" `
-  --allowed-origin http://localhost:5137 --bearer-token-env CITADEL_USER_TOKEN `
+  --allowed-origin http://localhost:5174 --bearer-token-env CITADEL_USER_TOKEN `
   --agent-id reverser-classic --specialist-route `
   --prompt "Please reverse this text: citadel" --expected-output-pattern ledatic --require-obo
 ```
@@ -487,7 +484,7 @@ Then select either configured native orchestrator:
 ```powershell
 dotnet run --project .\src\FoundryCopilotA2A.Cli -- test-citadel `
   --base-url "https://<apim-host>/copilot-studio-local" `
-  --allowed-origin http://localhost:5137 --bearer-token-env CITADEL_USER_TOKEN `
+  --allowed-origin http://localhost:5174 --bearer-token-env CITADEL_USER_TOKEN `
   --agent-id <orchestrator-catalog-id> --chain-target reverser-classic `
   --prompt "Please reverse this text: citadel" --expected-output-pattern ledatic `
   --require-obo --require-native-callback
@@ -502,12 +499,11 @@ This occurred in the successful migrated Foundry run: discovery and the speciali
 shared a new downstream trace, not the entry trace. Strict mode deliberately does not combine
 unrelated traces by user, target, or timing alone.
 
-The console keeps unobserved selected hops pending and labeled `(requested)`. Same-user
-callbacks may join the entry trace when context propagates; another caller cannot merge into
+Same-user callbacks may join the entry trace when context propagates; another caller cannot merge into
 or read it. Provider and APIM body logging must stay disabled.
 Each trace has an absolute 15-minute lifetime, at most 128 registered runtime requests and
 1,024 retained spans. Reusing a saturated trace context is refused; span overflow is explicitly
-marked `truncated`, surfaced in the console, and rejected by strict evidence checks.
+marked `truncated` in trace output and rejected by strict evidence checks.
 
 ## Troubleshooting
 
@@ -525,10 +521,8 @@ marked `truncated`, surfaced in the console, and rejected by strict evidence che
 | `grant-foundry-consent` adds permission but returns Graph 403 | The manifest change remains; retry with an authorized directory identity/client after activation or authorization. Do not broadly grant every configured permission or make the backend public |
 | Foundry rejects the caller after OBO succeeds | Confirm the actual user has Foundry Agent Consumer or broader access; a managed-identity role assignment is not user access |
 | Native discovery looks for `agent.json` | Republish the owned specialist APIs with the same `--agent-ids` list and `--replace` |
-| Native chain / APIM twice preset is disabled | Configure `VITE_GATEWAY_BASE_URL` and a supported orchestrator with valid `ChainTargets`; reload AppHost configuration and refresh the console's catalog |
-| Native chain / no APIM preset is disabled | Configure a distinct direct `VITE_ADAPTER_BASE_URL` and a supported orchestrator with valid `ChainTargets`; its native A2A OAuth connection supplies the reachable specialist endpoint |
 | Consent page succeeds but Foundry asks again | Verify the same signed-in user and connection, then native token retrieval; browser authentication success alone is not end-to-end authorization |
-| Chain answers but specialist remains `(requested)` | Inspect native tools, consent, and real callback telemetry; a generated answer is not delegation evidence |
+| Orchestrator answers but no specialist callback is observed | Inspect native tools, consent, and real callback telemetry; a generated answer is not delegation evidence |
 | Connection reuse reports the old tunnel URL | Create a new Citadel connection and replace only the selected agent's old tool reference |
 | Answer works but trace does not | Publish the trace operation, expose `X-Trace-Id`, and forward the same user token |
 | Answer arrives all at once | Disable response buffering and body logging at every applicable APIM policy/diagnostic scope |

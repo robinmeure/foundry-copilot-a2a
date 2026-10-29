@@ -2,8 +2,13 @@
 
 This repository combines an A2A adapter for supported Copilot Studio and Foundry agents with
 a separate, application-owned Knowledge API for document retrieval and Microsoft 365 tools.
-It includes three browser applications, shared chat/client packages, local Aspire orchestration,
+It includes two chat applications, shared chat/client packages, local Aspire orchestration,
 and an operational CLI.
+
+The repository focuses on custom A2A handlers, Dev Tunnel connectivity, APIM configuration,
+agent definitions and provider connections, both chat applications, and the Knowledge API.
+There is no diagnostic flow-builder application. Native A2A delegation remains provider-owned
+and is configured through the adapter, CLI, and agent definitions.
 
 The adapter supports a standard-harness Copilot Studio orchestrator, configured Foundry
 agents, and optional APIM discovery and ingress. Native orchestration stays with the selected
@@ -40,7 +45,7 @@ Read-only Adaptive Cards (plan Phases 0-2) are implemented behind
 `Adapter:AdaptiveCardsEnabled` (default `false`). When enabled, the adapter extracts cards from
 Copilot Studio attachments, validates them (64 KiB per card, 5 cards, 256 KiB per turn), carries
 them in an A2A data part keyed `urn:foundry-copilot-a2a:adaptive-cards:v1`, and advertises that
-extension on the agent cards. The diagnostic console and Orchestrator Chat render a static, display-only subset
+extension on the agent cards. Orchestrator Chat renders a static, display-only subset
 (TextBlock, RichTextBlock, FactSet, Container, ColumnSet) with an in-house renderer, and show the
 card's fallback text for anything with actions, inputs, images or unknown elements. Try it on the
 mock backend with the prompt `show card example`. The CLI's
@@ -64,18 +69,17 @@ separately gated. See the [research](docs/adaptive-cards-a2a-research.md) and
 
 | Project | Role |
 | --- | --- |
-| [Web](src/FoundryCopilotA2A.Web/README.md) | Diagnostic console: flow design, agent selection, A2A requests and traces; Entra sign-in required |
 | [Chatbot](src/FoundryCopilotA2A.Chatbot/README.md) | Orchestrator Chat: one configured online orchestrator through the adapter/APIM, without diagnostic controls |
 | [KnowledgeChat](src/FoundryCopilotA2A.KnowledgeChat/README.md) | Knowledge Chat: document and Microsoft 365 questions through the Knowledge API only |
 | [ChatShared](src/FoundryCopilotA2A.ChatShared/README.md) | Shared React shell, turn lifecycle, per-app browser history, authentication, replies, sources and input controls |
-| [BrowserShared](src/FoundryCopilotA2A.BrowserShared/README.md) | Shared A2A transport, task/plan handling, consent and endpoint helpers used by the console and Orchestrator Chat |
+| [BrowserShared](src/FoundryCopilotA2A.BrowserShared/README.md) | A2A transport, task/plan handling, consent and endpoint helpers used by Orchestrator Chat |
 | [Adapter](src/FoundryCopilotA2A.Adapter) | A2A routing, Copilot Studio SDK integration, OBO, idempotency, APIM discovery and sanitized traces |
 | [KnowledgeApi](src/FoundryCopilotA2A.KnowledgeApi/README.md) | Agent Framework orchestration, scoped RAG, delegated Graph tools, proposed actions and AG-UI streaming |
 | [Cli](src/FoundryCopilotA2A.Cli/README.md) | Registration, consent, gateway/connection setup, process startup, probes and cleanup |
 | [AppHost](src/FoundryCopilotA2A.AppHost/AppHost.cs) / [ServiceDefaults](src/FoundryCopilotA2A.ServiceDefaults/Extensions.cs) | Local resource graph, service discovery, health checks and OpenTelemetry |
 
-The two chat apps and ChatShared use the root [npm workspace](package.json). The diagnostic
-console remains a separate npm project. Each chat app owns its transport, configuration and
+The two chat apps and ChatShared use the root [npm workspace](package.json).
+Each chat app owns its transport, configuration and
 history key; neither imports the other or silently switches backends. Aspire installs the chat
 workspace once and launches the apps as separate resources.
 
@@ -111,13 +115,10 @@ Citadel / APIM -> adapter target-specific A2A route
 Copilot Studio agent (Agent B)
 ```
 
-With one agent block the entry runtime invokes only the selected agent. A native-chain flow
-shows the adapter twice: it invokes the native orchestrator, and later handles a separate
-inbound request if that orchestrator calls a specialist. The APIM-twice preset places Citadel
-before both adapter appearances; APIM is optional independently on either leg. The
-**Native chain / no APIM** preset uses both adapters without a gateway. Native delegation
-uses the orchestrator's existing A2A OAuth connection, while OBO remains server-side.
-Drawing or changing the native leg does not retarget that provider-managed connection.
+The entry runtime invokes only the configured agent. If that native orchestrator calls a
+specialist, the adapter handles a separate inbound request on the specialist's bound route.
+APIM is optional independently on either leg. Native delegation uses the orchestrator's
+existing A2A OAuth connection, while OBO remains server-side.
 The public URL must be reachable from the provider, not just from the developer machine.
 
 Each Copilot Studio specialist gets its own route (`/a2a-agents/<id>/a2a`) and its own agent
@@ -350,15 +351,15 @@ The native orchestrator does. The adapter dispatches one provider invocation and
 it with a locally sequenced specialist invocation. Foundry selects from its attached A2A tools;
 Copilot Studio requires the standard harness, generative orchestration, and connected A2A agents.
 
-`ChainTargets` bounds the console's choices and accepted `X-A2A-Chain-Target` values. A selected
+`ChainTargets` bounds accepted `X-A2A-Chain-Target` values from API and CLI callers. A selected
 target adds a prompt hint, not deterministic enforcement of a model's tool choice. Neither the
 allow-list nor the hint restricts every tool attached to the remote agent; its native definition,
 connection authentication, and gateway authorization remain authoritative.
 
 The catalog's `canOrchestrate` indicates configured capability, not connection health or consent
 readiness. A generated answer is not proof of delegation: even a reversed string can be generated
-without calling a Reverser tool. The console labels an unobserved selected hop as `(requested)`;
-an `execute_tool` span is emitted only for an actual target-specific inbound request.
+without calling a Reverser tool. An `execute_tool` span is emitted only for an actual
+target-specific inbound request.
 
 Keep one Citadel card/runtime API and one native A2A connection per specialist. APIM governs the
 selected callback and forwards it to the bound route; it does not decide which agent runs next.
@@ -413,21 +414,21 @@ one.
 
 Each browser-to-backend flow uses two registration roles: a public SPA and a confidential
 backend API. A browser cannot keep the backend credential, so OBO stays server-side.
-The diagnostic console and dedicated chatbot use different SPA registrations and share the
-backend; running both therefore normally means **three registrations in total**, not a new
-registration for APIM.
+The chat apps can share a SPA registration with separate redirect URIs, or use dedicated SPA
+registrations. Each backend API audience still requires the appropriate delegated permission;
+APIM does not require another registration.
 
 | | Frontend SPA registration | Backend API registration |
 | --- | --- | --- |
 | Client type | Public client, SPA platform, authorization code + PKCE | Confidential client |
 | Client secret | None, ever | Required, read from `COPILOT_STUDIO_CLIENT_SECRET` |
-| Interactive sign-in | Console or chatbot | Native OAuth connection authorization, separate from SPA sign-in |
+| Interactive sign-in | Chat application | Native OAuth connection authorization, separate from SPA sign-in |
 | Exposes | Nothing | `api://<backend-client-id>/access_as_user` |
 | Requests | `access_as_user` on the backend API | Delegated `CopilotStudio.Copilots.Invoke`; optional Foundry `user_impersonation` |
-| Redirect URIs | Console origin, or chatbot `<origin>/auth-redirect.html`, as SPA | Native OAuth callbacks as Web, registered for each connection |
-| Consumed by | [Console](src/FoundryCopilotA2A.Web) or [chatbot](src/FoundryCopilotA2A.Chatbot), through `VITE_ENTRA_CLIENT_ID` | The adapter (`Authentication:*` and `CopilotStudio:*`) |
+| Redirect URIs | Chat app `<origin>/auth-redirect.html`, as SPA | Native OAuth callbacks as Web, registered for each connection |
+| Consumed by | [Orchestrator Chat](src/FoundryCopilotA2A.Chatbot), through `VITE_ENTRA_CLIENT_ID` | The adapter (`Authentication:*` and `CopilotStudio:*`) |
 
-In the web-console path, the user signs in against the frontend registration and that identity
+In the Orchestrator Chat path, the user signs in against the frontend registration and that identity
 is preserved through the whole chain:
 
 ```text
@@ -637,11 +638,11 @@ this repository does not provision.
 Use the [local Citadel workflow](docs/citadel-local.md) to create a separate
 `copilot-studio-local` API in an existing APIM instance without repointing the hosted API.
 `configure-citadel` publishes the card, catalog, runtime, and protected traces with CORS
-and unbuffered streaming. `VITE_GATEWAY_BASE_URL` enables APIM blocks and the initial
-gateway route in the executable [flow builder](src/FoundryCopilotA2A.Web/README.md#build-and-execute-a-flow).
-Keep `VITE_ADAPTER_BASE_URL` pointed at the actual adapter to also offer direct ingress.
-Catalog, runtime, and trace calls follow the selected route without automatic failover.
-`GatewayBaseUrl` makes Aspire advertise the public gateway runtime and inject both endpoints.
+and unbuffered streaming. In [Orchestrator Chat](src/FoundryCopilotA2A.Chatbot/README.md),
+`VITE_GATEWAY_BASE_URL` selects gateway ingress without automatic failover.
+Keep `VITE_ADAPTER_BASE_URL` pointed at the actual adapter for direct operation when no gateway
+is configured. `GatewayBaseUrl` makes Aspire advertise the public gateway runtime and configures
+the chatbot to use it unless `ChatbotGatewayBaseUrl` overrides it.
 The SPA still requests the backend's `access_as_user` scope; only the adapter performs OBO.
 `test-citadel --require-obo` exercises the gateway contract and requires an actual
 delegated exchange in the caller's trace.
@@ -710,7 +711,7 @@ per-user consent, adapter startup, Dev Tunnels, direct smoke tests, Foundry smok
 cleanup. It can also enable incoming A2A on an existing Foundry prompt agent. Client secrets
 and bearer tokens are never accepted as command-line values.
 
-A React/Vite interface lives in `src/FoundryCopilotA2A.Web`. Its dedicated SPA registration
+The [Orchestrator Chat](src/FoundryCopilotA2A.Chatbot/README.md) SPA registration
 uses MSAL to obtain the backend API's delegated `access_as_user` token and sends authenticated
 A2A requests to the adapter. The separate backend registration owns Copilot Studio permissions,
 credentials, token validation, and OBO.
@@ -748,7 +749,7 @@ health. Use `test-adapter`, `test-foundry`, and `test-citadel` against your sele
 | Conversation and message propagation | Local mock backend | Automated adapter tests |
 | Duplicate-message protection and replay refusal | Local integration tests plus historical live probes | Automated tests and recorded live behavior |
 | Cross-caller and cross-tenant isolation | Local tests with authentication enabled | Automated tests; historical mutation checks recorded below |
-| Browser task lifecycle, sources, authentication configuration, and flow validation | Console and chatbot Node test suites | Automated browser/shared-client tests; not included in `dotnet test` |
+| Browser task lifecycle, sources, authentication configuration, and chat transports | Chat workspace Node test suites | Automated browser/shared-client tests; not included in `dotnet test` |
 | Knowledge API retrieval, Graph tool boundaries, action confirmation and AG-UI events | [Knowledge API tests](tests/FoundryCopilotA2A.KnowledgeApi.Tests) | Local tests and synthetic providers; not proof of live Graph permissions or model quality |
 | Shared chat lifecycle, separate histories, source selection and Knowledge transport | ChatShared, Chatbot and KnowledgeChat npm workspaces | Automated tests plus mocked layout fixtures in both chat apps |
 | Registration payloads, connection migration and gateway input validation | [CLI tests](tests/FoundryCopilotA2A.Cli.Tests) | Pure input/payload tests and local HTTP handlers; no cloud mutation |
@@ -937,7 +938,7 @@ The card, health, and catalog are public; runtime, connectivity configuration, a
 authentication when it is enabled. The default APIM publication does not expose `/health` or
 `/api/connectivity`; see [connectivity diagnostics](#connectivity-diagnostics).
 
-The diagnostic console and Orchestrator Chat use `SendStreamingMessage` and render real upstream chunks. The CLI
+Orchestrator Chat uses `SendStreamingMessage` and renders real upstream chunks. The CLI
 `test-adapter` uses non-streaming `SendMessage`. Duplicate requests with the same caller, agent,
 context, and message ID share an available in-flight or cached invocation. Knowledge Chat
 instead uses AG-UI against the separate Knowledge API.
@@ -953,8 +954,7 @@ aspire wait knowledge-chat --non-interactive
 With the default mock configuration and no gateway/discovery/tunnel overrides, open the chatbot
 at `http://localhost:5174`. Aspire selects its loopback-only anonymous mode and the `mock` agent.
 The Knowledge Chat starts at `http://localhost:5175`, anonymous against the mock Knowledge API.
-The diagnostic console also starts, but still requires its Entra configuration and sign-in;
-it has no anonymous browser mode. Existing user secrets can select live resources, so check
+Existing user secrets can select live resources, so check
 those settings when reusing an AppHost.
 
 ### Local validation
@@ -964,10 +964,6 @@ run separately:
 
 ```powershell
 dotnet test .\FoundryCopilotA2A.slnx
-npm ci --prefix .\src\FoundryCopilotA2A.Web
-npm test --prefix .\src\FoundryCopilotA2A.Web
-npm run lint --prefix .\src\FoundryCopilotA2A.Web
-npm run build --prefix .\src\FoundryCopilotA2A.Web
 # The chat apps and their shared core form one npm workspace at the repository root.
 npm ci
 npm test --workspaces
@@ -1023,47 +1019,43 @@ state with its owner. Prefer plain branches over dense expressions. Comments sho
 protocol, concurrency or safety constraints rather than narrate statements. Do not introduce
 an interface or a generic pipeline merely to shorten a file.
 
-## Run the authenticated web interface
+## Run the authenticated Orchestrator Chat
 
 The frontend and adapter use separate app registrations. Create the backend registration first,
 or reuse an existing one that exposes `access_as_user`, then create the secretless SPA:
 
 ```text
 dotnet run --project src/FoundryCopilotA2A.Cli -- register-app
-dotnet run --project src/FoundryCopilotA2A.Cli -- register-spa --api-client-id <backend-client-id>
+dotnet run --project src/FoundryCopilotA2A.Cli -- register-spa --api-client-id <backend-client-id> --redirect-uri http://localhost:5174/auth-redirect.html
 ```
 
 For manual configuration or `AADSTS500011` troubleshooting, follow
 [the app registration guide](docs/spa-app-registration.md).
 
-Copy `src/FoundryCopilotA2A.Web/.env.example` to `.env.local` in the same folder and set:
+Copy [the chatbot environment example](src/FoundryCopilotA2A.Chatbot/.env.example) to
+`.env.local` in the same folder and set:
 
 ```text
 VITE_ENTRA_TENANT_ID=<tenant-id>
 VITE_ENTRA_CLIENT_ID=<frontend-spa-client-id>
 VITE_ADAPTER_API_CLIENT_ID=<backend-api-client-id>
 VITE_ADAPTER_BASE_URL=http://localhost:5099
+VITE_CHATBOT_AUTH_MODE=entra
+VITE_ORCHESTRATOR_AGENT_ID=orchestrator
 ```
 
-To start the configured adapter and both frontends together with Aspire:
+To start the configured adapter, Knowledge API and both chat apps together with Aspire:
 
 ```powershell
 aspire start --apphost .\src\FoundryCopilotA2A.AppHost\FoundryCopilotA2A.AppHost.csproj
 ```
 
-The Aspire AppHost exposes the frontend at `http://localhost:5173`, injects the adapter
-and optional gateway endpoints separately into Vite, and starts the chatbot at
-`http://localhost:5174`. Configure the chatbot's separate SPA as described above. Merely
+The Aspire AppHost starts Orchestrator Chat at `http://localhost:5174` and Knowledge Chat at
+`http://localhost:5175`, injecting each app's backend endpoint. Configure the chatbot's SPA
+as described above. Merely
 configuring the browser does not enable authentication or live providers in the adapter.
 
-In the console, every A2A call is attached to the message bubbles it belongs to: the user
-bubble carries the outgoing request chip, the adapter hops appear as pills between the
-bubbles, and the agent bubble carries the response chip. The **Network** panel sits beside
-the conversation (below it on narrow screens) and shows a timeline grouped per turn;
-selecting a chip or pill expands the matching entry. **Enter** sends a message and
-**Shift + Enter** adds a new line.
-
-The console also relays the transcript: each request carries the prior turns as
+Orchestrator Chat relays the transcript: each request carries the prior turns as
 `params.message.metadata.history`, an array of `{ "role": "user" | "assistant", "text": … }`
 entries, oldest first. The adapter bounds the relay to the last 20 turns and 4000 characters
 per turn, drops entries with an unknown role or empty text, and passes the transcript to
@@ -1088,8 +1080,8 @@ at most 8 strings, newest first. The adapter uses a handle only when its in-memo
 and the handle matches the same user, agent and `contextId`. It ignores any other handle, and the
 `copilot_studio.conversation.source` span tag shows `adapter_cache` or `client_handle`.
 
-The console and Orchestrator Chat keep the handles with the chat. The chatbot saves them in browser storage with
-the conversation, so a reopened chat resumes too. After a failed turn both apps drop the handles,
+Orchestrator Chat keeps the handles with the chat and saves them in browser storage with
+the conversation, so a reopened chat resumes too. After a failed turn it drops the handles,
 so the next turn starts a new conversation with a short replay. An orchestrator does not restart a
 rejected conversation by itself, because doing so could repeat a side effect.
 
@@ -1130,7 +1122,7 @@ Parameters:copilot-studio-ai-search-vragen-direct-connect-url
 Parameters:copilot-studio-orchestrator-direct-connect-url
 ```
 
-To include an incoming-A2A-enabled Foundry prompt agent in the resource palette, keep its
+To include an incoming-A2A-enabled Foundry prompt agent in the adapter catalog, keep its
 environment-specific endpoint in AppHost user secrets:
 
 ```text
@@ -1148,37 +1140,32 @@ Only explicitly enabled anonymous development retains the Azure CLI credential l
 managed identity outside Development. That mode does not preserve a browser user's identity
 and is not the secured Citadel path.
 
-The frontend retrieves stable IDs, display names, providers, and capabilities from
-`GET /api/agents`, then sends the entry ID in `X-Copilot-Agent` and an optional native target
+API callers can retrieve stable IDs, display names, providers, and capabilities from
+`GET /api/agents`, then send the entry ID in `X-Copilot-Agent` and an optional native target
 hint in `X-A2A-Chain-Target`. The catalog never returns direct-connect URLs, Foundry service
-endpoints, credentials, or provider access tokens. Changing the endpoint, entry agent, or
-target starts a separate conversation on the next message; moving blocks preserves context.
+endpoints, credentials, or provider access tokens. Orchestrator Chat uses its configured
+`VITE_ORCHESTRATOR_AGENT_ID`; it does not select agents or send a target hint.
 
 To run the frontend separately, start the live adapter as described below, then run:
 
 ```powershell
-npm ci --prefix .\src\FoundryCopilotA2A.Web
-npm run dev --prefix .\src\FoundryCopilotA2A.Web
+npm ci
+npm run dev -w src/FoundryCopilotA2A.Chatbot
 ```
 
-The CLI allows `http://localhost:5173` by default. If the browser uses another origin, pass the
-same exact origin to `run-adapter --allowed-origin <origin>`. CORS remains an origin allow-list;
+Pass `--allowed-origin http://localhost:5174` to `run-adapter` for the chatbot's default port.
+For another port, pass that same exact origin. CORS remains an origin allow-list;
 it does not replace JWT validation.
 
 ### Connectivity diagnostics
 
-The console's **Connectivity** panel reports configured direct/gateway URLs, the advertised
-adapter URL, backend mode, and authentication through `GET /api/connectivity`. It also performs
-credential-free browser health/catalog checks and can check `/health` on an HTTPS
-`*.devtunnels.ms` URL. These probes do not change routing or start/stop a tunnel.
+The adapter exposes configured public URL, backend mode and authentication state through
+protected `GET /api/connectivity`. Public `/health` and `/api/agents` endpoints support
+local checks. Use Aspire resource state and the CLI's adapter/Citadel probes for operational
+diagnostics; these checks do not change routing or repair native provider connections.
 
 The default CLI/Bicep APIM APIs publish cards, catalog, runtime, and traces, but **not**
-`/api/connectivity` or `/health`. A gateway-only deployment must expose the diagnostics operation
-explicitly if it needs that panel; a missing route is reported without silently bypassing APIM.
-Browser CORS, a tunnel warning page, or a network failure can leave a probe **Not verified**
-without proving that the tunnel host stopped. The panel cannot inspect APIM backend mappings,
-hidden tunnel URLs, or native connection health. See
-[the console connectivity guide](src/FoundryCopilotA2A.Web/README.md#inspect-live-connectivity).
+`/api/connectivity` or `/health`. Do not bypass APIM silently when a gateway operation is absent.
 
 ## Add an agent to the application
 
@@ -1194,10 +1181,11 @@ identity Reader access; local AppHost configuration remains opt-in and mock mode
 Azure-independent.
 
 This discovery is separate from `GatewayBaseUrl`: the latter chooses browser ingress, whereas
-`ApiManagementDiscovery` adds remote APIM-backed agents to the catalog. See
-[APIM discovery configuration](src/FoundryCopilotA2A.Web/README.md#discover-native-apim-a2a-apis)
-for the optional API allow-list, background refresh, streaming, and delegated-authentication
-requirements.
+`ApiManagementDiscovery` adds remote APIM-backed agents to the catalog. Configure
+`Enabled`, `SubscriptionId`, `ResourceGroup`, `ServiceName`, and optional `ApiIds` under that
+section. Discovery requires public HTTPS cards, same-gateway runtime URLs, no subscription
+key requirement, and APIM Reader access for the adapter identity. See the
+[local Citadel guide](docs/citadel-local.md) for publication and delegated authentication.
 
 Keep these rules consistent for both providers:
 
@@ -1374,10 +1362,10 @@ agent or attach a provider-managed tool.
 ### Verify the registration
 
 1. Start or restart Aspire. Mock mode should still start with no Azure configuration.
-2. In live mode, open the web console and confirm the new card has the expected display name,
-   provider, and support status.
-3. Select the new agent and send a provider-specific request. The selected stable ID is sent in
-   `X-Copilot-Agent`; a chain target uses its target-specific `/a2a-agents/<id>/a2a` route.
+2. In live mode, inspect `GET /api/agents` and the target-specific agent card to confirm the
+   expected display name, provider, and support status.
+3. Send a provider-specific request to `/a2a-agents/<id>/a2a`, or use the shared runtime
+   with `X-Copilot-Agent`. Native delegation uses the specialist's target-specific route.
 4. Check the adapter health endpoint and traces. For the adapter's default agent, the CLI can also
    run an authenticated smoke test:
 
@@ -1474,22 +1462,15 @@ once — put it in Key Vault or a process-scoped environment variable. It also p
 `delete-app` cleanup command. Add `--preauthorize-azure-cli` only if you need Azure CLI itself
 to mint adapter-audience tokens; `test-adapter` can obtain one directly through MSAL.
 
-## Chain a Foundry agent to Copilot Studio
+## Configure native Foundry A2A delegation to Copilot Studio
 
-The web console's executable flow builder supports one-agent routes with direct or APIM
-ingress, and native-chain routes with a second adapter leg to a specialist. APIM is optional
-on either leg; a native leg without APIM uses the orchestrator's configured A2A OAuth connection.
-Configure the blocks in the flow-builder drawer and choose **Done** to apply the valid route
-and return to the conversation. **Edit flow** reopens the drawer; Cancel discards pending
-changes without changing the active flow. Applying a changed route starts fresh conversation
-context on the next message; moving blocks does not.
-
-A native chain sends one request to the configured orchestrator, with a hint naming the
-selected specialist. Either provider can orchestrate; this section covers Foundry.
+The adapter sends one request to the configured orchestrator; the provider decides whether
+to invoke a specialist through its configured A2A OAuth connection. APIM is optional on
+either leg. API/CLI callers may supply a target hint, but that is not proof of a callback.
+Either provider can orchestrate; this section covers Foundry.
 [The Citadel guide](docs/citadel-local.md#6-configure-native-orchestrators) also covers
-standard-harness Copilot Studio. The canvas neither creates nor repairs remote connections.
-The route and observed spans remain visible in Network; a requested target without a callback
-is not shown as a completed tool call.
+standard-harness Copilot Studio. Configure connections with the operational CLI and verify
+actual target-specific inbound requests through adapter traces.
 
 For a custom adapter API, use Foundry OAuth identity passthrough. `UserEntraToken` is intended
 primarily for supported managed Microsoft services and can fail before the adapter is called
@@ -1576,7 +1557,7 @@ Native user authorization is per connection. Authorizing one specialist does not
 another. Access-token expiration normally triggers refresh, not repeated interactive consent;
 revocation, expired credentials, or tenant policy can still require reauthentication. The challenge
 surfaces as readable text in the agent's answer (`AUTHENTICATION REQUIRED ... Please visit ...`).
-The web console recognizes HTTPS links on the Azure APIM consent domain and renders a focused
+Orchestrator Chat recognizes HTTPS links on the Azure APIM consent domain and renders a focused
 consent action instead of the raw challenge; other URLs remain plain text. The link is short-lived,
 so use it promptly and resend the request afterward to create a new task.
 
@@ -1813,7 +1794,7 @@ a successful turn. Arbitrary raw event envelopes are not copied into the respons
 `DynamicPlanReceived`, `DynamicPlanStepTriggered`, `DynamicPlanStepBindUpdate` and
 `DynamicPlanStepFinished` are forwarded as working-status messages, with structured data when
 the optional `urn:foundry-copilot-a2a:dynamic-plan:v1` extension is activated. Arguments and
-observations are bounded and redacted; thoughts are not forwarded. The console and Orchestrator Chat show a
+observations are bounded and redacted; thoughts are not forwarded. Orchestrator Chat shows a
 collapsible timeline with expandable details, retained after the answer but excluded from
 copied answers, browser persistence and follow-up prompts. Redaction is best effort, not a
 general DLP guarantee. See the [wire contract and limits](src/FoundryCopilotA2A.BrowserShared/README.md#structured-plan-activity-v1).
@@ -1823,7 +1804,7 @@ For a matching connector authentication failure, the adapter maps the failed pla
 `taskDialogId` to its advertised tool display name and derives the current orchestrator's
 environment and bot IDs from the Copilot Studio activity identity. It adds an allowlisted
 `https://copilotstudio.microsoft.com/environments/<environment>/bots/<bot>/settings/connections`
-repair link. The console and Orchestrator Chat render that URL as an explicit connection-settings action;
+repair link. Orchestrator Chat renders that URL as an explicit connection-settings action;
 repair responses are excluded from follow-up history.
 
 Progress is marked with `metadata.isInformative` on its part so a caller can show it while the
@@ -1899,7 +1880,7 @@ execute_tool Reverser Classic                   INTERNAL  gen_ai.tool.type=agent
 ```
 
 These are joined into one distributed trace only when the provider propagates the required
-trace context. Otherwise, the specialist has a separate trace; the console must not invent a
+trace context. Otherwise, the specialist has a separate trace; clients must not invent a
 joined hop. Selecting a target hint alone never emits `execute_tool`.
 
 Span names and kinds follow the convention: `invoke_agent {gen_ai.agent.name}` as `CLIENT` for a
@@ -2119,8 +2100,8 @@ After the direct adapter contract succeeds:
    generated answer alone is not proof of delegated specialist execution.
 
 APIM mediates and governs the JSON-RPC calls; it does not choose the specialist. The Foundry
-agent makes that decision from its instructions and the tools attached to it. Consequently, the
-console's flow builder and `X-A2A-Chain-Target` steering are not prerequisites for APIM.
+agent makes that decision from its instructions and the tools attached to it. Consequently,
+`X-A2A-Chain-Target` steering is not a prerequisite for APIM.
 Publishing only one generic APIM agent API would change that design by requiring a downstream
 router, so preserve the one-card-and-runtime-per-specialist model.
 
@@ -2333,7 +2314,7 @@ voice settings are reserved; there is no server speech-synthesis feature.
 
 | Caller | Endpoint / protocol | Completion |
 | --- | --- | --- |
-| Diagnostic console and Orchestrator Chat | Adapter/APIM A2A JSON-RPC `SendStreamingMessage`, with 1.0/0.3 compatibility | Task lifecycle and artifacts; canonical final answers can replace streamed text |
+| Orchestrator Chat | Adapter/APIM A2A JSON-RPC `SendStreamingMessage`, with 1.0/0.3 compatibility | Task lifecycle and artifacts; canonical final answers can replace streamed text |
 | Knowledge Chat | Knowledge API `POST /api/chat/stream`, AG-UI over SSE | `RUN_FINISHED.result` supplies the validated final response |
 | Non-streaming Knowledge client | Knowledge API `POST /api/chat`, ordinary JSON | `{answer,warnings,citations,actions}` |
 
@@ -2373,22 +2354,21 @@ discard partial text; successful final results replace the preview. See the
 ## Chatbot frontend
 
 The separate [Orchestrator Chat frontend](src/FoundryCopilotA2A.Chatbot/README.md) provides
-only sign-in and chat with one configured Orchestrator. It reuses the console's A2A streaming
-handlers without its flow designer, specialist selectors, or diagnostic panels.
+only sign-in and chat with one configured Orchestrator. It uses the shared A2A streaming
+client without agent selectors or diagnostic panels.
 
 Aspire starts these application resources together; the Dev Tunnel is an optional extra resource:
 
 | Resource | Default address | Purpose |
 | --- | --- | --- |
 | `adapter` | `http://localhost:5099` | Protected A2A handlers and server-side OBO |
-| `frontend` | `http://localhost:5173` | Existing diagnostic console |
 | `chatbot` | `http://localhost:5174` | Dedicated chat-only frontend (adapter/APIM only) |
 | `knowledge` | `http://localhost:5100` | Knowledge API (local orchestrator) |
 | `knowledge-chat` | `http://localhost:5175` | [Knowledge Chat](src/FoundryCopilotA2A.KnowledgeChat/README.md) frontend (Knowledge API only) |
 
 The chat apps share one npm workspace rooted at the repository; Aspire installs it once through
-the `chat-workspace-install` resource, then starts each app independently of the other's backend. Both the console and chatbot
-origins are allowed by the local adapter; only the Knowledge Chat origin is allowed by the
+the `chat-workspace-install` resource, then starts each app independently of the other's backend. Only the chatbot
+origin is allowed by the local adapter; only the Knowledge Chat origin is allowed by the
 Knowledge API. Configure the chatbot's **dedicated SPA**
 registration and the existing backend API identity in its ignored `.env.local`; its SPA redirect
 URI must be `<chatbot-origin>/auth-redirect.html` for its MSAL redirect bridge. Interactive
@@ -2397,8 +2377,7 @@ chat app acquires a token for the current account and scope; near-expiry or miss
 tokens trigger one forced silent renewal. Renewal failures do not send a stale bearer token,
 and interactive renewal does not automatically resend the user's turn.
 In live mode, calls use the signed-in user's delegated backend token, and OBO remains on the
-server. The explicit local mock mode does not sign in or perform OBO. Existing console settings
-and its app registration are unchanged.
+server. The explicit local mock mode does not sign in or perform OBO.
 
 `KnowledgeChatPort` moves the Knowledge Chat; `KnowledgeChatTenantId`, `KnowledgeChatSpaClientId`
 and `KnowledgeChatSpeechInputEnabled` default to the matching `Chatbot*` settings. When it shares

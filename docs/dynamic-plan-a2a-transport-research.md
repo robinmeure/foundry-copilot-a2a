@@ -1,7 +1,8 @@
 # Dynamic Plan Updates over A2A — Protocol Transport Research
 
-> Implementation update: the transport and both frontend timelines described here have now
-> been implemented. The sections below preserve the pre-implementation investigation.
+> Implementation update: the transport and Orchestrator Chat timeline are implemented.
+> The diagnostic application has since been removed. The sections below preserve the
+> pre-implementation investigation, including its original browser scope.
 > See the [current contract, limits and mock example](../src/FoundryCopilotA2A.BrowserShared/README.md#structured-plan-activity-v1).
 
 **Scope:** Primary-source protocol research plus local SDK inspection and synthetic wire

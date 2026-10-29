@@ -220,25 +220,25 @@ shared-registration setup, remove it after the dedicated frontend registration w
 The project CLI can create a dedicated frontend registration against the existing backend:
 
 ```text
-dotnet run --project src/FoundryCopilotA2A.Cli -- register-spa --api-client-id <backend-client-id>
+dotnet run --project src/FoundryCopilotA2A.Cli -- register-spa --api-client-id <backend-client-id> --redirect-uri http://localhost:5174/auth-redirect.html
 ```
 
 The command:
 
 - creates a single-tenant SPA registration;
-- configures `http://localhost:5173` as its SPA redirect;
+- configures the supplied `http://localhost:5174/auth-redirect.html` SPA redirect;
 - adds delegated permission to the backend's existing `access_as_user` scope;
 - creates its Enterprise application;
 - creates no client secret.
 
-Use `--redirect-uri <exact-origin>` for a different origin and `--admin-consent` only when the
+Use `--redirect-uri <exact-redirect-uri>` for a different origin and `--admin-consent` only when the
 signed-in operator is permitted to grant tenant-wide consent.
 
 To configure it manually:
 
 1. Create a new single-tenant app registration.
 2. Open **Authentication > Add a platform > Single-page application**.
-3. Add `http://localhost:5173`.
+3. Add `http://localhost:5174/auth-redirect.html`.
 4. Open **API permissions > Add a permission > My APIs**.
 5. Select the backend API registration.
 6. Select **Delegated permissions > access_as_user**.
@@ -247,12 +247,14 @@ To configure it manually:
 Do not create a client secret for the SPA. Do not enable implicit grant. MSAL Browser uses
 authorization code flow with PKCE.
 
-The redirect URI must exactly match `window.location.origin`, including scheme, hostname, and
-port. This project pins Vite to port 5173 and fails startup if that port is occupied.
+The redirect URI must exactly match the chat app's `<origin>/auth-redirect.html`, including
+scheme, hostname, port and path. Orchestrator Chat uses port 5174 and Knowledge Chat uses 5175.
+When they share a SPA registration, register both redirect URIs.
 
 ## 3. Configure the frontend
 
-Copy `src/FoundryCopilotA2A.Web/.env.example` to `.env.local` and set:
+Copy [the Orchestrator Chat environment example](../src/FoundryCopilotA2A.Chatbot/.env.example)
+to `.env.local` in that project and set:
 
 ```text
 VITE_ENTRA_TENANT_ID=<directory-tenant-id>
@@ -260,6 +262,8 @@ VITE_ENTRA_CLIENT_ID=<frontend-spa-client-id>
 VITE_ADAPTER_API_CLIENT_ID=<backend-api-client-id>
 VITE_ADAPTER_BASE_URL=http://localhost:5099
 VITE_GATEWAY_BASE_URL=
+VITE_CHATBOT_AUTH_MODE=entra
+VITE_ORCHESTRATOR_AGENT_ID=orchestrator
 ```
 
 `VITE_ENTRA_CLIENT_ID` identifies the public SPA client. `VITE_ADAPTER_API_CLIENT_ID`
@@ -270,17 +274,16 @@ api://<VITE_ADAPTER_API_CLIENT_ID>/access_as_user
 ```
 
 For Citadel, set `VITE_GATEWAY_BASE_URL` to the full HTTPS gateway API base URL,
-including its API path. This enables APIM blocks and the initial APIM route in the
-flow builder. Keep `VITE_ADAPTER_BASE_URL` set to the distinct direct adapter endpoint
-to allow frontend -> adapter -> orchestrator as well. Catalog, runtime, and trace
-requests follow the chosen route; the requested scope and both registrations stay unchanged.
+including its API path. Chatbot messages then use the gateway without automatic failover.
+Keep `VITE_ADAPTER_BASE_URL` set to the direct adapter endpoint for operation when the gateway
+setting is empty. The requested scope and both registrations stay unchanged.
 APIM requires neither a third registration nor a browser-held subscription key.
 See [the local Citadel workflow](citadel-local.md) for the gateway policies and Dev Tunnel setup.
 
 Restart Vite after changing `.env.local`:
 
 ```text
-npm run dev --prefix src/FoundryCopilotA2A.Web
+npm run dev -w src/FoundryCopilotA2A.Chatbot
 ```
 
 ## 4. Start the backend
@@ -288,11 +291,17 @@ npm run dev --prefix src/FoundryCopilotA2A.Web
 Use the backend registration's tenant ID, client ID, and secret:
 
 ```text
-dotnet run --project src/FoundryCopilotA2A.Cli -- run-adapter --tenant-id <tenant-id> --client-id <backend-client-id> --direct-connect-url "<copilot-studio-url>"
+dotnet run --project src/FoundryCopilotA2A.Cli -- run-adapter --tenant-id <tenant-id> --client-id <backend-client-id> --direct-connect-url "<copilot-studio-url>" --allowed-origin http://localhost:5174
 ```
 
-The CLI allows `http://localhost:5173` through CORS by default. For another frontend origin,
-pass `--allowed-origin <exact-origin>`.
+Pass the chatbot's exact origin through `--allowed-origin`; this example explicitly uses
+`http://localhost:5174`. A standalone single-agent adapter uses the catalog ID `default`,
+so set `VITE_ORCHESTRATOR_AGENT_ID=default` for the command above. The live AppHost's
+multi-agent setup instead uses `orchestrator`.
+
+Knowledge Chat uses its own Knowledge API audience and permissions. Follow its
+[configuration guide](../src/FoundryCopilotA2A.KnowledgeChat/README.md) rather than pointing it
+at the adapter.
 
 ## 5. Validate the token chain
 
@@ -302,12 +311,12 @@ the two registrations apart:
 | Claim | Expected value | What it proves |
 | --- | --- | --- |
 | `aud` | `api://<backend-client-id>` or the bare backend client ID | The token is for the backend registration, so OBO can redeem it |
-| `appid` / `azp` | The **frontend** SPA client ID for a web-console call | The public client obtained the token; the split is working |
+| `appid` / `azp` | The **frontend** SPA client ID for a chat app call | The public client obtained the token; the split is working |
 | `tid` | The configured tenant | Cross-tenant callers are rejected |
 | `oid` | The signed-in user's object ID | Identifies the user represented by this delegated token |
 | `scp` | Contains `access_as_user` | A delegated token — app-only tokens do not have `scp` |
 
-For a web-console call, matching `aud` and `appid`/`azp` GUIDs indicate that the browser is still
+For a chat app call, matching `aud` and `appid`/`azp` GUIDs indicate that the browser is still
 using one shared registration instead of the intended split.
 
 The browser must never receive a Power Platform token or the backend secret. The adapter
@@ -331,9 +340,9 @@ This error occurs during token acquisition, before the browser calls the adapter
 
 ### Redirect URI mismatch
 
-Use the exact origin registered on the SPA consistently. For example,
-`http://localhost:5173`, `http://127.0.0.1:5173`, `http://localhost:5137`, and
-`https://localhost:5173` are different redirect URIs. Match the Vite port and both
+Use the exact redirect URI registered on the SPA consistently. For example,
+`http://localhost:5174/auth-redirect.html`, `http://127.0.0.1:5174/auth-redirect.html`, and
+`https://localhost:5174/auth-redirect.html` are different redirect URIs. Match the Vite port and both
 adapter/APIM allowed origins to that registration; moving the API behind APIM does
 not change the browser's redirect URI.
 

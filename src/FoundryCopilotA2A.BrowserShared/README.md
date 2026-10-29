@@ -1,6 +1,6 @@
 # Shared browser A2A client
 
-Dependency-free TypeScript used by both browser apps. `sendMessage` keeps the existing
+Dependency-free TypeScript used by Orchestrator Chat and its shared chat core. `sendMessage` keeps the existing
 streaming request and text-only `ConversationTurn` history format. It also accepts a complete
 JSON-RPC message response. Its result has optional `citations: CitationBundle`;
 `onUpdate(answer, citations?)` receives the complete current answer and citation snapshot.
@@ -71,7 +71,7 @@ these headers. Existing gateways must receive the updated policy before using th
 `detailsFiltered`. Event identity is scoped by originating agent and plan ID; conflicting
 replays and unsupported/malformed recognized payloads fail explicitly.
 
-Both frontends nest the activity timeline under the first text progress update, independently
+Orchestrator Chat nests the activity timeline under the first text progress update, independently
 of answer text. A neutral "Agent activity" parent is used for plan-only streams.
 Expandable activity rows keep details and filtering notices out of the main reading path.
 Details render as escaped plain text (never HTML, links or remote fetches), with keyboard
@@ -157,9 +157,8 @@ Progress/informative and task-status messages do not contribute final sources.
 
 ## UI and provenance boundary
 
-Both apps show an accessible **Sources** list beneath each successful answer. The standalone
-chatbot reveals it through a per-reply **Sources** toggle beside Copy response, with a count
-of distinct sources; the diagnostic console shows its list directly. Each list includes the
+Orchestrator Chat shows an accessible **Sources** list beneath each successful answer through
+a per-reply **Sources** toggle beside Copy response, with a count of distinct sources. The list includes the
 original source title, literal marker/locator/quote, and originating agent label, separately
 from the response author. Source links use `target="_blank"` and `rel="noopener noreferrer"`.
 Source values render as escaped text, never raw HTML. Legacy text-only wire answers are unchanged.
@@ -179,7 +178,7 @@ through the orchestrator requires upstream runtime support, not changes to brows
 Separately, the standalone chatbot offers a presentation-only fallback Sources list of safe
 Markdown links when a successful answer has no structured sources. It labels them as links
 from the response, assigns display numbers, and does not synthesize a `CitationBundle` or
-agent provenance. The diagnostic console and the shared wire contract remain unchanged.
+agent provenance. The shared wire contract remains unchanged.
 
-Wire/controller coverage runs with the Chatbot package's existing `npm test`; both browser
-packages include server-rendered Sources tests. No shared React dependency is required.
+Wire/controller coverage runs with the Chatbot package's existing `npm test`; the shared
+chat core includes server-rendered Sources tests. No shared React dependency is required here.

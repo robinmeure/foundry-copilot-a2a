@@ -2,6 +2,12 @@
 
 Last verified: 2026-10-23
 
+Repository scope update: the diagnostic flow-builder application has been removed.
+Browser-count and UI findings below describe the research baseline, not the current
+repository. Orchestrator Chat now uses the shared read-only renderer in
+[ChatShared](../src/FoundryCopilotA2A.ChatShared/README.md); Knowledge Chat uses a separate
+Knowledge API protocol. Native A2A delegation remains in scope.
+
 Scope: primary-source protocol/platform research plus inspection and focused
 baseline tests of this repository. No application code or live provider was changed.
 See the separate [implementation plan](adaptive-cards-a2a-implementation-plan.md)
@@ -651,9 +657,9 @@ All line numbers are approximate (`~`) as supplied by the parent agent.
 
 ### 8.7 UI persistence and redaction
 
-- `Chatbot/src/chatSession.ts`, `ReplyBody.tsx`, `conversationStore.ts`
-  currently support text/citations only; `Web/src/App.tsx` has a separate
-  render path. Neither client's package manifest currently depends on an
+- At the research baseline, the chatbot session, reply and persistence components
+  supported text/citations only; the former diagnostic application had a separate
+  render path. Neither client's package manifest then depended on an
   Adaptive Cards renderer library. The parent agent's recommendation (a
   recommendation, not a verified fact) is a shared validation/renderer and a
   sanitized, fallback-only persistence model initially - explicitly **not**
